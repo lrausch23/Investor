@@ -1,0 +1,25 @@
+{% extends "layout.html" %}
+{% block content %}
+  <h1>New Policy Version</h1>
+  <form method="post" action="/policy/new">
+    <div class="grid2">
+      <label>Name<br/><input name="name" value="Household Policy" /></label>
+      <label>Effective date<br/><input name="effective_date" value="{{ today }}" /></label>
+    </div>
+    <label>Policy JSON (freeform, stored for audit/explainability)</label><br/>
+    <textarea name="json_definition" rows="8" cols="100">{{ default_json }}</textarea>
+
+    <h2>Buckets</h2>
+    <table>
+      <tr><th>Bucket</th><th>Min %</th><th>Target %</th><th>Max %</th></tr>
+      <tr><td>B1 Liquidity</td><td><input name="b1_min" value="0.05"/></td><td><input name="b1_target" value="0.10"/></td><td><input name="b1_max" value="0.20"/></td></tr>
+      <tr><td>B2 Defensive / Income</td><td><input name="b2_min" value="0.20"/></td><td><input name="b2_target" value="0.30"/></td><td><input name="b2_max" value="0.45"/></td></tr>
+      <tr><td>B3 Growth</td><td><input name="b3_min" value="0.30"/></td><td><input name="b3_target" value="0.45"/></td><td><input name="b3_max" value="0.65"/></td></tr>
+      <tr><td>B4 Alpha</td><td><input name="b4_min" value="0.00"/></td><td><input name="b4_target" value="0.15"/></td><td><input name="b4_max" value="0.25"/></td></tr>
+    </table>
+
+    <label>Audit note (optional): <input type="text" name="note" size="60"/></label><br/>
+    <button type="submit">Create policy</button>
+  </form>
+{% endblock %}
+

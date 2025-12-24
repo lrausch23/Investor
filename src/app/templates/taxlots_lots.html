@@ -1,0 +1,53 @@
+{% extends "layout.html" %}
+{% block content %}
+  <h1>Tax Lots (Reconstructed)</h1>
+  <div class="banner banner--warn">MVP note: These lots are reconstructed from transaction history and are planning-grade (not authoritative tax reporting).</div>
+
+  <div class="box">
+    <form method="get" action="/taxlots">
+      <div class="grid3">
+        <label>Scope<br/>
+          <select name="scope">
+            <option value="household" {% if scope == "household" %}selected{% endif %}>Household</option>
+            <option value="trust" {% if scope == "trust" %}selected{% endif %}>Trust only</option>
+            <option value="personal" {% if scope == "personal" %}selected{% endif %}>Personal only</option>
+          </select>
+        </label>
+        <label>Account<br/>
+          <select name="account_id">
+            <option value="" {% if not account_id %}selected{% endif %}>All accounts</option>
+            {% for a in accounts %}
+              <option value="{{ a.id }}" {% if account_id == a.id %}selected{% endif %}>{{ a.name }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label>&nbsp;<br/><button type="submit">View</button></label>
+      </div>
+    </form>
+    <div class="muted"><a href="/taxlots/gains?scope={{ scope }}&source=auto">Realized gains</a> | <a href="/taxlots/wash-sales?scope={{ scope }}&source=auto">Wash sales</a> | <a href="/taxlots/corporate-actions?scope={{ scope }}">Corporate actions</a></div>
+  </div>
+
+  {% if not rows or rows|length == 0 %}
+    <p class="muted">No reconstructed lots found. Run “Sync → Rebuild Lots” for a connection.</p>
+  {% else %}
+    <table>
+      <tr><th>Account</th><th>Ticker</th><th>Acquired</th><th>Qty open</th><th>Basis open</th><th>Basis/share</th><th>Term</th><th>Source</th></tr>
+      {% for lot, acct, sec, tp in rows %}
+        {% set qty = (lot.quantity_open|float) %}
+        {% set basis = (lot.basis_open|float) if lot.basis_open is not none else none %}
+        {% set bps = (basis / qty) if (basis is not none and qty and qty != 0) else none %}
+        {% set term = "LT" if (today - lot.acquired_date).days >= 365 else "ST" %}
+        <tr>
+          <td>{{ acct.name }}</td>
+          <td>{{ sec.ticker }}</td>
+          <td class="muted">{{ lot.acquired_date }}</td>
+          <td class="muted">{{ "%.6f"|format(qty) }}</td>
+          <td class="muted">{{ basis|usd }}</td>
+          <td class="muted">{% if bps is none %}—{% else %}{{ bps|usd(4) }}{% endif %}</td>
+          <td class="muted">{{ term }}</td>
+          <td class="muted">{{ lot.source }}</td>
+        </tr>
+      {% endfor %}
+    </table>
+  {% endif %}
+{% endblock %}

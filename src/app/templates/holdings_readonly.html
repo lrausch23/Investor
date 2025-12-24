@@ -1,0 +1,231 @@
+{% extends "layout.html" %}
+{% block content %}
+  <h1>Holdings (Read-only)</h1>
+  <p class="muted">Shows latest synced positions (from external holdings snapshots) + latest imported cash balance (USD). For editing reference data, use Securities/Mappings/Lots pages.</p>
+
+  {% if view.warnings and view.warnings|length > 0 %}
+    <div class="banner banner--warn">Warnings: {{ view.warnings }}</div>
+  {% endif %}
+
+  <div class="box">
+    <form method="get" action="/holdings">
+      <div class="grid3">
+        <label>Scope<br/>
+          <select name="scope">
+            <option value="household" {% if scope == "household" %}selected{% endif %}>Household</option>
+            <option value="trust" {% if scope == "trust" %}selected{% endif %}>Trust only</option>
+            <option value="personal" {% if scope == "personal" %}selected{% endif %}>Personal only</option>
+          </select>
+        </label>
+        <label>Portfolio<br/>
+          <select name="account_id">
+            <option value="" {% if not account_id %}selected{% endif %}>Combined (all accounts)</option>
+            {% for a in accounts %}
+              <option value="{{ a.id }}" {% if account_id == a.id %}selected{% endif %}>{{ a.name }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label>&nbsp;<br/><button type="submit">View</button></label>
+      </div>
+    </form>
+    <div class="muted"><b>Scope:</b> {{ view.scope_label }} — <b>Portfolio:</b> {{ view.account_name }} — <b>Total:</b> {{ view.total_value|usd }}</div>
+    <div class="muted"><b>Holdings as-of:</b> {{ view.as_of|local_dt }}</div>
+    {% if view.data_sources and view.data_sources|length > 0 %}
+      <div class="muted" style="margin-top:6px">
+        <b>Data sources:</b>
+        {% for s in view.data_sources %}
+          <span>{{ s.connection_name }} <span class="muted">({{ (s.connector or s.provider) }})</span>{% if s.as_of %} @ {{ s.as_of|local_dt }}{% endif %}</span>{% if not loop.last %}; {% endif %}
+        {% endfor %}
+      </div>
+      <div class="muted">
+        Basis/tax status: reconstructed lots if present (preferred), else imported lots, else broker snapshot basis (if available).
+        Cash: `CashBalance` (USD) if imported, else snapshot cash as fallback.
+      </div>
+    {% else %}
+      <div class="muted" style="margin-top:6px"><b>Data sources:</b> none yet (run Sync to capture holdings snapshots).</div>
+    {% endif %}
+  </div>
+
+  {% if (view.as_of is none) and (view.total_value|float == 0.0) %}
+    <p class="muted">No synced holdings found yet. Run Sync and ensure a `positions*` export is present (and that it contains position rows).</p>
+  {% else %}
+    <table>
+      <tr>
+        <th>Account</th>
+        <th>Symbol</th>
+        <th>Qty</th>
+        <th>Market value</th>
+        <th>Initial cost</th>
+        <th>P&amp;L</th>
+        <th>P&amp;L %</th>
+        <th>Tax</th>
+        <th>Entered</th>
+        <th>Wash-safe exit (loss)</th>
+      </tr>
+      {% for p in view.positions %}
+        <tr>
+          <td class="muted nowrap">{{ p.account_name }}</td>
+          <td>{{ p.symbol }}</td>
+          <td class="muted">{{ p.qty if p.qty is not none else "" }}</td>
+          <td>{{ (p.market_value or 0.0)|usd }}</td>
+          <td class="muted">
+            {% if p.cost_basis_total is none %}—{% else %}{{ (p.cost_basis_total or 0.0)|usd }}{% endif %}
+          </td>
+          <td class="muted">
+            {% if p.pnl_amount is none %}—{% else %}{{ (p.pnl_amount or 0.0)|usd }}{% endif %}
+          </td>
+          <td class="muted">
+            {% if p.pnl_pct is none %}—{% else %}{{ "%.2f"|format((p.pnl_pct or 0.0) * 100.0) }}%{% endif %}
+          </td>
+          <td class="muted">{{ p.tax_status or "—" }}</td>
+          <td class="muted">{{ p.entered_date or "—" }}</td>
+          {% set is_wash_safe = (p.wash_safe_exit_date is not none) and (p.wash_safe_exit_date <= today) %}
+          <td class="{% if p.wash_safe_exit_date is none %}muted{% elif is_wash_safe %}cell-ok{% else %}cell-bad{% endif %}">
+            {{ p.wash_safe_exit_date or "—" }}
+          </td>
+        </tr>
+      {% endfor %}
+      <tr>
+        <td><b>TOTAL</b></td>
+        <td></td>
+        <td></td>
+        <td><b>{{ view.total_market_value|usd }}</b></td>
+        <td class="muted"><b>{% if view.total_initial_cost is none %}—{% else %}{{ view.total_initial_cost|usd }}{% endif %}</b></td>
+        <td class="muted"><b>{% if view.total_pnl_amount is none %}—{% else %}{{ view.total_pnl_amount|usd }}{% endif %}</b></td>
+        <td class="muted"><b>{% if view.avg_pnl_pct is none %}—{% else %}{{ "%.2f"|format(view.avg_pnl_pct * 100.0) }}%{% endif %}</b></td>
+        <td></td>
+        <td></td>
+        <td></td>
+      </tr>
+    </table>
+    {% if view.totals_missing_cost_count and view.totals_missing_cost_count > 0 %}
+      <div class="muted">Totals exclude {{ view.totals_missing_cost_count }} position(s) with unknown initial cost.</div>
+    {% endif %}
+
+    <table>
+      <tr><th>Metric</th><th>Value</th></tr>
+      <tr>
+        <td>Available liquidity</td>
+        <td>{{ view.cash_total|usd }}</td>
+      </tr>
+      <tr>
+        <td>End value (positions + cash)</td>
+        <td><b>{{ view.total_value|usd }}</b></td>
+      </tr>
+      <tr>
+        <td>{{ view.gain_begin_label }}</td>
+        <td>{% if view.gain_begin_value is none %}—{% else %}{{ view.gain_begin_value|usd }}{% endif %}</td>
+      </tr>
+      <tr>
+        <td>Contributions</td>
+        <td>{{ view.ytd_contributions|usd }} <span class="muted">({{ view.ytd_deposit_count }} deposit(s))</span></td>
+      </tr>
+      <tr>
+        <td>Withdrawals</td>
+        <td>{{ view.ytd_withdrawals|usd }} <span class="muted">({{ view.ytd_withdrawal_count }} withdrawal(s))</span></td>
+      </tr>
+      <tr>
+        <td>Dividends received</td>
+        <td>{{ view.ytd_dividends_received|usd }}</td>
+      </tr>
+      <tr>
+        <td>Interest (net)</td>
+        <td>{{ view.ytd_interest_net|usd }}</td>
+      </tr>
+      <tr>
+        <td>Withholding tax</td>
+        <td>{{ view.ytd_withholding|usd }}</td>
+      </tr>
+      <tr>
+        <td>Fees/commissions (cash)</td>
+        <td>{{ view.ytd_fees|usd }}</td>
+      </tr>
+      <tr>
+        <td>Net cashflow (contribs - withdrawals + income - fees - withholding)</td>
+        <td>{{ view.ytd_net_cashflow|usd }}</td>
+      </tr>
+      <tr>
+        <td>Calendar-year return (simple)</td>
+        <td>
+          {% if view.ytd_return_pct is none %}
+            —
+          {% else %}
+            {{ "%.2f"|format(view.ytd_return_pct * 100.0) }}%
+          {% endif %}
+        </td>
+      </tr>
+      <tr>
+        <td>Calendar-year gain value (simple)</td>
+        <td>{% if view.ytd_gain_value is none %}—{% else %}{{ view.ytd_gain_value|usd }}{% endif %}</td>
+      </tr>
+      <tr>
+        <td>P&amp;L (planning: positions + income − fees − withholding)</td>
+        <td>{{ view.pnl_planning_value|usd }}</td>
+      </tr>
+      <tr>
+        <td>Return on cost (planning)</td>
+        <td>{% if view.pnl_return_on_cost is none %}—{% else %}{{ "%.2f"|format(view.pnl_return_on_cost * 100.0) }}%{% endif %}</td>
+      </tr>
+    </table>
+    <div class="muted">
+      Gain value = (End − Begin) + Withdrawals + Dividends + Interest − Contributions. Calendar-year return requires a holdings snapshot near Jan 1.
+    </div>
+
+      {% if view.ytd_transfers and view.ytd_transfers|length > 0 %}
+      <div class="box">
+        <b>Deposits / Withdrawals (YTD)</b>
+        <div class="table-scroll">
+          <table>
+            <tr><th class="col-date nowrap">Date</th><th>Account</th><th>Source</th><th>Amount</th><th>Description</th></tr>
+            {% for r in view.ytd_transfers %}
+              <tr>
+                <td class="muted col-date nowrap">{{ r.date }}</td>
+                <td class="muted">{{ r.account }}</td>
+                <td class="muted">{{ r.source or "—" }}</td>
+                <td>{{ r.amount|usd }}</td>
+                <td class="muted">{{ r.description or "—" }}</td>
+              </tr>
+            {% endfor %}
+          </table>
+        </div>
+      </div>
+    {% endif %}
+    {% if view.ytd_start_asof %}
+      <div class="muted">
+        Baseline as-of: {{ view.ytd_start_asof|local_dt }}
+      </div>
+    {% endif %}
+    {% if view.ytd_start_value is none %}
+      <div class="muted">
+        To compute calendar-year return/gain, upload a holdings/positions snapshot dated near Jan 1 (within ~14 days) so the app has a begin value.
+      </div>
+    {% endif %}
+
+    {% if view.recent_cashflows and view.recent_cashflows|length > 0 %}
+      <div class="box">
+        <b>Cashflows (non BUY/SELL, YTD)</b> <span class="muted">({{ view.recent_cashflows|length }} rows)</span>
+        <div class="table-scroll">
+          <table>
+            <tr><th class="col-date nowrap">Date</th><th>Account</th><th>Source</th><th>Type</th><th>Symbol</th><th>Amount</th><th>Description</th></tr>
+            {% for r in view.recent_cashflows %}
+              <tr>
+                <td class="muted col-date nowrap">{{ r.date }}</td>
+                <td class="muted">{{ r.account }}</td>
+                <td class="muted">{{ r.source or "—" }}</td>
+                <td class="muted">{{ r.type }}</td>
+                <td class="muted">{{ r.symbol or "—" }}</td>
+                <td>{{ r.amount|usd }}</td>
+                <td class="muted">{{ r.description or "—" }}</td>
+              </tr>
+            {% endfor %}
+          </table>
+        </div>
+      </div>
+    {% endif %}
+
+    <div class="muted" style="margin-top:8px">
+      “Wash-safe exit (loss)” is the earliest date you can sell at a loss without triggering a wash sale based on executed BUYs in the last 30 days within the applicable taxpayer scope.
+      Assumes you do not buy substantially identical securities in the following 30 days; the Planner performs the definitive check.
+    </div>
+  {% endif %}
+{% endblock %}

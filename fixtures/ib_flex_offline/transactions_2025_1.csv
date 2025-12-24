@@ -1,0 +1,4 @@
+account,date,type,symbol,qty,amount,description,provider_transaction_id
+U12345,2025-01-02,BUY,VTI,1,-250.00,BUY VTI,T1
+U12345,2025-02-01,DIVIDEND,VTI,,5.25,DIV VTI,T2
+U12345,2025-03-01,FEE,,,-1.00,Account fee,T3

@@ -1,0 +1,31 @@
+{% extends "layout.html" %}
+{% block content %}
+  <h1>Edit Auth: {{ conn.name }}</h1>
+  <p><a href="/sync/connections/{{ conn.id }}">← Back</a></p>
+
+  {% if not secret_key_ok %}
+    <div class="banner banner--warn">APP_SECRET_KEY is not set. Saving credentials to DB is disabled.</div>
+  {% endif %}
+
+  <h2>Current</h2>
+  <table>
+    <tr><th>Key</th><th>Value</th></tr>
+    <tr><td>{{ cred_token_key }}</td><td>{{ token_masked }}</td></tr>
+    <tr><td>{{ cred_qid_key }}</td><td>{{ query_id_display }}</td></tr>
+  </table>
+
+  <h2>Update</h2>
+  <form method="post" action="/sync/connections/{{ conn.id }}/auth">
+    <div class="grid2">
+      <label>Token<br/><input name="token" type="password" placeholder="paste token"/></label>
+      <label>Flex Query ID (numeric) or name<br/><input name="query_id" type="text" size="80" placeholder="e.g. 1354277"/></label>
+    </div>
+    {% if (conn.connector or "")|upper == "IB_FLEX_WEB" %}
+      <div class="muted">Query can be the Flex Query <b>name</b> from IB Portal (Reports → Flex Queries), or the numeric id if available.</div>
+      <div class="muted">Flex Web Service is IP restricted; ensure your server IP is allowlisted in IB Portal.</div>
+    {% endif %}
+    <div class="muted">Values are encrypted at rest using Fernet derived from `APP_SECRET_KEY`.</div>
+    <label>Audit note <input name="note" size="60"/></label><br/>
+    <button type="submit" {% if not secret_key_ok %}disabled{% endif %}>Save</button>
+  </form>
+{% endblock %}

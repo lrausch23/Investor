@@ -1,0 +1,178 @@
+{% extends "layout.html" %}
+{% block content %}
+  <h1>Sync → Connections</h1>
+  <p class="muted">
+    This UI supports <b>IB Flex (Web Service)</b> and <b>Chase (Offline CSV)</b>.
+    Other legacy connectors may exist in the DB; disable them to avoid double-counting.
+  </p>
+  {% if not secret_key_ok %}
+    <div class="banner banner--warn">APP_SECRET_KEY is not set: saving credentials to DB is disabled.</div>
+  {% endif %}
+  {% if error %}
+    <div class="banner banner--warn">{{ error }}</div>
+  {% endif %}
+
+  <h2>Create Connection</h2>
+  {% if not taxpayers or taxpayers|length == 0 %}
+    <div class="banner banner--warn">
+      No taxpayers exist yet. Create baseline setup first at <a href="/setup">Setup</a> (click “Create defaults”), then come back here.
+    </div>
+  {% endif %}
+  <form method="post" action="/sync/connections">
+    <div class="grid3">
+      <label>Name<br/><input id="create_name" name="name" value="IB Flex (Web)"/></label>
+      <label>Connector<br/>
+        <select name="connection_kind" id="create_kind" onchange="toggleCreateKind()">
+          <option value="IB_FLEX_WEB" selected>IB Flex (Web Service)</option>
+          <option value="CHASE_OFFLINE">Chase (Offline CSV)</option>
+        </select>
+      </label>
+      <label>Taxpayer<br/>
+        <select name="taxpayer_entity_id">
+          {% for t in taxpayers %}
+            <option value="{{ t.id }}">{{ t.name }} ({{ t.type }})</option>
+          {% endfor %}
+        </select>
+      </label>
+    </div>
+    <div id="create_ib_web" class="grid3">
+      <label>Token (required)<br/><input name="token" type="password" placeholder="stored encrypted (IB Flex Web Service token)"/></label>
+      <label>Flex Query ID (required)<br/><input name="query_id" type="text" size="80" placeholder="e.g. 1354277"/></label>
+      <label>Extra Flex Query IDs (optional, comma/space-separated)<br/><input name="extra_query_ids" size="80" placeholder="e.g. 1354277, 1354129"/></label>
+      <div class="muted">
+        Flex Web Service is IP restricted. Ensure this machine/server IP is allowlisted in IB Portal.
+        <a href="#" class="muted">IP allowlist help (link)</a>
+      </div>
+    </div>
+    <div id="create_chase_offline" class="grid3" style="display:none">
+      <label>Data directory (optional)<br/><input name="data_dir" size="80" placeholder="e.g. ~/Downloads/Chase_IRA_Exports"/></label>
+      <div class="muted">
+        Upload files after creating the connection, or drop Chase CSV exports into the data directory and run sync.
+      </div>
+    </div>
+    <label>Audit note <input name="note" size="60"/></label><br/>
+    <button type="submit" {% if not taxpayers or taxpayers|length == 0 %}disabled{% endif %}>Create</button>
+  </form>
+
+  <h2>Existing Connections</h2>
+  {% if not connections %}
+    <p>No connections yet.</p>
+  {% else %}
+    <table>
+      <tr><th>ID</th><th>Name</th><th>Status</th><th>Provider</th><th>Broker</th><th>Taxpayer</th><th>Coverage</th><th>Last success</th><th>Last full</th><th>Actions</th></tr>
+      {% for c in connections %}
+        {% set last = latest_by_conn.get(c.id) %}
+        {% set is_flex_web = (c.provider|upper == "IB" and (c.connector or "")|upper == "IB_FLEX_WEB") %}
+        {% set is_chase_offline = (c.provider|upper == "CHASE" and (c.connector or "")|upper == "CHASE_OFFLINE") %}
+        <tr>
+          <td>{{ c.id }}</td>
+          <td>
+            <a href="/sync/connections/{{ c.id }}">{{ c.name }}</a>
+            {% if is_flex_web %}<span class="muted">(IB Flex / web)</span>{% endif %}
+            {% if is_chase_offline %}<span class="muted">(Chase / offline)</span>{% endif %}
+            {% if not is_flex_web and not is_chase_offline %}<span class="muted">(legacy connector; disable to avoid duplicates)</span>{% endif %}
+          </td>
+          <td>{{ c.status }}</td>
+          <td>{{ c.provider }}</td>
+          <td>{{ c.broker }}</td>
+          <td>{{ tp_by_id.get(c.taxpayer_entity_id).name if tp_by_id.get(c.taxpayer_entity_id) else c.taxpayer_entity_id }}</td>
+          <td><b>{{ c.coverage_status or "UNKNOWN" }}</b>{% if last and last.status == "PARTIAL" %} <span class="muted">(last run PARTIAL)</span>{% endif %}</td>
+          <td class="muted">{{ c.last_successful_sync_at|local_dt }}</td>
+          <td class="muted">{{ c.last_full_sync_at|local_dt }}</td>
+          <td>
+            {% if is_flex_web %}
+              <details>
+                <summary>Sync Now</summary>
+                <form method="post" action="/sync/connections/{{ c.id }}/run">
+                  <div class="grid3">
+                    <label>Mode<br/>
+                      <select name="mode" onchange="toggleSyncMode(this, {{ c.id }})">
+                        <option value="INCREMENTAL" selected>INCREMENTAL</option>
+                        <option value="FULL">FULL</option>
+                      </select>
+                    </label>
+                    <label>Overlap days (0–30)<br/><input name="overlap_days" value="7"/></label>
+                    <label>
+                      <span>Store raw payload snapshots</span><br/>
+                      <input type="checkbox" name="store_payloads" id="payloads_{{ c.id }}"/>
+                    </label>
+                  </div>
+                  <div id="full_fields_{{ c.id }}" style="display:none" class="box">
+                    <b>FULL range</b>
+                    <div class="grid3">
+                      <label>Start date<br/><input name="start_date" value="{{ ten_years_ago }}"/></label>
+                      <label>End date<br/><input name="end_date" value="{{ today }}"/></label>
+                    </div>
+                    <div class="muted">Default stores payload snapshots ON for FULL.</div>
+                  </div>
+                  <div id="inc_fields_{{ c.id }}" class="box">
+                    <b>INCREMENTAL</b>
+                    <div class="muted">
+                      Last successful sync: {{ c.last_successful_sync_at|local_date }}.
+                      Default computed since (overlap=7): {{ since_default_by_conn.get(c.id) or "today-90d" }}.
+                    </div>
+                    <div class="grid3">
+                      <label>Override start date (optional)<br/><input name="start_date" value=""/></label>
+                      <label>End date (ignored; uses today)<br/><input name="end_date" value="" disabled/></label>
+                    </div>
+                  </div>
+                  <label>Audit note <input name="note" size="60"/></label><br/>
+                  <button type="submit" {% if (c.status or '')|upper != 'ACTIVE' %}disabled{% endif %}>Run</button>
+                </form>
+              </details>
+              <div style="margin-top:6px">
+                <a href="/sync/connections/{{ c.id }}/auth">Credentials</a> |
+                <form method="post" action="/sync/connections/{{ c.id }}/test" style="display:inline">
+                  <button type="submit" {% if (c.status or '')|upper != 'ACTIVE' %}disabled{% endif %}>Test</button>
+                </form>
+                {% if (c.status or '')|upper != 'ACTIVE' %}
+                  <div class="muted">Disabled connections are excluded from metrics and cannot sync.</div>
+                {% endif %}
+              </div>
+            {% else %}
+              <form method="post" action="/sync/connections/{{ c.id }}/disable" style="display:inline">
+                <button type="submit">Disable</button>
+              </form>
+              <a href="/sync/connections/{{ c.id }}">View</a>
+            {% endif %}
+          </td>
+        </tr>
+      {% endfor %}
+    </table>
+  {% endif %}
+
+  <script>
+    function toggleCreateKind() {
+      const kind = document.getElementById("create_kind").value;
+      const ib = document.getElementById("create_ib_web");
+      const ch = document.getElementById("create_chase_offline");
+      const name = document.getElementById("create_name");
+      if (kind === "CHASE_OFFLINE") {
+        ib.style.display = "none";
+        ch.style.display = "grid";
+        if (name.value === "IB Flex (Web)") name.value = "Chase IRA (Offline)";
+      } else {
+        ib.style.display = "grid";
+        ch.style.display = "none";
+        if (name.value === "Chase IRA (Offline)") name.value = "IB Flex (Web)";
+      }
+    }
+    function toggleSyncMode(selectEl, connId) {
+      const full = document.getElementById("full_fields_" + connId);
+      const inc = document.getElementById("inc_fields_" + connId);
+      const payloads = document.getElementById("payloads_" + connId);
+      if (selectEl.value === "FULL") {
+        full.style.display = "block";
+        inc.style.display = "none";
+        payloads.checked = true;
+        payloads.disabled = true;
+      } else {
+        full.style.display = "none";
+        inc.style.display = "block";
+        payloads.disabled = false;
+        payloads.checked = false;
+      }
+    }
+    toggleCreateKind();
+  </script>
+{% endblock %}

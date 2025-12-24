@@ -1,0 +1,48 @@
+{% extends "layout.html" %}
+{% block content %}
+  <h1>Securities</h1>
+
+  <h2>Create Substitute Group</h2>
+  <form method="post" action="/holdings/groups">
+    <label>Name <input name="name" /></label>
+    <label>Description <input name="description" size="60"/></label>
+    <label>Note <input name="note" size="60"/></label>
+    <button type="submit">Add group</button>
+  </form>
+
+  <h2>Add Security</h2>
+  <form method="post" action="/holdings/securities">
+    <div class="grid3">
+      <label>Ticker<br/><input name="ticker" /></label>
+      <label>Name<br/><input name="name" size="40"/></label>
+      <label>Asset class<br/><input name="asset_class" placeholder="EQUITY/BOND/CASH/etc"/></label>
+      <label>Expense ratio (e.g. 0.0003)<br/><input name="expense_ratio" value="0.0"/></label>
+      <label>Last price<br/><input name="last_price" value="0.0"/></label>
+      <label>Substitute group<br/>
+        <select name="substitute_group_id">
+          <option value="">(none)</option>
+          {% for g in groups %}
+            <option value="{{ g.id }}">{{ g.name }}</option>
+          {% endfor %}
+        </select>
+      </label>
+    </div>
+    <label>Audit note <input name="note" size="60"/></label>
+    <button type="submit">Add security</button>
+  </form>
+
+  <h2>Existing</h2>
+  <table>
+    <tr><th>Ticker</th><th>Name</th><th>Class</th><th>ER</th><th>Group</th><th>Last Price</th></tr>
+    {% for s in securities %}
+      <tr>
+        <td>{{ s.ticker }}</td>
+        <td>{{ s.name }}</td>
+        <td>{{ s.asset_class }}</td>
+        <td>{{ "%.4f"|format(s.expense_ratio*100) }}%</td>
+        <td>{{ s.substitute_group.name if s.substitute_group else "" }}</td>
+        <td>{{ s.metadata_json.get("last_price", 0)|usd }}</td>
+      </tr>
+    {% endfor %}
+  </table>
+{% endblock %}

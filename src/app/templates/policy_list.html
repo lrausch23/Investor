@@ -1,0 +1,12 @@
+{% extends "layout.html" %}
+{% block content %}
+  <h1>Policies</h1>
+  <p><a href="/policy/new">Create new policy version</a></p>
+  <table>
+    <tr><th>ID</th><th>Name</th><th>Effective</th></tr>
+    {% for p in policies %}
+      <tr><td>{{ p.id }}</td><td>{{ p.name }}</td><td>{{ p.effective_date }}</td></tr>
+    {% endfor %}
+  </table>
+{% endblock %}
+

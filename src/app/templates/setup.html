@@ -1,0 +1,78 @@
+{% extends "layout.html" %}
+{% block content %}
+  <h1>Setup</h1>
+  <p>This MVP supports “Create Defaults” to bootstrap Trust/Personal + accounts and a starter policy.</p>
+
+  <form method="post" action="/setup/defaults">
+    <label>Audit note (optional): <input type="text" name="note" size="60"/></label>
+    <button type="submit">Create Defaults</button>
+  </form>
+
+  <h2>Create Taxpayer</h2>
+  <form method="post" action="/setup/taxpayers">
+    <label>Name <input name="name" /></label>
+    <label>Type
+      <select name="type">
+        <option value="TRUST">TRUST</option>
+        <option value="PERSONAL">PERSONAL</option>
+      </select>
+    </label>
+    <label>Tax ID last4 <input name="tax_id_last4" size="6"/></label>
+    <label>Notes <input name="notes" size="40"/></label>
+    <label>Audit note <input name="note" size="40"/></label>
+    <button type="submit">Add taxpayer</button>
+  </form>
+
+  <h2>Create Account</h2>
+  <form method="post" action="/setup/accounts">
+    <label>Name <input name="name" /></label>
+    <label>Broker
+      <select name="broker">
+        <option value="IB">IB</option>
+        <option value="RJ">RJ</option>
+        <option value="CHASE">CHASE</option>
+        <option value="MANUAL">MANUAL</option>
+      </select>
+    </label>
+    <label>Type
+      <select name="account_type">
+        <option value="TAXABLE">TAXABLE</option>
+        <option value="IRA">IRA</option>
+        <option value="OTHER">OTHER</option>
+      </select>
+    </label>
+    <label>Taxpayer
+      <select name="taxpayer_entity_id">
+        {% for t in taxpayers %}
+          <option value="{{ t.id }}">{{ t.name }} ({{ t.type }})</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>Audit note <input name="note" size="40"/></label>
+    <button type="submit">Add account</button>
+  </form>
+
+  <h2>Taxpayers</h2>
+  <table>
+    <tr><th>ID</th><th>Name</th><th>Type</th></tr>
+    {% for t in taxpayers %}
+      <tr><td>{{ t.id }}</td><td>{{ t.name }}</td><td>{{ t.type }}</td></tr>
+    {% endfor %}
+  </table>
+
+  <h2>Accounts</h2>
+  <table>
+    <tr><th>ID</th><th>Name</th><th>Broker</th><th>Type</th><th>Taxpayer</th></tr>
+    {% for a in accounts %}
+      <tr><td>{{ a.id }}</td><td>{{ a.name }}</td><td>{{ a.broker }}</td><td>{{ a.account_type }}</td><td>{{ a.taxpayer_entity_id }}</td></tr>
+    {% endfor %}
+  </table>
+
+  <h2>Policies</h2>
+  <table>
+    <tr><th>ID</th><th>Name</th><th>Effective Date</th></tr>
+    {% for p in policies %}
+      <tr><td>{{ p.id }}</td><td>{{ p.name }}</td><td>{{ p.effective_date }}</td></tr>
+    {% endfor %}
+  </table>
+{% endblock %}

@@ -1,0 +1,275 @@
+{% extends "layout.html" %}
+{% block content %}
+  <h1>Dashboard</h1>
+  <form method="get" action="/" style="margin-bottom: 10px">
+    <label>Scope:
+      <select name="scope" onchange="this.form.submit()">
+        <option value="household" {% if scope == "household" %}selected{% endif %}>Household</option>
+        <option value="trust" {% if scope == "trust" %}selected{% endif %}>Trust only</option>
+        <option value="personal" {% if scope == "personal" %}selected{% endif %}>Personal only</option>
+      </select>
+    </label>
+    <noscript><button type="submit">Apply</button></noscript>
+  </form>
+  <p><b>Scope:</b> {{ scope_label }}{% if partial_dataset_warning %} (dataset subset){% endif %}</p>
+  {% if partial_dataset_warning %}
+    <div class="banner banner--warn">{{ partial_dataset_warning }}</div>
+  {% endif %}
+  {% if not policy %}
+    <p>No policy yet. <a href="/policy/new">Create a policy</a>.</p>
+  {% else %}
+    <p>Active policy: <b>{{ policy.name }}</b> ({{ policy.effective_date }})</p>
+  {% endif %}
+
+  <h2>Bucket Drift</h2>
+  {% if not report %}
+    <p>Not enough data yet. Add policy + bucket assignments + lots/cash.</p>
+  {% else %}
+    <table>
+      <tr><th>Bucket</th><th>Actual %</th><th>Target %</th><th>Min/Max</th><th>Status</th><th>Reason</th><th>Value</th></tr>
+      {% for b in report.bucket_rows %}
+        <tr>
+          <td>
+            <span title="{% if b.code == 'B1' %}Liquidity (18–24 months){% elif b.code == 'B2' %}Defensive / Income{% elif b.code == 'B3' %}Growth core{% else %}Alpha / Optionality{% endif %}">
+              {{ b.code }} {{ b.name }}
+            </span>
+            <div class="muted">{% if b.code == 'B1' %}Liquidity (18–24 months){% elif b.code == 'B2' %}Defensive / Income{% elif b.code == 'B3' %}Growth core{% else %}Alpha / Optionality{% endif %}</div>
+          </td>
+          <td>{{ "%.2f"|format(b.actual_pct*100) }}%</td>
+          <td>{{ "%.2f"|format(b.target_pct*100) }}%</td>
+          <td>{{ "%.2f"|format(b.min_pct*100) }}% / {{ "%.2f"|format(b.max_pct*100) }}%</td>
+          <td>{{ b.traffic_light }}</td>
+          <td>{{ b.reason }}</td>
+          <td>{{ b.value|usd(0) }}</td>
+        </tr>
+      {% endfor %}
+    </table>
+    <p>Total value (incl cash): {{ report.total_value|usd(0) }}</p>
+    {% if report.warnings %}
+      <div class="box">
+        <b>Warnings</b>
+        <ul>
+          {% for w in report.warnings %}<li>{{ w }}</li>{% endfor %}
+        </ul>
+      </div>
+    {% endif %}
+  {% endif %}
+
+  <h2>Planner Preview (Read-only)</h2>
+  {% if not preview %}
+    <p>Create a policy and add holdings to see bucket-level deltas.</p>
+  {% else %}
+    <p>To reach targets (approx), delta = target_value − current_value.</p>
+    <div class="box">
+      <b>Buy / Add to:</b>
+      {% if preview.buys %}
+        <ul>
+          {% for r in preview.buys %}
+            {% if r.bucket != "B1" %}
+              <li>{{ r.bucket }}: {{ r.delta|usd(0) }}</li>
+            {% endif %}
+          {% endfor %}
+        </ul>
+      {% else %}
+        <div class="muted">No bucket deficits vs targets.</div>
+      {% endif %}
+
+      <b>Sell / Reduce from:</b>
+      {% if preview.b1_excess and preview.b1_excess > 0 %}
+        <div class="muted">B1 excess vs target: {{ preview.b1_excess|usd(0) }}</div>
+      {% endif %}
+      {% if preview.sells %}
+        <ul>
+          {% for r in preview.sells %}
+            {% if r.bucket != "B1" %}
+              <li>{{ r.bucket }}: {{ (-r.delta)|usd(0) }}</li>
+            {% endif %}
+          {% endfor %}
+        </ul>
+      {% else %}
+        <div class="muted">No non-cash bucket reductions required by targets.</div>
+      {% endif %}
+
+      <div><b>{{ preview.st_sensitivity }}</b></div>
+      {% if preview.notes %}
+        <div class="muted">Notes:</div>
+        <ul>{% for n in preview.notes %}<li>{{ n }}</li>{% endfor %}</ul>
+      {% endif %}
+    </div>
+  {% endif %}
+
+  <h2>Tax (YTD)</h2>
+  <table>
+    <tr><th>Taxpayer</th><th>ST Gains</th><th>LT Gains</th><th>Div/Int</th><th>Withholding</th><th>Estimated tax</th><th>Estimated net due</th><th>Note</th></tr>
+    {% for row in tax.rows %}
+      <tr>
+        <td>{{ row.taxpayer }}</td>
+        <td>{{ row.st_gains|usd(0) }}</td>
+        <td>{{ row.lt_gains|usd(0) }}</td>
+        <td>{{ row.income|usd(0) }}</td>
+        <td>{{ row.withholding|usd(0) }}</td>
+        <td>{% if row.estimated_tax is none %}N/A{% else %}{{ row.estimated_tax|usd(0) }}{% endif %}</td>
+        <td>{% if row.net_tax_due is none %}N/A{% else %}{{ row.net_tax_due|usd(0) }}{% endif %}</td>
+        <td class="muted">{{ row.tax_note or "" }}</td>
+      </tr>
+    {% endfor %}
+  </table>
+  {% if tax.totals %}
+    <div class="box">
+      <div><b>Estimated tax (YTD, planning-grade):</b> {{ tax.totals.estimated_tax|usd(0) }}</div>
+      <div><b>Less withholding:</b> {{ tax.totals.withholding|usd(0) }}</div>
+      <div><b>Estimated net tax due:</b> {{ tax.totals.net_tax_due|usd(0) }}</div>
+      <div class="muted">Assumptions: ordinary={{ tax.assumptions.ordinary_rate }}, ltcg={{ tax.assumptions.ltcg_rate }}, NIIT={{ tax.assumptions.niit_rate if tax.assumptions.niit_enabled else "off" }} (edit in Tax page)</div>
+    </div>
+  {% endif %}
+
+  <h2>Cashflows (YTD)</h2>
+  {% if cashflows and cashflows|length > 0 %}
+    <table>
+      <tr><th>Taxpayer</th><th>Deposits</th><th>Withdrawals</th><th>Dividends</th><th>Interest</th><th>Withholding</th><th>Fees</th><th>Net cashflow</th></tr>
+      {% for r in cashflows %}
+        <tr>
+          <td>{{ r.taxpayer }}</td>
+          <td>{{ r.deposits|usd(0) }}</td>
+          <td>{{ r.withdrawals|usd(0) }}</td>
+          <td>{{ r.dividends|usd(0) }}</td>
+          <td>{{ r.interest|usd(0) }}</td>
+          <td>{{ r.withholding|usd(0) }}</td>
+          <td>{{ r.fees|usd(0) }}</td>
+          <td>{{ r.net_cashflow|usd(0) }}</td>
+        </tr>
+      {% endfor %}
+    </table>
+    <p class="muted">Notes: withholding is treated as a cash outflow; deposits/withdrawals come from `TRANSFER` cashflows.</p>
+  {% else %}
+    <p class="muted">No cashflow events imported yet for this scope (DIV/INT/TRANSFER/WITHHOLDING/FEE).</p>
+  {% endif %}
+
+  <h2>Fees</h2>
+  {% if fees %}
+    <table>
+      <tr><th>Scope</th><th>Weighted ER</th><th>Estimated Cost Drag</th></tr>
+      {% for row in fees.rows %}
+        <tr>
+          <td>{{ row.scope }}</td>
+          <td>{{ "%.3f"|format(row.weighted_expense_ratio*100) }}%</td>
+          <td>{{ row.cost_drag|usd(0) }}</td>
+        </tr>
+      {% endfor %}
+    </table>
+  {% else %}
+    <p>Add a policy and holdings to compute fees.</p>
+  {% endif %}
+
+  <h2>Allocation Breakdown</h2>
+  {% if breakdown %}
+    <h3>By Taxpayer</h3>
+    <table>
+      <tr><th>Taxpayer</th><th>Total</th><th>B1</th><th>B2</th><th>B3</th><th>B4</th><th>Unassigned</th></tr>
+      {% for r in breakdown.by_taxpayer %}
+        <tr>
+          <td>{{ r.name }}</td>
+          <td>{{ r.total|usd(0) }}</td>
+          <td>{{ r.buckets.get("B1", 0)|usd(0) }}</td>
+          <td>{{ r.buckets.get("B2", 0)|usd(0) }}</td>
+          <td>{{ r.buckets.get("B3", 0)|usd(0) }}</td>
+          <td>{{ r.buckets.get("B4", 0)|usd(0) }}</td>
+          <td>{{ r.buckets.get("UNASSIGNED", 0)|usd(0) }}</td>
+        </tr>
+      {% endfor %}
+    </table>
+
+    <h3>By Account</h3>
+    <table>
+      <tr><th>Account</th><th>Total</th><th>B1</th><th>B2</th><th>B3</th><th>B4</th><th>Unassigned</th></tr>
+      {% for r in breakdown.by_account %}
+        <tr>
+          <td>{{ r.name }}</td>
+          <td>{{ r.total|usd(0) }}</td>
+          <td>{{ r.buckets.get("B1", 0)|usd(0) }}</td>
+          <td>{{ r.buckets.get("B2", 0)|usd(0) }}</td>
+          <td>{{ r.buckets.get("B3", 0)|usd(0) }}</td>
+          <td>{{ r.buckets.get("B4", 0)|usd(0) }}</td>
+          <td>{{ r.buckets.get("UNASSIGNED", 0)|usd(0) }}</td>
+        </tr>
+      {% endfor %}
+    </table>
+  {% else %}
+    <p>Add a policy + holdings to show allocation breakdown.</p>
+  {% endif %}
+
+  <h2>ST Exposure (Taxable)</h2>
+  {% if st_exposure %}
+    <table>
+      <tr><th>Taxpayer</th><th>ST %</th><th>ST Value</th><th>Total Value</th></tr>
+      {% for r in st_exposure %}
+        <tr>
+          <td>{{ r.taxpayer }}</td>
+          <td>{{ "%.1f"|format(r.st_pct*100) }}%</td>
+          <td>{{ r.st_value|usd(0) }}</td>
+          <td>{{ r.total_value|usd(0) }}</td>
+        </tr>
+      {% endfor %}
+    </table>
+  {% else %}
+    <p>No taxable lots in this scope.</p>
+  {% endif %}
+
+  <h2>Wash-Risk Watchlist (Reconstructed, requires lot basis)</h2>
+  <div class="box">
+    <div><b>{{ wash.message }}</b></div>
+    <div class="muted">Recent loss sales: {{ wash.recent_loss_sale_count }}; flagged: {{ wash.flagged_count }}; missing internal lot basis: {{ wash.missing_basis_count }}</div>
+  </div>
+  {% if wash.items %}
+    <table>
+      <tr><th>Taxpayer</th><th>Account</th><th>Ticker</th><th>Sale date</th><th>Loss</th><th>Risk</th></tr>
+      {% for w in wash.items %}
+        <tr>
+          <td>{{ w.taxpayer }}</td>
+          <td>{{ w.account }}</td>
+          <td>{{ w.ticker }}</td>
+          <td>{{ w.sale_date }}</td>
+          <td>{{ w.loss|usd(0) }}</td>
+          <td>{{ w.risk }}</td>
+        </tr>
+      {% endfor %}
+    </table>
+    <p class="muted">Note: requires SELL transactions with lot basis in `lot_links_json`. Broker wash sales (if imported) are shown under Tax → Wash sales (broker).</p>
+  {% else %}
+    <p class="muted">No watchlist items to display.</p>
+  {% endif %}
+
+  <h2>Data Coverage (External Sync)</h2>
+  {% if sync_connections and sync_connections|length > 0 %}
+    <table>
+      <tr><th>Connection</th><th>Source</th><th>Coverage</th><th>Last run</th><th>Txn coverage</th><th>Holdings as-of</th><th>Counts</th></tr>
+      {% for c in sync_connections %}
+        <tr>
+          <td><a href="/sync/connections/{{ c.id }}">{{ c.name }}</a> <span class="muted">({{ c.provider }}/{{ c.broker }})</span></td>
+          <td class="muted">{{ c.source_label or (c.connector or "—") }}</td>
+          <td><b>{{ c.coverage_status or "UNKNOWN" }}</b></td>
+          <td>{{ c.last_run_status or "—" }}{% if c.last_run_started_at %} <span class="muted">@ {{ c.last_run_started_at|local_dt }}</span>{% endif %}</td>
+          <td class="muted">
+            earliest={{ c.txn_earliest_available or "—" }}; latest={{ c.last_successful_txn_end or "—" }}
+          </td>
+          <td class="muted">{{ c.holdings_last_asof|local_dt }}</td>
+          <td class="muted">
+            {% if c.last_run_coverage %}
+              new={{ c.last_run_coverage.get("new_inserted", 0) }},
+              dupes={{ c.last_run_coverage.get("duplicates_skipped", 0) }},
+              parse={{ c.last_run_coverage.get("parse_fail_count", 0) }}
+            {% else %}
+              —
+            {% endif %}
+            {% if c.broker_closed_lot_ytd_count and c.broker_closed_lot_ytd_count > 0 %}
+              <br/>
+              broker_ytd: closed_lots={{ c.broker_closed_lot_ytd_count }}, wash={{ c.broker_wash_ytd_count or 0 }}{% if c.broker_wash_linked_ytd_pct is not none %}, linked={{ c.broker_wash_linked_ytd_pct }}%{% endif %}
+            {% endif %}
+          </td>
+        </tr>
+      {% endfor %}
+    </table>
+  {% else %}
+    <p class="muted">No external connections in this scope.</p>
+  {% endif %}
+{% endblock %}

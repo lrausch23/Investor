@@ -1,0 +1,64 @@
+{% extends "layout.html" %}
+{% block content %}
+  <h1>Corporate Actions (Manual)</h1>
+  <div class="banner banner--warn">Use this only when your transaction history requires a split/reverse split to keep reconstructed lots correct.</div>
+
+  <div class="box">
+    <form method="post" action="/taxlots/corporate-actions">
+      <div class="grid3">
+        <label>Taxpayer<br/>
+          <select name="taxpayer_id">
+            {% for t in taxpayers %}
+              <option value="{{ t.id }}">{{ t.name }} ({{ t.type }})</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label>Account (optional)<br/>
+          <select name="account_id">
+            <option value="">All accounts (taxpayer)</option>
+            {% for a in accounts %}
+              <option value="{{ a.id }}">{{ a.name }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label>Date<br/><input name="action_date" value="{{ today }}"/></label>
+        <label>Ticker<br/><input name="ticker" placeholder="e.g. AAPL"/></label>
+        <label>Type<br/>
+          <select name="action_type">
+            <option value="SPLIT">SPLIT</option>
+            <option value="REVERSE_SPLIT">REVERSE_SPLIT</option>
+          </select>
+        </label>
+        <label>Ratio<br/><input name="ratio" placeholder="e.g. 2 for 2:1"/></label>
+      </div>
+      <label>Audit note <input name="note" size="60"/></label><br/>
+      <button type="submit">Add corporate action</button>
+    </form>
+  </div>
+
+  <h2>Recent events</h2>
+  {% if not events or events|length == 0 %}
+    <p class="muted">No corporate actions recorded.</p>
+  {% else %}
+    <table>
+      <tr><th>Date</th><th>Taxpayer</th><th>Account</th><th>Ticker</th><th>Type</th><th>Ratio</th><th>Applied</th><th>Notes</th></tr>
+      {% for ev in events %}
+        {% set sec = sec_by_id.get(ev.security_id) if ev.security_id else none %}
+        {% set tp = tp_by_id.get(ev.taxpayer_id) %}
+        {% set acct = acct_by_id.get(ev.account_id) if ev.account_id else none %}
+        <tr>
+          <td class="muted">{{ ev.action_date }}</td>
+          <td>{{ tp.name if tp else ev.taxpayer_id }}</td>
+          <td class="muted">{{ acct.name if acct else "All" }}</td>
+          <td>{{ sec.ticker if sec else "—" }}</td>
+          <td class="muted">{{ ev.action_type }}</td>
+          <td class="muted">{{ ev.ratio or "—" }}</td>
+          <td class="muted">{{ "yes" if ev.applied else "no" }}</td>
+          <td class="muted">{{ ev.apply_notes or "" }}</td>
+        </tr>
+      {% endfor %}
+    </table>
+    <div class="muted">Corporate actions are applied during “Rebuild Lots”.</div>
+  {% endif %}
+{% endblock %}
+

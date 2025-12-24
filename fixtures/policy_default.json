@@ -1,0 +1,47 @@
+{
+  "name": "Household Policy",
+  "effective_date": "2025-01-01",
+  "notes": "Sample MVP policy definition for fixtures.",
+  "constraints": {
+    "max_single_name_pct": 0.15
+  },
+  "buckets": [
+    {
+      "code": "B1",
+      "name": "Liquidity",
+      "min_pct": 0.05,
+      "target_pct": 0.10,
+      "max_pct": 0.20,
+      "allowed_asset_classes": ["CASH", "MMF"],
+      "constraints": {}
+    },
+    {
+      "code": "B2",
+      "name": "Defensive / Income",
+      "min_pct": 0.20,
+      "target_pct": 0.30,
+      "max_pct": 0.45,
+      "allowed_asset_classes": ["BOND", "CREDIT", "DIVIDEND"],
+      "constraints": {}
+    },
+    {
+      "code": "B3",
+      "name": "Growth",
+      "min_pct": 0.30,
+      "target_pct": 0.45,
+      "max_pct": 0.65,
+      "allowed_asset_classes": ["EQUITY", "INDEX", "GROWTH"],
+      "constraints": {}
+    },
+    {
+      "code": "B4",
+      "name": "Alpha / Opportunistic",
+      "min_pct": 0.00,
+      "target_pct": 0.15,
+      "max_pct": 0.25,
+      "allowed_asset_classes": ["ALTERNATIVE", "THEMATIC", "ALPHA"],
+      "constraints": {}
+    }
+  ]
+}
+

@@ -1,0 +1,84 @@
+{% extends "layout.html" %}
+{% block content %}
+  <h1>Planner Result</h1>
+  <p>Goal: <b>{{ goal }}</b> — Scope: <b>{{ scope }}</b></p>
+
+  {% if result.warnings %}
+    <div class="box">
+      <b>Warnings</b>
+      <ul>{% for w in result.warnings %}<li>{{ w }}</li>{% endfor %}</ul>
+    </div>
+  {% endif %}
+
+  <h2>Proposed Trades</h2>
+  <table>
+    <tr><th>Action</th><th>Account</th><th>Ticker</th><th>Qty</th><th>Est Price</th><th>Est Value</th><th>Rationale</th></tr>
+    {% for t in result.trades %}
+      <tr>
+        <td>{{ t.action }}</td>
+        <td>{{ t.account_name }}</td>
+        <td>{{ t.ticker }}</td>
+        <td>{{ t.qty }}</td>
+        <td>{{ t.est_price|usd }}</td>
+        <td>{{ t.est_value|usd(0) }}</td>
+        <td>{{ t.rationale }}</td>
+      </tr>
+    {% endfor %}
+  </table>
+
+  <h2>Lot Picks (Sells)</h2>
+  <table>
+    <tr><th>Ticker</th><th>Lot ID</th><th>Acq</th><th>Qty</th><th>Basis</th><th>Unrealized</th><th>Term</th><th>Wash Risk</th></tr>
+    {% for p in result.lot_picks %}
+      <tr>
+        <td>{{ p.ticker }}</td>
+        <td>{{ p.lot_id }}</td>
+        <td>{{ p.acquisition_date }}</td>
+        <td>{{ p.qty }}</td>
+        <td>{{ p.basis_allocated|usd }}</td>
+        <td>{{ p.unrealized|usd }}</td>
+        <td>{{ p.term }}</td>
+        <td>{{ p.wash_risk }}</td>
+      </tr>
+    {% endfor %}
+  </table>
+
+  <h2>Tax Impact (Projected)</h2>
+  <table>
+    <tr><th>Taxpayer</th><th>ST Δ</th><th>LT Δ</th><th>Ordinary Δ</th><th>Estimated Tax Δ</th></tr>
+    {% for row in result.tax_impact.rows %}
+      <tr>
+        <td>{{ row.taxpayer }}</td>
+        <td>{{ row.st_delta|usd(0) }}</td>
+        <td>{{ row.lt_delta|usd(0) }}</td>
+        <td>{{ row.ordinary_delta|usd(0) }}</td>
+        <td>{{ row.estimated_tax_delta|usd(0) }}</td>
+      </tr>
+    {% endfor %}
+  </table>
+
+  <h2>Post-Trade Drift (Projected)</h2>
+  <table>
+    <tr><th>Bucket</th><th>Actual %</th><th>Target %</th><th>Status</th></tr>
+    {% for b in result.post_trade.bucket_rows %}
+      <tr>
+        <td>{{ b.code }}</td>
+        <td>{{ "%.2f"|format(b.actual_pct*100) }}%</td>
+        <td>{{ "%.2f"|format(b.target_pct*100) }}%</td>
+        <td>{{ b.traffic_light }}</td>
+      </tr>
+    {% endfor %}
+  </table>
+
+  <h2>Save Plan</h2>
+  <form method="post" action="/planner/save">
+    <input type="hidden" name="policy_id" value="{{ policy.id }}"/>
+    <input type="hidden" name="scope" value="{{ scope }}"/>
+    <textarea name="goal_json" style="display:none">{{ goal_json_str }}</textarea>
+    <textarea name="inputs_json" style="display:none">{{ inputs_json_str }}</textarea>
+    <textarea name="outputs_json" style="display:none">{{ outputs_json_str }}</textarea>
+    <label><input type="checkbox" name="finalize"/> Finalize (immutable)</label><br/>
+    <label>Audit note / reason (required for overrides): <input name="note" size="80"/></label><br/>
+    <button type="submit">Save plan</button>
+  </form>
+{% endblock %}

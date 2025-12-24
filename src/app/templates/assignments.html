@@ -1,0 +1,35 @@
+{% extends "layout.html" %}
+{% block content %}
+  <h1>Bucket Assignments</h1>
+  {% if not policy %}
+    <p>No policy yet. <a href="/policy/new">Create a policy</a>.</p>
+  {% else %}
+    <p>Active policy: <b>{{ policy.name }}</b> ({{ policy.effective_date }})</p>
+  {% endif %}
+
+  <p>Assign each ticker to B1..B4 for the active policy. Cash is always treated as B1.</p>
+
+  <table>
+    <tr><th>Ticker</th><th>Assigned</th><th>Set</th></tr>
+    {% for s in securities %}
+      <tr>
+        <td>{{ s.ticker }}</td>
+        <td>{{ map_by_ticker.get(s.ticker, "UNASSIGNED") }}</td>
+        <td>
+          <form method="post" action="/holdings/assignments">
+            <input type="hidden" name="ticker" value="{{ s.ticker }}"/>
+            <select name="bucket_code">
+              <option value="B1">B1</option>
+              <option value="B2">B2</option>
+              <option value="B3">B3</option>
+              <option value="B4">B4</option>
+            </select>
+            <input name="note" placeholder="note (optional)" size="30"/>
+            <button type="submit">Save</button>
+          </form>
+        </td>
+      </tr>
+    {% endfor %}
+  </table>
+{% endblock %}
+

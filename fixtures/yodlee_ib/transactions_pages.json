@@ -1,0 +1,37 @@
+[
+  [
+    {
+      "provider_transaction_id": "YDL-TXN-001",
+      "provider_account_id": "IB-1",
+      "date": "2025-11-15",
+      "type": "BUY",
+      "symbol": "VTI",
+      "qty": 1.0,
+      "amount": -250.0,
+      "description": "BUY VTI"
+    },
+    {
+      "provider_transaction_id": "YDL-TXN-002",
+      "provider_account_id": "IB-1",
+      "date": "2025-12-01",
+      "type": "DIVIDEND",
+      "symbol": "VTI",
+      "qty": null,
+      "amount": 5.25,
+      "description": "DIV VTI"
+    }
+  ],
+  [
+    {
+      "provider_transaction_id": "YDL-TXN-003",
+      "provider_account_id": "IB-1",
+      "date": "2025-12-05",
+      "type": "FEE",
+      "symbol": null,
+      "qty": null,
+      "amount": -1.0,
+      "description": "Account fee"
+    }
+  ]
+]
+

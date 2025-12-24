@@ -1,0 +1,7 @@
+"ClientAccountID"
+"U12345"
+"ClientAccountID","CurrencyPrimary","ReportDate","Cash","Stock","Total"
+"U12345","USD","20251218","100.00","0","100.00"
+"U12345","USD","20251219","250.00","0","250.00"
+"ClientAccountID","Symbol","Position","MarkPrice","PositionValue"
+"U12345","VTI","2","250","500"

@@ -1,0 +1,84 @@
+{% extends "layout.html" %}
+{% block content %}
+  <h1>Transactions</h1>
+  <p>MVP note: wash-sale checks use BUY transactions; realized-gain reporting uses SELL transactions with optional lot basis fields.</p>
+
+  <div class="box">
+    <form method="get" action="/holdings/transactions">
+      <div class="grid3">
+        <label>Source<br/>
+          <select name="source">
+            <option value="all" {% if source == "all" %}selected{% endif %}>All</option>
+            <option value="manual" {% if source == "manual" %}selected{% endif %}>Manual only</option>
+            <option value="imported" {% if source == "imported" %}selected{% endif %}>Imported only</option>
+          </select>
+        </label>
+        <label>Connection (optional)<br/>
+          <select name="connection_id">
+            <option value="" {% if not connection_id %}selected{% endif %}>All connections</option>
+            {% for c in connections %}
+              <option value="{{ c.id }}" {% if connection_id == c.id %}selected{% endif %}>#{{ c.id }} — {{ c.name }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label>&nbsp;<br/><button type="submit">Apply</button></label>
+      </div>
+      <div class="muted">
+        If you created multiple sync connections pointing to the same brokerage exports, you may see duplicates here.
+        Filter by connection, or purge imported data from the extra connection.
+      </div>
+    </form>
+  </div>
+
+  <form method="post" action="/holdings/transactions">
+    <div class="grid3">
+      <label>Account<br/>
+        <select name="account_id">
+          {% for a in accounts %}
+            <option value="{{ a.id }}">{{ a.name }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>Date<br/><input name="date" value="{{ today }}"/></label>
+      <label>Type<br/>
+        <select name="type">
+          <option value="BUY">BUY</option>
+          <option value="SELL">SELL</option>
+          <option value="DIV">DIV</option>
+          <option value="INT">INT</option>
+          <option value="FEE">FEE</option>
+          <option value="WITHHOLDING">WITHHOLDING</option>
+          <option value="TRANSFER">TRANSFER</option>
+        </select>
+      </label>
+      <label>Ticker (optional)<br/><input name="ticker"/></label>
+      <label>Qty (optional)<br/><input name="qty"/></label>
+      <label>Amount (cashflow)<br/><input name="amount"/></label>
+      <label>Lot basis total (SELL optional)<br/><input name="lot_basis_total"/></label>
+      <label>Lot acquisition date (SELL optional)<br/><input name="lot_acquisition_date"/></label>
+      <label>Term ST/LT (SELL optional)<br/><input name="term" placeholder="ST or LT"/></label>
+    </div>
+    <label>Audit note <input name="note" size="60"/></label><br/>
+    <button type="submit">Add transaction</button>
+  </form>
+
+  <h2>Recent transactions</h2>
+  <table>
+    <tr><th>Date</th><th>Account</th><th>Type</th><th>Ticker</th><th>Qty</th><th>Amount</th><th>Source</th><th>Provider txn id</th><th>Lot links</th></tr>
+    {% for t, m, c in rows %}
+      <tr>
+        <td>{{ t.date }}</td>
+        <td>{{ acct_by_id.get(t.account_id).name if acct_by_id.get(t.account_id) else t.account_id }}</td>
+        <td>{{ t.type }}</td>
+        <td>{{ t.ticker or "" }}</td>
+        <td>{{ t.qty or "" }}</td>
+        <td>{{ t.amount|usd }}</td>
+        <td class="muted">
+          {% if c %}#{{ c.id }} — {{ c.name }}{% else %}Manual{% endif %}
+        </td>
+        <td class="muted">{{ m.provider_txn_id if m else "" }}</td>
+        <td><pre style="margin:0">{{ t.lot_links_json if t.lot_links_json else "" }}</pre></td>
+      </tr>
+    {% endfor %}
+  </table>
+{% endblock %}

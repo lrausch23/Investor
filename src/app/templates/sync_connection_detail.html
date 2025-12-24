@@ -1,0 +1,375 @@
+{% extends "layout.html" %}
+{% block content %}
+  <h1>Connection: {{ conn.name }}</h1>
+  <p><a href="/sync/connections">← Back to connections</a></p>
+  {% if not secret_key_ok %}
+    <div class="banner banner--warn">APP_SECRET_KEY is not set: saving credentials to DB is disabled.</div>
+  {% endif %}
+  {% if test_ok is not none and test_msg %}
+    {% if test_ok == "1" %}
+      <div class="banner banner--ok">Test Connection: OK — {{ test_msg }}</div>
+    {% else %}
+      <div class="banner banner--warn">Test Connection: FAIL — {{ test_msg }}</div>
+    {% endif %}
+  {% endif %}
+  {% if is_fixtures %}
+    <div class="banner banner--warn">
+      This connection uses the local fixtures adapter{% if fixture_dir %} ({{ fixture_dir }}){% endif %}.
+      It does not contact a live brokerage/Yodlee endpoint.
+    </div>
+  {% endif %}
+  {% if is_offline_flex %}
+    <div class="banner banner--ok">
+      This connection uses <b>IB Flex (Offline files)</b>. Drop statement exports (`.csv`/`.xml`) into the data directory below or upload files here.
+    </div>
+  {% endif %}
+  {% if is_chase_offline %}
+    <div class="banner banner--ok">
+      This connection uses <b>Chase (Offline CSV)</b>. Drop Chase IRA CSV exports into the data directory below or upload files here.
+    </div>
+  {% endif %}
+  {% if (conn.provider|upper == "IB") and ((conn.connector or "")|upper == "IB_FLEX_WEB") %}
+    <div class="banner banner--warn">
+      This connection uses <b>IB Flex (Web Service)</b>. It requires network access (<code>NETWORK_ENABLED=1</code>) and IB Flex IP allowlisting.
+      <span class="muted"><a href="#" class="muted">IP allowlist help (link)</a></span>
+    </div>
+  {% endif %}
+
+  <h2>Data Coverage</h2>
+  <table>
+    <tr><th>Field</th><th>Value</th></tr>
+    <tr><td>Provider / Broker</td><td>{{ conn.provider }} / {{ conn.broker }}</td></tr>
+    <tr><td>Connector</td><td>{{ conn.connector or "—" }}</td></tr>
+    <tr><td>Taxpayer</td><td>{{ taxpayer.name }} ({{ taxpayer.type }})</td></tr>
+    <tr><td>Coverage status</td><td><b>{{ conn.coverage_status or "UNKNOWN" }}</b></td></tr>
+    <tr><td>Earliest transactions available</td><td>{{ conn.txn_earliest_available or "Unknown (run FULL backfill)" }}</td></tr>
+    <tr><td>Last successful txn end</td><td>{{ conn.last_successful_txn_end or "—" }}</td></tr>
+    <tr><td>Last successful sync at</td><td>{{ conn.last_successful_sync_at|local_dt }}</td></tr>
+    <tr><td>Holdings as-of</td><td>{{ conn.holdings_last_asof|local_dt }}</td></tr>
+    <tr><td>Last full sync at</td><td>{{ conn.last_full_sync_at|local_dt }}</td></tr>
+    <tr><td>Last error</td><td class="muted">{{ conn.last_error_json or "—" }}</td></tr>
+    <tr><td>Withdrawals / distributions (YTD)</td><td>{{ withdrawals_ytd|usd }} <span class="muted">({{ withdrawals_count_ytd }} txn(s))</span></td></tr>
+    {% if is_offline_files %}
+      <tr><td>Credentials</td><td class="muted">Not used for offline file connectors.</td></tr>
+      <tr><td>Data directory</td><td class="muted">{{ data_dir }}</td></tr>
+    {% else %}
+      <tr><td>{{ cred_token_key }}</td><td>{{ token_masked }}</td></tr>
+      <tr><td>{{ cred_qid_key }}</td><td>{{ query_id_display }}</td></tr>
+      {% if (conn.provider|upper == "IB") and ((conn.connector or "")|upper == "IB_FLEX_WEB") %}
+        <tr><td>Extra Flex Queries</td><td class="muted">{{ extra_queries_str or "—" }}</td></tr>
+      {% endif %}
+    {% endif %}
+  </table>
+  {% if not is_offline_files %}
+    <p><a href="/sync/connections/{{ conn.id }}/auth">Edit credentials</a> <span class="muted">(stored encrypted)</span></p>
+  {% endif %}
+
+  {% if (conn.provider|upper == "IB") and ((conn.connector or "")|upper == "IB_FLEX_WEB") %}
+    <div class="box">
+      <b>Flex Web Queries</b>
+      <div class="muted" style="margin-top:6px">
+        Add multiple Flex Queries to import more sections (e.g. trades, cash transactions, open positions, closed lots/wash sales).
+        Values can be query <b>names</b> (preferred) or numeric ids.
+      </div>
+      <form method="post" action="/sync/connections/{{ conn.id }}/settings" style="margin-top:10px">
+        <label>Extra Flex Queries (comma-separated)
+          <input name="extra_query_ids" value="{{ extra_queries_str }}" size="70" placeholder="e.g. Cash_Transactions, IB_Open_Positions, IB_Lots"/>
+        </label>
+        <label>Audit note <input name="note" size="40"/></label>
+        <button type="submit">Save</button>
+      </form>
+    </div>
+  {% endif %}
+
+  {% if is_offline_files %}
+    <h2>Offline Files</h2>
+    <div class="box">
+      <form method="post" action="/sync/connections/{{ conn.id }}/settings">
+        <label>Data directory (local path)
+          <input name="data_dir" value="{{ data_dir }}" size="70"/>
+        </label>
+        <input type="hidden" name="extra_query_ids" value=""/>
+        <label>Audit note <input name="note" size="40"/></label>
+        <button type="submit">Save</button>
+      </form>
+      <form method="post" action="/sync/connections/{{ conn.id }}/upload" enctype="multipart/form-data" style="margin-top:10px">
+        <label>Upload statement file <input type="file" name="upload"/></label>
+        <label>Audit note <input name="note" size="40"/></label>
+        <button type="submit">Upload</button>
+      </form>
+      {% if files_on_disk and files_on_disk|length > 0 %}
+        <div class="muted" style="margin-top:10px">Files on disk ({{ files_on_disk|length }} shown):</div>
+        <table>
+          <tr><th>Name</th><th>Bytes</th><th>Modified</th><th>Path</th></tr>
+          {% for f in files_on_disk[:50] %}
+            <tr>
+              <td>{{ f.name }}</td>
+              <td class="muted">{{ f.bytes }}</td>
+              <td class="muted">{{ f.mtime }}</td>
+              <td class="muted">{{ f.path }}</td>
+            </tr>
+          {% endfor %}
+        </table>
+      {% else %}
+        <div class="muted" style="margin-top:10px">No `.csv`/`.xml` files found in the data directory.</div>
+      {% endif %}
+      {% if ingested_files and ingested_files|length > 0 %}
+        <div class="muted" style="margin-top:10px">Recently ingested files (tracked for incremental sync):</div>
+        <table>
+          <tr><th>When</th><th>Name</th><th>Hash (prefix)</th></tr>
+          {% for r in ingested_files[:20] %}
+            <tr>
+              <td class="muted">{{ r.imported_at|local_dt }}</td>
+              <td>{{ r.file_name }}</td>
+              <td class="muted">{{ r.file_hash[:12] }}</td>
+            </tr>
+          {% endfor %}
+        </table>
+      {% endif %}
+    </div>
+  {% endif %}
+
+  <h2>Danger Zone</h2>
+  <div class="box">
+    <div class="banner banner--warn">
+      Purge deletes transactions/holdings snapshots/sync runs imported by this connection.
+      It does not delete Accounts/Securities/Lots (manual safety).
+    </div>
+    <form method="post" action="/sync/connections/{{ conn.id }}/purge">
+      <label>Type <code>PURGE</code> to confirm <input name="confirm" size="10" placeholder="PURGE"/></label>
+      <label>Audit note <input name="note" size="50" placeholder="Why are you purging?"/></label>
+      <button type="submit">Purge imported data</button>
+    </form>
+  </div>
+
+  <h2>Sync Now</h2>
+  <form method="post" action="/sync/connections/{{ conn.id }}/run">
+    <div class="grid3">
+      <label>Mode<br/>
+        <select name="mode" onchange="toggleSyncMode(this, {{ conn.id }})">
+          <option value="INCREMENTAL" selected>INCREMENTAL</option>
+          <option value="FULL">FULL</option>
+        </select>
+      </label>
+      <label>Overlap days (0–30)<br/><input name="overlap_days" value="7"/></label>
+      <label>
+        <span>Store raw payload snapshots</span><br/>
+        <input type="checkbox" name="store_payloads" id="payloads_{{ conn.id }}"/>
+      </label>
+      {% if is_offline_files %}
+        <label>
+          <span>Reprocess files</span><br/>
+          <input type="checkbox" name="reprocess_files"/>
+        </label>
+      {% endif %}
+    </div>
+    <div id="full_fields_{{ conn.id }}" style="display:none" class="box">
+      <b>FULL range</b>
+      <div class="grid3">
+        <label>Start date<br/><input name="start_date" value="{{ ten_years_ago }}"/></label>
+        <label>End date<br/><input name="end_date" value="{{ today }}"/></label>
+      </div>
+    </div>
+    <div id="inc_fields_{{ conn.id }}" class="box">
+      <b>INCREMENTAL</b>
+      <div class="muted">
+        Last successful sync: {{ conn.last_successful_sync_at|local_date }}.
+        Default computed since (overlap=7): {{ since_default or "today-90d" }}.
+      </div>
+      <div class="grid3">
+        <label>Override start date (optional)<br/><input name="start_date" value=""/></label>
+      </div>
+    </div>
+    <label>Audit note <input name="note" size="60"/></label><br/>
+    <button type="submit">Run</button>
+  </form>
+  <form method="post" action="/sync/connections/{{ conn.id }}/run" style="margin-top:10px">
+    <input type="hidden" name="mode" value="FULL"/>
+    <input type="hidden" name="start_date" value="{{ ten_years_ago }}"/>
+    <input type="hidden" name="end_date" value="{{ today }}"/>
+    <button type="submit">Run FULL Backfill</button>
+  </form>
+  {% if is_offline_files %}
+    <form method="post" action="/sync/connections/{{ conn.id }}/run" style="margin-top:10px">
+      <input type="hidden" name="mode" value="FULL"/>
+      <input type="hidden" name="start_date" value="{{ ten_years_ago }}"/>
+      <input type="hidden" name="end_date" value="{{ today }}"/>
+      <input type="hidden" name="reprocess_files" value="on"/>
+      <button type="submit">Run FULL Backfill (Reprocess)</button>
+    </form>
+  {% endif %}
+  <form method="post" action="/sync/connections/{{ conn.id }}/test" style="margin-top:10px">
+    <button type="submit">Test Connection</button>
+  </form>
+
+  <h2>Tax Lots (Reconstructed)</h2>
+  <div class="box">
+    <div class="muted">
+      Builds planning-grade tax lots deterministically from full transaction history for this taxpayer’s taxable accounts (FIFO).
+      Labels all lots as <b>RECONSTRUCTED</b>; use for analytics and tax-aware planning, not as authoritative tax reporting.
+    </div>
+    <form method="post" action="/sync/connections/{{ conn.id }}/rebuild-lots" style="margin-top:8px">
+      <label>Audit note <input name="note" size="60" placeholder="Why rebuild lots now?"/></label><br/>
+      <button type="submit">Rebuild Lots</button>
+      <a class="muted" href="/taxlots/gains?source=auto">View Lots / Gains / Wash</a>
+    </form>
+  </div>
+
+  <script>
+    function toggleSyncMode(selectEl, connId) {
+      const full = document.getElementById("full_fields_" + connId);
+      const inc = document.getElementById("inc_fields_" + connId);
+      const payloads = document.getElementById("payloads_" + connId);
+      if (selectEl.value === "FULL") {
+        full.style.display = "block";
+        inc.style.display = "none";
+        payloads.checked = true;
+        payloads.disabled = true;
+      } else {
+        full.style.display = "none";
+        inc.style.display = "block";
+        payloads.disabled = false;
+        payloads.checked = false;
+      }
+    }
+  </script>
+
+  <h2>Latest Run</h2>
+  {% if last_run %}
+    {% set fetched = last_run.coverage_json.get("txn_count") or (last_run.coverage_json.get("new_inserted", 0) + last_run.coverage_json.get("duplicates_skipped", 0) + last_run.coverage_json.get("parse_fail_count", 0)) %}
+    <div class="box">
+      <div><b>Status:</b> {{ last_run.status }} — <b>Mode:</b> {{ last_run.mode }}</div>
+      <div class="muted">Requested: {{ last_run.requested_start_date or "—" }} → {{ last_run.requested_end_date or "—" }}</div>
+      <div class="muted">Effective: {{ last_run.effective_start_date or "—" }} → {{ last_run.effective_end_date or "—" }}</div>
+      <div class="muted">
+        Counts: fetched={{ fetched }},
+        new={{ last_run.coverage_json.get("new_inserted", 0) }},
+        dupes={{ last_run.coverage_json.get("duplicates_skipped", 0) }},
+        parse_fails={{ last_run.coverage_json.get("parse_fail_count", 0) }},
+        pages={{ last_run.coverage_json.get("pages_fetched", 0) }}
+        {% if last_run.coverage_json.get("file_count") is not none %}, files_ingested={{ last_run.coverage_json.get("file_count", 0) }}{% endif %}
+      </div>
+      {% if last_run.coverage_json.get("txn_type_counts") %}
+        <div class="muted">Types: {{ last_run.coverage_json.get("txn_type_counts") }}</div>
+      {% endif %}
+      {% if last_run.coverage_json.get("holdings_items_imported") is not none %}
+        <div class="muted">Holdings items imported: {{ last_run.coverage_json.get("holdings_items_imported", 0) }}</div>
+      {% endif %}
+      {% if last_run.coverage_json.get("cash_balances_imported") is not none %}
+        <div class="muted">Cash balances imported (USD): {{ last_run.coverage_json.get("cash_balances_imported", 0) }}</div>
+      {% endif %}
+      {% if last_run.coverage_json.get("closed_lot_rows_imported") is not none %}
+        <div class="muted">
+          Broker closed lots imported: {{ last_run.coverage_json.get("closed_lot_rows_imported", 0) }}
+          {% if last_run.coverage_json.get("closed_lot_rows_dupes") %}(dupes {{ last_run.coverage_json.get("closed_lot_rows_dupes") }}){% endif %}
+        </div>
+      {% endif %}
+      {% if last_run.coverage_json.get("wash_sale_rows_imported") is not none %}
+        <div class="muted">
+          Broker wash sale rows imported: {{ last_run.coverage_json.get("wash_sale_rows_imported", 0) }}
+          {% if last_run.coverage_json.get("wash_sale_rows_dupes") %}(dupes {{ last_run.coverage_json.get("wash_sale_rows_dupes") }}){% endif %}
+        </div>
+      {% endif %}
+      {% if last_run.coverage_json.get("broker_wash_rows") is not none %}
+        <div class="muted">
+          Broker wash link: rows={{ last_run.coverage_json.get("broker_wash_rows", 0) }},
+          linked={{ last_run.coverage_json.get("broker_wash_linked", 0) }},
+          with_basis={{ last_run.coverage_json.get("broker_wash_with_basis", 0) }},
+          with_proceeds={{ last_run.coverage_json.get("broker_wash_with_proceeds", 0) }},
+          disallowed={{ last_run.coverage_json.get("broker_wash_with_disallowed", 0) }}
+        </div>
+      {% endif %}
+      {% if last_run.coverage_json.get("symbol_summary_rows_seen") is not none %}
+        <div class="muted">Broker symbol summary rows seen: {{ last_run.coverage_json.get("symbol_summary_rows_seen", 0) }}</div>
+      {% endif %}
+      {% if last_run.coverage_json.get("broker_gains_ytd_st") is not none or last_run.coverage_json.get("broker_gains_ytd_lt") is not none %}
+        <div class="muted">
+          Broker realized P/L YTD (FIFO): ST={{ last_run.coverage_json.get("broker_gains_ytd_st", 0.0)|usd }},
+          LT={{ last_run.coverage_json.get("broker_gains_ytd_lt", 0.0)|usd }},
+          Unknown={{ last_run.coverage_json.get("broker_gains_ytd_unknown", 0.0)|usd }}
+        </div>
+      {% endif %}
+      {% if last_run.coverage_json.get("new_inserted", 0) == 0 and last_run.coverage_json.get("duplicates_skipped", 0) > 0 %}
+        <div class="muted">Note: 0 new inserts + non-zero dupes usually means the run re-fetched data you already imported (idempotent).</div>
+      {% endif %}
+      {% if last_run.coverage_json.get("warnings") %}
+        <div class="muted">Warnings: {{ last_run.coverage_json.get("warnings") }}</div>
+      {% endif %}
+      {% if last_run.status == "PARTIAL" %}
+        <div class="banner banner--warn">Run marked PARTIAL; see coverage_json.warnings and parse_fail_count.</div>
+      {% endif %}
+    </div>
+  {% else %}
+    <p>No runs yet.</p>
+  {% endif %}
+
+  <h2>Latest Holdings Snapshot (Read-only)</h2>
+  {% if latest_holdings %}
+    <div class="box">
+      <div class="muted">As-of: {{ latest_holdings.as_of|local_dt }} — Items: {{ holdings_items|length }}</div>
+      {% if holdings_items and holdings_items|length > 0 %}
+        <table>
+          <tr><th>Provider account</th><th>Symbol</th><th>Qty</th><th>Market value</th></tr>
+          {% for h in holdings_items %}
+            <tr>
+              <td class="muted">{{ h.get("provider_account_id") or "—" }}</td>
+              <td>{{ h.get("symbol") or h.get("ticker") or "—" }}</td>
+              <td>{{ h.get("qty") or "—" }}</td>
+              <td>{{ h.get("market_value")|usd }}</td>
+            </tr>
+          {% endfor %}
+        </table>
+        <div class="muted">MVP note: holdings snapshots are stored for audit/verification. Portfolio analytics still use lots + prices unless you import lots for all positions.</div>
+      {% else %}
+        <div class="muted">No holdings items returned by adapter.</div>
+      {% endif %}
+    </div>
+  {% else %}
+    <p class="muted">No holdings snapshot yet. Run sync to capture one.</p>
+  {% endif %}
+
+  <h2>Recent Synced Transactions (Read-only)</h2>
+  {% if recent_txns and recent_txns|length > 0 %}
+    <table>
+      <tr><th>Date</th><th>Account</th><th>Type</th><th>Ticker</th><th>Qty</th><th>Amount</th><th>Provider txn id</th></tr>
+      {% for t, a, m in recent_txns %}
+        <tr>
+          <td>{{ t.date }}</td>
+          <td>{{ a.name }}</td>
+          <td>{{ t.type }}</td>
+          <td>{{ t.ticker or "" }}</td>
+          <td>{{ t.qty or "" }}</td>
+          <td>{{ t.amount|usd }}</td>
+          <td class="muted">{{ m.provider_txn_id }}</td>
+        </tr>
+      {% endfor %}
+    </table>
+    <div class="muted">
+      These are imported into the main `Transaction` table.
+      See <a href="/holdings/transactions?connection_id={{ conn.id }}">Holdings → Transactions (filtered to this connection)</a>.
+    </div>
+  {% else %}
+    <p class="muted">No imported transactions found for this connection yet.</p>
+  {% endif %}
+
+  <h2>Run History</h2>
+  {% if runs %}
+    <table>
+      <tr><th>ID</th><th>Started</th><th>Status</th><th>Mode</th><th>Effective range</th><th>Txn count</th><th>New</th><th>Dupes</th><th>Parse fails</th></tr>
+      {% for r in runs %}
+        {% set fetched_r = r.coverage_json.get("txn_count") or (r.coverage_json.get("new_inserted", 0) + r.coverage_json.get("duplicates_skipped", 0) + r.coverage_json.get("parse_fail_count", 0)) %}
+        <tr>
+          <td>{{ r.id }}</td>
+          <td>{{ r.started_at|local_dt }}</td>
+          <td>{{ r.status }}</td>
+          <td>{{ r.mode }}</td>
+          <td>{{ r.effective_start_date }} → {{ r.effective_end_date }}</td>
+          <td>{{ fetched_r }}</td>
+          <td>{{ r.coverage_json.get("new_inserted", 0) }}</td>
+          <td>{{ r.coverage_json.get("duplicates_skipped", 0) }}</td>
+          <td>{{ r.coverage_json.get("parse_fail_count", 0) }}</td>
+        </tr>
+      {% endfor %}
+    </table>
+  {% endif %}
+{% endblock %}

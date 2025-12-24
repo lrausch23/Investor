@@ -1,0 +1,76 @@
+{% extends "layout.html" %}
+{% block content %}
+  <h1>Broker Wash Sales (WASH_SALE) — PRO FORMA / PLANNING</h1>
+  <div class="banner banner--warn">From IB Flex Trades export rows with `LevelOfDetail=WASH_SALE`, linked to `CLOSED_LOT` when possible to fill proceeds/basis and compute disallowed losses.</div>
+
+  <div class="box">
+    <form method="get" action="/tax/broker/wash-sales">
+      <div class="grid3">
+        <label>Scope<br/>
+          <select name="scope">
+            <option value="household" {% if scope == "household" %}selected{% endif %}>Household</option>
+            <option value="trust" {% if scope == "trust" %}selected{% endif %}>Trust only</option>
+            <option value="personal" {% if scope == "personal" %}selected{% endif %}>Personal only</option>
+          </select>
+        </label>
+        <label>Year<br/><input name="year" value="{{ year }}"/></label>
+        <label>&nbsp;<br/><button type="submit">View</button></label>
+      </div>
+    </form>
+    <div class="muted">
+      <a href="/tax/summary?scope={{ scope }}&year={{ year }}">Tax Summary</a> |
+      <a href="/tax/broker/realized-gains?scope={{ scope }}&year={{ year }}">Broker Realized Gains</a> |
+      <a href="/tax/broker/wash-sales.csv?scope={{ scope }}&year={{ year }}">Export CSV</a> |
+      <a href="/taxlots/wash-sales?scope={{ scope }}&year={{ year }}&source=reconstructed">Wash sales (reconstructed)</a>
+    </div>
+  </div>
+
+  <div class="box">
+    <div><b>Total rows:</b> {{ metrics.total_rows }}</div>
+    <div><b>Linked to CLOSED_LOT:</b> {{ metrics.linked_rows }}{% if metrics.total_rows %} <span class="muted">({{ "%.1f"|format((metrics.linked_rows / metrics.total_rows) * 100.0) }}%)</span>{% endif %}</div>
+    <div><b>Rows with basis:</b> {{ metrics.with_basis_rows }}; <b>rows with proceeds:</b> {{ metrics.with_proceeds_rows }}</div>
+    <div><b>Total disallowed losses (computed):</b> {{ metrics.disallowed_total|usd }}</div>
+    <div class="muted">Disallowed loss is computed only when realized P/L is negative. Positive/unknown P/L rows are shown but not counted as disallowed.</div>
+  </div>
+
+  {% if totals_by_symbol and totals_by_symbol|length > 0 %}
+    <div class="box">
+      <div class="muted">Disallowed loss totals by symbol:</div>
+      <table>
+        <tr><th>Symbol</th><th>Disallowed loss</th></tr>
+        {% for sym, total in totals_by_symbol.items() %}
+          <tr><td>{{ sym }}</td><td class="muted">{{ total|usd }}</td></tr>
+        {% endfor %}
+      </table>
+    </div>
+  {% endif %}
+
+  {% if not rows or rows|length == 0 %}
+    <p class="muted">No broker wash sale rows found for this scope/year.</p>
+  {% else %}
+    <table>
+      <tr>
+        <th>Date</th><th>Account</th><th>Symbol</th><th>Qty</th>
+        <th>Realized P/L (FIFO)</th><th>Basis (effective)</th><th>Proceeds (derived)</th>
+        <th>Disallowed loss</th><th>Linked?</th>
+        <th>When realized</th><th>When reopened</th>
+      </tr>
+      {% for r in rows %}
+        <tr>
+          <td class="muted">{{ r.trade_date }}</td>
+          <td class="muted">{{ r.provider_account_id }}</td>
+          <td>{{ r.symbol }}</td>
+          <td class="muted">{{ r.quantity }}</td>
+          <td class="muted">{{ r.realized_pl_fifo|usd }}</td>
+          <td class="muted">{{ r.basis_effective|usd }}</td>
+          <td class="muted">{{ r.proceeds_derived|usd }}</td>
+          <td class="muted">{{ r.disallowed_loss|usd }}</td>
+          <td class="muted">{% if r.linked_closure_id %}yes{% else %}no{% endif %}</td>
+          <td class="muted">{{ r.when_realized_raw or "—" }}</td>
+          <td class="muted">{{ r.when_reopened_raw or "—" }}</td>
+        </tr>
+      {% endfor %}
+    </table>
+  {% endif %}
+{% endblock %}
+

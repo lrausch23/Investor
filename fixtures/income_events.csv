@@ -1,0 +1,5 @@
+account_name,date,type,ticker,amount
+IB Taxable,2025-03-15,DIVIDEND,VTI,45.12
+RJ Taxable,2025-04-01,INTEREST,,32.10
+IB Taxable,2025-04-15,WITHHOLDING,,1200.00
+

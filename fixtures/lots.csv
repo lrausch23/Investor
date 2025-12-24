@@ -1,0 +1,6 @@
+account_name,ticker,acquisition_date,qty,basis_total,adjusted_basis_total
+IB Taxable,VTI,2023-01-15,10,2000,
+IB Taxable,SPY,2025-11-01,5,3000,
+RJ Taxable,BND,2022-06-01,40,3200,
+Chase IRA,QQQ,2024-02-01,6,2400,
+

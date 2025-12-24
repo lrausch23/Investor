@@ -1,0 +1,57 @@
+{% extends "layout.html" %}
+{% block content %}
+  <h1>Wash Sales</h1>
+  {% if source == "reconstructed" %}
+    <div class="banner banner--warn">Source: <b>Reconstructed</b> — planning-grade adjustments computed from reconstructed realized losses + replacement buys.</div>
+    {% if broker_available %}
+      <div class="banner banner--ok">Broker wash-sale rows are available for this year. Switch Source to “Broker” (or use Auto) to view broker-reported wash events.</div>
+    {% endif %}
+  {% else %}
+    <div class="banner banner--ok">Source: <b>Auto</b> — this view prefers broker wash rows when available.</div>
+  {% endif %}
+
+  <div class="box">
+    <form method="get" action="/taxlots/wash-sales">
+      <div class="grid3">
+        <label>Scope<br/>
+          <select name="scope">
+            <option value="household" {% if scope == "household" %}selected{% endif %}>Household</option>
+            <option value="trust" {% if scope == "trust" %}selected{% endif %}>Trust only</option>
+            <option value="personal" {% if scope == "personal" %}selected{% endif %}>Personal only</option>
+          </select>
+        </label>
+        <label>Source<br/>
+          <select name="source">
+            <option value="auto" {% if source == "auto" %}selected{% endif %}>Auto (prefer broker)</option>
+            <option value="broker" {% if source == "broker" %}selected{% endif %}>Broker (WASH_SALE)</option>
+            <option value="reconstructed" {% if source == "reconstructed" %}selected{% endif %}>Reconstructed (planning-grade)</option>
+          </select>
+        </label>
+        <label>Year<br/><input name="year" value="{{ year }}"/></label>
+        <label>&nbsp;<br/><button type="submit">View</button></label>
+      </div>
+    </form>
+    <div class="muted"><a href="/taxlots?scope={{ scope }}">Open lots</a> | <a href="/taxlots/gains?scope={{ scope }}&year={{ year }}&source=auto">Realized gains</a> | <a href="/taxlots/wash-sales-broker?scope={{ scope }}&year={{ year }}">Wash sales (broker)</a></div>
+  </div>
+
+  {% if not rows or rows|length == 0 %}
+    <p class="muted">No wash sale adjustments found for this year.</p>
+  {% else %}
+    <table>
+      <tr><th>Sale date</th><th>Sale ticker</th><th>Sale acct</th><th>Replacement date</th><th>Replacement ticker</th><th>Replacement acct</th><th>Deferred loss</th><th>Status</th></tr>
+      {% for adj, sale_tx, buy_tx, sale_acct, buy_acct, tp in rows %}
+        <tr>
+          <td class="muted">{{ sale_tx.date }}</td>
+          <td>{{ sale_tx.ticker or "" }}</td>
+          <td class="muted">{{ sale_acct.name }}</td>
+          <td class="muted">{{ buy_tx.date if buy_tx else "—" }}</td>
+          <td>{{ buy_tx.ticker if buy_tx else "" }}</td>
+          <td class="muted">{{ buy_acct.name if buy_acct else "—" }}</td>
+          <td class="muted">{{ adj.deferred_loss|usd }}</td>
+          <td class="muted">{{ adj.status }}</td>
+        </tr>
+      {% endfor %}
+    </table>
+    <div class="muted">FLAGGED rows indicate a replacement buy where basis couldn’t be adjusted (e.g., IRA replacement or missing replacement lot).</div>
+  {% endif %}
+{% endblock %}

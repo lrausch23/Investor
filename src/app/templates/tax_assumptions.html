@@ -1,0 +1,32 @@
+{% extends "layout.html" %}
+{% block content %}
+  <h1>Tax Assumptions</h1>
+  <p>Used for dashboard “Estimated tax (YTD, planning-grade)”. Federal-only (ordinary, LTCG, NIIT proxy). State rate is stored for future use.</p>
+  <div class="box">
+    <div class="muted">
+      <a href="/tax/summary">Tax Summary (broker)</a> |
+      <a href="/tax/broker/realized-gains">Broker Realized Gains</a> |
+      <a href="/tax/broker/wash-sales">Broker Wash Sales</a>
+    </div>
+  </div>
+  <form method="post" action="/tax/assumptions">
+    <div class="grid3">
+      <label>Ordinary rate (e.g. 0.37)<br/><input name="ordinary_rate" value="{{ a.ordinary_rate }}"/></label>
+      <label>LTCG rate (e.g. 0.20)<br/><input name="ltcg_rate" value="{{ a.ltcg_rate }}"/></label>
+      <label>State rate (stored; not in federal line)<br/><input name="state_rate" value="{{ a.state_rate }}"/></label>
+      <label>NIIT enabled<br/><input type="checkbox" name="niit_enabled" {% if a.niit_enabled %}checked{% endif %}/></label>
+      <label>NIIT rate (e.g. 0.038)<br/><input name="niit_rate" value="{{ a.niit_rate }}"/></label>
+      <label>Qualified dividend pct (0..1)<br/><input name="qualified_dividend_pct" value="{{ a.qualified_dividend_pct }}"/></label>
+    </div>
+    <h2>Broker Pro Forma Rates (Optional)</h2>
+    <div class="muted">Used by “Tax Summary” for additional tax due from broker realized gains. If blank, uses Ordinary/LTCG above for both taxpayers.</div>
+    <div class="grid3">
+      <label>Personal ST rate<br/><input name="personal_st_rate" value="{{ row.json_definition.get('tax_rates', {}).get('personal', {}).get('st_rate', '') }}"/></label>
+      <label>Personal LT rate<br/><input name="personal_lt_rate" value="{{ row.json_definition.get('tax_rates', {}).get('personal', {}).get('lt_rate', '') }}"/></label>
+      <label>Trust ST rate<br/><input name="trust_st_rate" value="{{ row.json_definition.get('tax_rates', {}).get('trust', {}).get('st_rate', '') }}"/></label>
+      <label>Trust LT rate<br/><input name="trust_lt_rate" value="{{ row.json_definition.get('tax_rates', {}).get('trust', {}).get('lt_rate', '') }}"/></label>
+    </div>
+    <label>Audit note <input name="note" size="60"/></label><br/>
+    <button type="submit">Save assumptions</button>
+  </form>
+{% endblock %}

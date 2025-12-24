@@ -1,0 +1,17 @@
+{% extends "layout.html" %}
+{% block content %}
+  <h1>Plans</h1>
+  <table>
+    <tr><th>ID</th><th>Created</th><th>Policy</th><th>Scope</th><th>Status</th><th>Open</th></tr>
+    {% for p in plans %}
+      <tr>
+        <td>{{ p.id }}</td>
+        <td>{{ p.created_at|local_dt }}</td>
+        <td>{{ p.policy_id }}</td>
+        <td>{{ p.taxpayer_scope }}</td>
+        <td>{{ p.status }}</td>
+        <td><a href="/plans/{{ p.id }}">view</a></td>
+      </tr>
+    {% endfor %}
+  </table>
+{% endblock %}

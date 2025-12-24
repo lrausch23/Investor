@@ -1,0 +1,8 @@
+ticker,name,asset_class,expense_ratio,substitute_group,last_price,low_cost_ticker
+VTI,Vanguard Total Stock Market ETF,EQUITY,0.0003,US Total Market,250.00,
+ITOT,iShares Core S&P Total US Stock Market ETF,EQUITY,0.0003,US Total Market,100.00,
+BND,Vanguard Total Bond Market ETF,BOND,0.0003,US Aggregate Bond,72.00,
+AGG,iShares Core U.S. Aggregate Bond ETF,BOND,0.0003,US Aggregate Bond,98.00,
+SPY,SPDR S&P 500 ETF,EQUITY,0.0009,US Large Cap,550.00,VTI
+QQQ,Invesco QQQ Trust,EQUITY,0.0020,US Large Cap Growth,490.00,
+

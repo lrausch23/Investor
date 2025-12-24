@@ -1,0 +1,27 @@
+{% extends "layout.html" %}
+{% block content %}
+  <h1>Cash Balances</h1>
+  <form method="post" action="/holdings/cash">
+    <div class="grid3">
+      <label>Account<br/>
+        <select name="account_id">
+          {% for a in accounts %}
+            <option value="{{ a.id }}">{{ a.name }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>As-of date<br/><input name="as_of_date" value="{{ today }}"/></label>
+      <label>Amount<br/><input name="amount"/></label>
+    </div>
+    <label>Audit note <input name="note" size="60"/></label>
+    <button type="submit">Add cash</button>
+  </form>
+
+  <h2>Recent balances</h2>
+  <table>
+    <tr><th>ID</th><th>Account</th><th>Date</th><th>Amount</th></tr>
+    {% for c in balances %}
+      <tr><td>{{ c.id }}</td><td>{{ c.account_id }}</td><td>{{ c.as_of_date }}</td><td>{{ c.amount|usd }}</td></tr>
+    {% endfor %}
+  </table>
+{% endblock %}

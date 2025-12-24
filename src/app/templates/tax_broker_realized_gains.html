@@ -1,0 +1,79 @@
+{% extends "layout.html" %}
+{% block content %}
+  <h1>Broker Realized Gains (CLOSED_LOT) — PRO FORMA / PLANNING</h1>
+  <div class="banner banner--warn">Preferred source: IB Flex Trades export rows with `LevelOfDetail=CLOSED_LOT`. This is for planning/audit; not tax filing.</div>
+
+  <div class="box">
+    <form method="get" action="/tax/broker/realized-gains">
+      <div class="grid3">
+        <label>Scope<br/>
+          <select name="scope">
+            <option value="household" {% if scope == "household" %}selected{% endif %}>Household</option>
+            <option value="trust" {% if scope == "trust" %}selected{% endif %}>Trust only</option>
+            <option value="personal" {% if scope == "personal" %}selected{% endif %}>Personal only</option>
+          </select>
+        </label>
+        <label>Year<br/><input name="year" value="{{ year }}"/></label>
+        <label>Account (optional)<br/>
+          <select name="account_id">
+            <option value="" {% if not account_id %}selected{% endif %}>All accounts</option>
+            {% for a in accounts %}
+              <option value="{{ a.id }}" {% if account_id == a.id %}selected{% endif %}>{{ a.name }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label>&nbsp;<br/><button type="submit">View</button></label>
+      </div>
+    </form>
+    <div class="muted">
+      <a href="/tax/summary?scope={{ scope }}&year={{ year }}">Tax Summary</a> |
+      <a href="/tax/broker/wash-sales?scope={{ scope }}&year={{ year }}">Broker Wash Sales</a> |
+      <a href="/tax/broker/realized-gains.csv?scope={{ scope }}&year={{ year }}{% if account_id %}&account_id={{ account_id }}{% endif %}">Export CSV</a>
+    </div>
+  </div>
+
+  <div class="box">
+    <div><b>Total proceeds:</b> {{ summary.proceeds|usd }}</div>
+    <div><b>Total basis:</b> {{ summary.basis|usd }}</div>
+    <div><b>Total realized P/L:</b> {{ summary.realized|usd }} (ST {{ summary.st|usd }}, LT {{ summary.lt|usd }}, Unknown {{ summary.unknown|usd }})</div>
+    <div class="muted">Rows: {{ summary.rows_count }}; missing proceeds: {{ summary.missing_proceeds_count }}.</div>
+  </div>
+
+  {% if not by_symbol_rows or by_symbol_rows|length == 0 %}
+    <p class="muted">No CLOSED_LOT rows found for this scope/year.</p>
+  {% else %}
+    <h2>By Symbol</h2>
+    <table>
+      <tr><th>Symbol</th><th>Term</th><th>Proceeds</th><th>Basis</th><th>Realized</th></tr>
+      {% for sym, term, proceeds, basis, realized in by_symbol_rows %}
+        <tr>
+          <td>{{ sym }}</td>
+          <td class="muted">{{ term }}</td>
+          <td class="muted">{{ proceeds|usd }}</td>
+          <td class="muted">{{ basis|usd }}</td>
+          <td class="muted">{{ realized|usd }}</td>
+        </tr>
+      {% endfor %}
+    </table>
+
+    <h2>Detail (first {{ detail_rows|length }})</h2>
+    <table>
+      <tr><th>Date</th><th>Account</th><th>Symbol</th><th>Qty</th><th>Open date</th><th>Proceeds</th><th>Basis</th><th>Realized</th><th>Term</th><th>IDs</th></tr>
+      {% for r in detail_rows[:200] %}
+        <tr>
+          <td class="muted">{{ r.trade_date }}</td>
+          <td class="muted">{{ r.account_name or r.provider_account_id }}</td>
+          <td>{{ r.symbol }}</td>
+          <td class="muted">{{ r.quantity_closed or "" }}</td>
+          <td class="muted">{{ r.open_date_raw or "—" }}</td>
+          <td class="muted">{{ r.proceeds|usd }}</td>
+          <td class="muted">{{ r.basis|usd }}</td>
+          <td class="muted">{{ r.realized|usd }}</td>
+          <td class="muted">{{ r.term }}</td>
+          <td class="muted">closure={{ r.closure_id }}{% if r.ib_trade_id %}; trade={{ r.ib_trade_id }}{% endif %}</td>
+        </tr>
+      {% endfor %}
+    </table>
+  {% endif %}
+{% endblock %}
+

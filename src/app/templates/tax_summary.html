@@ -1,0 +1,72 @@
+{% extends "layout.html" %}
+{% block content %}
+  <h1>Tax Summary (PRO FORMA / PLANNING)</h1>
+  <div class="banner banner--warn">{{ summary.disclaimer }}</div>
+
+  <div class="box">
+    <form method="get" action="/tax/summary">
+      <div class="grid3">
+        <label>Scope<br/>
+          <select name="scope">
+            <option value="household" {% if scope == "household" %}selected{% endif %}>Household</option>
+            <option value="trust" {% if scope == "trust" %}selected{% endif %}>Trust only</option>
+            <option value="personal" {% if scope == "personal" %}selected{% endif %}>Personal only</option>
+          </select>
+        </label>
+        <label>Year<br/><input name="year" value="{{ year }}"/></label>
+        <label>&nbsp;<br/><button type="submit">View</button></label>
+      </div>
+    </form>
+    <div class="muted">
+      <a href="/tax/broker/realized-gains?scope={{ scope }}&year={{ year }}">Broker Realized Gains</a> |
+      <a href="/tax/broker/wash-sales?scope={{ scope }}&year={{ year }}">Broker Wash Sales</a> |
+      <a href="/tax/assumptions">Rates / Assumptions</a> |
+      <a href="/tax/summary.csv?scope={{ scope }}&year={{ year }}">Export CSV</a>
+    </div>
+  </div>
+
+  {% set t = summary.get("totals") or {} %}
+  <div class="box">
+    <div><b>Total realized (ST/LT/Unknown):</b> {{ t.get("realized_total", 0.0)|usd }} (ST {{ t.get("st_realized", 0.0)|usd }}, LT {{ t.get("lt_realized", 0.0)|usd }}, Unknown {{ t.get("unknown_realized", 0.0)|usd }})</div>
+    <div><b>Total disallowed losses (wash sale, broker):</b> {{ t.get("disallowed_loss", 0.0)|usd }}</div>
+    <div><b>Net taxable capital gain (planning):</b> {{ t.get("net_taxable", 0.0)|usd }}</div>
+    <div><b>Estimated additional tax due (planning):</b> {{ t.get("additional_tax_due", 0.0)|usd }}</div>
+    <div class="muted">Conservative: unknown term treated as ST for tax estimate; wash disallowed losses increase taxable gains vs realized P/L.</div>
+  </div>
+
+  {% if not summary.rows or summary.rows|length == 0 %}
+    <p class="muted">No broker realized gains found for this scope/year. Import IB Flex Trades exports with `LevelOfDetail=CLOSED_LOT` and re-sync.</p>
+  {% else %}
+    <table>
+      <tr>
+        <th>Taxpayer</th><th>Type</th>
+        <th>ST realized</th><th>LT realized</th><th>Unknown realized</th><th>Total realized</th>
+        <th>Disallowed loss (wash)</th><th>Net taxable</th><th>Additional tax due</th>
+        <th>Coverage</th><th>Rates</th><th>Note</th>
+      </tr>
+      {% for r in summary.rows %}
+        <tr>
+          <td>{{ r.taxpayer }}</td>
+          <td class="muted">{{ r.taxpayer_type }}</td>
+          <td class="muted">{{ r.st_realized|usd }}</td>
+          <td class="muted">{{ r.lt_realized|usd }}</td>
+          <td class="muted">{{ r.unknown_realized|usd }}</td>
+          <td class="muted">{{ r.realized_total|usd }}</td>
+          <td class="muted">{{ r.disallowed_loss|usd }}</td>
+          <td class="muted">{{ r.net_taxable|usd }}</td>
+          <td>{{ r.additional_tax_due|usd }}</td>
+          <td class="muted">
+            closed_lot={{ r.coverage.closed_lot_rows_count }};
+            wash={{ r.coverage.wash_rows_count }};
+            linked={{ r.coverage.wash_linked_rows_count }}
+          </td>
+          <td class="muted">
+            ST={{ r.rates.st_rate }}, LT={{ r.rates.lt_rate }}, NIIT={{ r.rates.niit_rate if r.rates.niit_enabled else "off" }}
+          </td>
+          <td class="muted">{{ r.note or "" }}</td>
+        </tr>
+      {% endfor %}
+    </table>
+  {% endif %}
+{% endblock %}
+

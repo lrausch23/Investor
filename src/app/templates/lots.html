@@ -1,0 +1,38 @@
+{% extends "layout.html" %}
+{% block content %}
+  <h1>Lots</h1>
+  <form method="post" action="/holdings/lots">
+    <div class="grid3">
+      <label>Account<br/>
+        <select name="account_id">
+          {% for a in accounts %}
+            <option value="{{ a.id }}">{{ a.name }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>Ticker<br/><input name="ticker"/></label>
+      <label>Acquisition date<br/><input name="acquisition_date" value="{{ today }}"/></label>
+      <label>Qty<br/><input name="qty"/></label>
+      <label>Basis total<br/><input name="basis_total"/></label>
+      <label>Adjusted basis (optional)<br/><input name="adjusted_basis_total"/></label>
+    </div>
+    <label>Audit note <input name="note" size="60"/></label>
+    <button type="submit">Add lot</button>
+  </form>
+
+  <h2>Recent lots</h2>
+  <table>
+    <tr><th>ID</th><th>Account</th><th>Ticker</th><th>Acq</th><th>Qty</th><th>Basis</th><th>Adj Basis</th></tr>
+    {% for l in lots %}
+      <tr>
+        <td>{{ l.id }}</td>
+        <td>{{ l.account_id }}</td>
+        <td>{{ l.ticker }}</td>
+        <td>{{ l.acquisition_date }}</td>
+        <td>{{ l.qty }}</td>
+        <td>{{ l.basis_total|usd }}</td>
+        <td>{{ l.adjusted_basis_total|usd }}</td>
+      </tr>
+    {% endfor %}
+  </table>
+{% endblock %}

@@ -1,0 +1,4 @@
+account_name,date,type,ticker,qty,amount,lot_basis_total,lot_acquisition_date,term
+IB Taxable,2025-10-15,BUY,SPY,1,-550.00,,,
+IB Taxable,2025-12-10,SELL,VTI,2,500.00,450.00,2023-01-15,LT
+

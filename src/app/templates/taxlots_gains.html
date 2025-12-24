@@ -1,0 +1,47 @@
+{% extends "layout.html" %}
+{% block content %}
+  <h1>Realized Gains</h1>
+  <div class="banner banner--warn">Planning-grade. Source: <b>{{ source_label }}</b>.</div>
+
+  <div class="box">
+    <form method="get" action="/taxlots/gains">
+      <div class="grid3">
+        <label>Scope<br/>
+          <select name="scope">
+            <option value="household" {% if scope == "household" %}selected{% endif %}>Household</option>
+            <option value="trust" {% if scope == "trust" %}selected{% endif %}>Trust only</option>
+            <option value="personal" {% if scope == "personal" %}selected{% endif %}>Personal only</option>
+          </select>
+        </label>
+        <label>Year<br/><input name="year" value="{{ year }}"/></label>
+        <label>Source<br/>
+          <select name="source">
+            <option value="auto" {% if source == "auto" %}selected{% endif %}>Auto</option>
+            <option value="broker" {% if source == "broker" %}selected{% endif %}>Broker (CLOSED_LOT)</option>
+            <option value="reconstructed" {% if source == "reconstructed" %}selected{% endif %}>Reconstructed (LotDisposal)</option>
+          </select>
+        </label>
+        <label>&nbsp;<br/><button type="submit">View</button></label>
+      </div>
+    </form>
+    <div class="muted"><a href="/taxlots?scope={{ scope }}">Open lots</a> | <a href="/taxlots/wash-sales?scope={{ scope }}&year={{ year }}&source=auto">Wash sales</a></div>
+    <div class="muted">Totals: ST={{ totals.st|usd }}, LT={{ totals.lt|usd }}, Unknown={{ totals.unknown|usd }}</div>
+  </div>
+
+  {% if not rows or rows|length == 0 %}
+    <p class="muted">No reconstructed realized gains found for this year. Rebuild lots, or check that sells exist.</p>
+  {% else %}
+    <table>
+      <tr><th>Ticker</th><th>Term</th><th>Proceeds</th><th>Basis</th><th>Gain</th></tr>
+      {% for tkr, term, proceeds, basis, gain in rows %}
+        <tr>
+          <td>{{ tkr }}</td>
+          <td class="muted">{{ term }}</td>
+          <td class="muted">{{ proceeds|usd }}</td>
+          <td class="muted">{{ basis|usd }}</td>
+          <td class="muted">{{ gain|usd }}</td>
+        </tr>
+      {% endfor %}
+    </table>
+  {% endif %}
+{% endblock %}

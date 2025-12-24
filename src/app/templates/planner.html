@@ -1,0 +1,35 @@
+{% extends "layout.html" %}
+{% block content %}
+  <h1>Trade Planner</h1>
+  {% if not policy %}
+    <p>No policy yet. <a href="/policy/new">Create a policy</a>.</p>
+  {% else %}
+    <p>Active policy: <b>{{ policy.name }}</b> ({{ policy.effective_date }})</p>
+  {% endif %}
+
+  <form method="post" action="/planner">
+    <div class="grid3">
+      <label>Goal
+        <select name="goal">
+          <option value="rebalance">Rebalance to targets</option>
+          <option value="raise_cash">Raise cash for B1</option>
+          <option value="reduce_alpha">Reduce Alpha risk (cap B4)</option>
+          <option value="harvest_losses">Harvest losses</option>
+        </select>
+      </label>
+      <label>Taxpayer scope
+        <select name="scope">
+          <option value="BOTH">BOTH</option>
+          <option value="TRUST">TRUST</option>
+          <option value="PERSONAL">PERSONAL</option>
+        </select>
+      </label>
+      <label>Raise cash amount (if applicable)<br/><input name="cash_amount" value="0"/></label>
+      <label>Harvest loss target (if applicable)<br/><input name="harvest_loss_target" value="0"/></label>
+    </div>
+    <label>Assumptions / config (JSON)</label><br/>
+    <textarea name="assumptions_json" rows="12" cols="100">{{ default_assumptions }}</textarea><br/>
+    <button type="submit">Run planner</button>
+  </form>
+{% endblock %}
+

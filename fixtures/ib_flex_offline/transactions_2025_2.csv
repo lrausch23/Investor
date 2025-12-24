@@ -1,0 +1,3 @@
+account,date,type,symbol,qty,amount,description,provider_transaction_id
+U12345,2025-04-01,BUY,SPY,1,-550.00,BUY SPY,T4
+U12345,2025-04-15,SELL,VTI,1,260.00,SELL VTI,T5

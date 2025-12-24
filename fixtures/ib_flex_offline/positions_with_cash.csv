@@ -1,0 +1,7 @@
+ClientAccountID
+U12345
+Currency,EndingCash
+USD,1000.00
+account,symbol,qty,market_value
+U12345,VTI,2,500.00
+U12345,SPY,1,550.00

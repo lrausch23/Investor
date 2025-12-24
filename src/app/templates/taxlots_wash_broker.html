@@ -1,0 +1,58 @@
+{% extends "layout.html" %}
+{% block content %}
+  <h1>Wash Sales (Broker)</h1>
+  <div class="banner banner--warn">From IB Flex Trades export rows with LevelOfDetail=WASH_SALE. Planning-grade display of broker-reported wash events.</div>
+
+  <div class="box">
+    <form method="get" action="/taxlots/wash-sales-broker">
+      <div class="grid3">
+        <label>Scope<br/>
+          <select name="scope">
+            <option value="household" {% if scope == "household" %}selected{% endif %}>Household</option>
+            <option value="trust" {% if scope == "trust" %}selected{% endif %}>Trust only</option>
+            <option value="personal" {% if scope == "personal" %}selected{% endif %}>Personal only</option>
+          </select>
+        </label>
+        <label>Year<br/><input name="year" value="{{ year }}"/></label>
+        <label>&nbsp;<br/><button type="submit">View</button></label>
+      </div>
+    </form>
+    <div class="muted"><a href="/taxlots?scope={{ scope }}">Open lots</a> | <a href="/taxlots/gains?scope={{ scope }}&year={{ year }}&source=auto">Realized gains</a> | <a href="/taxlots/wash-sales?scope={{ scope }}&year={{ year }}&source=reconstructed">Wash sales (reconstructed)</a></div>
+    {% if available_years and available_years|length > 0 %}
+      <div class="muted" style="margin-top:8px">Available years (broker rows): {% for y in available_years %}<a href="/taxlots/wash-sales-broker?scope={{ scope }}&year={{ y }}">{{ y }}</a>{% if not loop.last %}, {% endif %}{% endfor %}</div>
+    {% endif %}
+  </div>
+
+  {% if totals_by_symbol and totals_by_symbol|length > 0 %}
+    <div class="box">
+      <div class="muted">Totals (FifoPnlRealized) by symbol:</div>
+      <table>
+        <tr><th>Symbol</th><th>Total</th></tr>
+        {% for sym, total in totals_by_symbol.items() %}
+          <tr><td>{{ sym }}</td><td class="muted">{{ total|usd }}</td></tr>
+        {% endfor %}
+      </table>
+    </div>
+  {% endif %}
+
+  {% if not rows or rows|length == 0 %}
+    <p class="muted">No broker wash sale rows found for this year. Import an IB Trades/Lots export that includes LevelOfDetail=WASH_SALE.</p>
+  {% else %}
+    <table>
+      <tr><th>Date</th><th>Account</th><th>Symbol</th><th>Qty</th><th>Realized P/L (FIFO)</th><th>Cost basis</th><th>Proceeds (derived)</th><th>When realized</th><th>When reopened</th></tr>
+      {% for r in rows %}
+        <tr>
+          <td class="muted">{{ r.trade_date }}</td>
+          <td class="muted">{{ r.provider_account_id }}</td>
+          <td>{{ r.symbol }}</td>
+          <td class="muted">{{ r.quantity }}</td>
+          <td class="muted">{{ r.realized_pl_fifo|usd }}</td>
+          <td class="muted">{{ r.cost_basis|usd }}</td>
+          <td class="muted">{{ r.proceeds_derived|usd }}</td>
+          <td class="muted">{{ r.when_realized_raw or "—" }}</td>
+          <td class="muted">{{ r.when_reopened_raw or "—" }}</td>
+        </tr>
+      {% endfor %}
+    </table>
+  {% endif %}
+{% endblock %}

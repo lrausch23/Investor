@@ -1,0 +1,11 @@
+{
+  "items": [
+    {
+      "provider_account_id": "IB-1",
+      "symbol": "VTI",
+      "qty": 2.0,
+      "market_value": 500.0
+    }
+  ]
+}
+

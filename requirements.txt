@@ -1,0 +1,11 @@
+fastapi>=0.110
+uvicorn[standard]>=0.27
+SQLAlchemy>=2.0.36
+pydantic>=2.6
+Jinja2>=3.1
+python-dotenv>=1.0
+typer>=0.12
+pytest>=8.0
+python-multipart>=0.0.9
+cryptography>=42.0
+PyYAML>=6.0

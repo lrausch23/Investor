@@ -1,0 +1,10 @@
+{% extends "layout.html" %}
+{% block content %}
+  <h1>Plan #{{ plan.id }}</h1>
+  <p>Status: <b>{{ plan.status }}</b> — Scope: <b>{{ plan.taxpayer_scope }}</b></p>
+  <p><a href="/plans/{{ plan.id }}/trades.csv">Download trade CSV</a> — <a href="/plans/{{ plan.id }}/report" target="_blank">Open HTML report</a></p>
+  <h2>Goal</h2>
+  <pre>{{ goal_pretty }}</pre>
+  <h2>Warnings</h2>
+  <pre>{{ warnings_pretty }}</pre>
+{% endblock %}
