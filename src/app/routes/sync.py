@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import datetime as dt
 import os
+import shutil
 import urllib.parse
 from pathlib import Path
 import re
@@ -10,8 +11,9 @@ from fastapi import APIRouter, Depends, Form, Request
 from fastapi import HTTPException
 from fastapi import File, UploadFile
 from fastapi.responses import RedirectResponse
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
 from sqlalchemy import func
 
 from src.app.auth import auth_banner_message, require_actor
@@ -46,6 +48,23 @@ router = APIRouter(prefix="/sync", tags=["sync"])
 
 _QUERY_SPLIT_RE = re.compile(r"[\s,;]+")
 
+def _parse_form_date(value: str) -> dt.date | None:
+    s = (value or "").strip()
+    if not s:
+        return None
+    # Preferred: ISO 8601 (YYYY-MM-DD)
+    try:
+        return dt.date.fromisoformat(s[:10])
+    except Exception:
+        pass
+    # Common US format (MM/DD/YYYY)
+    for fmt in ("%m/%d/%Y", "%m/%d/%y", "%Y/%m/%d", "%m-%d-%Y", "%m-%d-%y", "%Y-%m-%d"):
+        try:
+            return dt.datetime.strptime(s.split()[0], fmt).date()
+        except Exception:
+            continue
+    raise ValueError(f"Invalid date: {value!r} (use YYYY-MM-DD or MM/DD/YYYY)")
+
 
 def _split_query_tokens(raw: str) -> list[str]:
     s = (raw or "").strip()
@@ -66,7 +85,13 @@ def connections_list(
     actor: str = Depends(require_actor),
 ):
     error = request.query_params.get("error")
-    conns = session.query(ExternalConnection).order_by(ExternalConnection.id.desc()).all()
+    ok = request.query_params.get("ok")
+    show_legacy = (request.query_params.get("show_legacy") or "").strip().lower() in {"1", "true", "yes", "y", "on"}
+    q = session.query(ExternalConnection)
+    if not show_legacy:
+        # Hide legacy/experimental connectors to reduce confusion.
+        q = q.filter(ExternalConnection.connector.in_(["IB_FLEX_WEB", "CHASE_OFFLINE", "RJ_OFFLINE"]))
+    conns = q.order_by(ExternalConnection.id.desc()).all()
     taxpayers = session.query(TaxpayerEntity).order_by(TaxpayerEntity.id).all()
     tp_by_id = {t.id: t for t in taxpayers}
     latest_by_conn: dict[int, SyncRun] = {}
@@ -90,6 +115,12 @@ def connections_list(
             since_default_by_conn[c.id] = None
 
     secret_ok = secret_key_available()
+    legacy_ib_flex_offline_count = int(
+        session.query(func.count(ExternalConnection.id))
+        .filter(func.upper(func.coalesce(ExternalConnection.connector, "")) == "IB_FLEX_OFFLINE")
+        .scalar()
+        or 0
+    )
 
     from src.app.main import templates
 
@@ -101,6 +132,8 @@ def connections_list(
             "auth_banner": auth_banner_message(),
             "secret_key_ok": secret_ok,
             "error": error,
+            "ok": ok,
+            "show_legacy": show_legacy,
             "connections": conns,
             "taxpayers": taxpayers,
             "tp_by_id": tp_by_id,
@@ -108,6 +141,7 @@ def connections_list(
             "since_default_by_conn": since_default_by_conn,
             "today": dt.date.today().isoformat(),
             "ten_years_ago": (dt.date.today() - dt.timedelta(days=365 * 10)).isoformat(),
+            "legacy_ib_flex_offline_count": legacy_ib_flex_offline_count,
         },
     )
 
@@ -120,9 +154,12 @@ def connections_create(
     name: str = Form(...),
     taxpayer_entity_id: int | None = Form(default=None),
     token: str = Form(default=""),
+    refresh_token: str = Form(default=""),
     query_id: str = Form(default=""),
     extra_query_ids: str = Form(default=""),
     data_dir: str = Form(default=""),
+    yodlee_base_url: str = Form(default=""),
+    yodlee_api_version: str = Form(default=""),
     note: str = Form(default=""),
 ):
     name_u = name.strip()
@@ -168,6 +205,32 @@ def connections_create(
                 "data_dir": os.path.expanduser(dd) if dd else None,
             },
         )
+    elif kind == "RJ_OFFLINE":
+        dd = data_dir.strip()
+        conn = ExternalConnection(
+            name=name_u,
+            provider="RJ",
+            broker="RJ",
+            connector="RJ_OFFLINE",
+            taxpayer_entity_id=taxpayer_entity_id,
+            status="ACTIVE",
+            metadata_json={
+                "data_dir": os.path.expanduser(dd) if dd else None,
+            },
+        )
+    elif kind == "CHASE_YODLEE":
+        conn = ExternalConnection(
+            name=name_u,
+            provider="YODLEE",
+            broker="CHASE",
+            connector="CHASE_YODLEE",
+            taxpayer_entity_id=taxpayer_entity_id,
+            status="ACTIVE",
+            metadata_json={
+                "yodlee_base_url": yodlee_base_url.strip() or None,
+                "yodlee_api_version": yodlee_api_version.strip() or None,
+            },
+        )
     else:
         msg = urllib.parse.quote(f"Unsupported connector: {kind}")
         return RedirectResponse(url=f"/sync/connections?error={msg}", status_code=303)
@@ -184,6 +247,14 @@ def connections_create(
             raise HTTPException(status_code=400, detail="APP_SECRET_KEY required to save credentials.")
         upsert_credential(session, connection_id=conn.id, key="IB_FLEX_TOKEN", plaintext=token.strip())
         upsert_credential(session, connection_id=conn.id, key="IB_FLEX_QUERY_ID", plaintext=query_id.strip())
+    if kind == "CHASE_YODLEE":
+        # Tokens are optional at create time; user can link later via the Credentials page.
+        if (token.strip() or refresh_token.strip()) and not secret_key_available():
+            raise HTTPException(status_code=400, detail="APP_SECRET_KEY required to save credentials.")
+        if token.strip():
+            upsert_credential(session, connection_id=conn.id, key="YODLEE_ACCESS_TOKEN", plaintext=token.strip())
+        if refresh_token.strip():
+            upsert_credential(session, connection_id=conn.id, key="YODLEE_REFRESH_TOKEN", plaintext=refresh_token.strip())
     log_change(
         session,
         actor=actor,
@@ -208,6 +279,7 @@ def connection_detail(
     conn = session.query(ExternalConnection).filter(ExternalConnection.id == connection_id).one()
     test_ok = request.query_params.get("test_ok")
     test_msg = request.query_params.get("test_msg")
+    error_msg = request.query_params.get("error")
     meta = conn.metadata_json or {}
     extra_queries_str = ""
     try:
@@ -233,9 +305,13 @@ def connection_detail(
 
     cred_token_key = "IB_YODLEE_TOKEN"
     cred_qid_key = "IB_YODLEE_QUERY_ID"
-    if (conn.connector or "").upper() == "IB_FLEX_WEB":
+    connector_u = (conn.connector or "").upper()
+    if connector_u == "IB_FLEX_WEB":
         cred_token_key = "IB_FLEX_TOKEN"
         cred_qid_key = "IB_FLEX_QUERY_ID"
+    elif connector_u == "CHASE_YODLEE":
+        cred_token_key = "YODLEE_ACCESS_TOKEN"
+        cred_qid_key = "YODLEE_REFRESH_TOKEN"
     token_masked = get_credential_masked(session, connection_id=conn.id, key=cred_token_key)
     qid_masked = get_credential_masked(session, connection_id=conn.id, key=cred_qid_key)
     # Query ids / query names are not secrets (unlike tokens). Show full value when available so users can verify.
@@ -283,24 +359,43 @@ def connection_detail(
     withdrawals_count_ytd = int(w_cnt or 0)
 
     connector = (conn.connector or "").upper()
-    is_offline_files = connector in {"IB_FLEX_OFFLINE", "CHASE_OFFLINE"}
+    is_offline_files = connector in {"IB_FLEX_OFFLINE", "CHASE_OFFLINE", "RJ_OFFLINE"}
+    is_ib_flex_web = connector == "IB_FLEX_WEB"
     is_offline_flex = (conn.provider or "").upper() == "IB" and connector == "IB_FLEX_OFFLINE"
-    is_chase_offline = (conn.provider or "").upper() == "CHASE" and connector == "CHASE_OFFLINE"
-    data_dir_raw = str(meta.get("data_dir") or (Path("data") / "external" / f"conn_{conn.id}"))
-    data_dir = os.path.expanduser(data_dir_raw)
+    is_chase_offline = connector == "CHASE_OFFLINE"
+    is_chase_yodlee = connector == "CHASE_YODLEE"
+    is_rj_offline = connector == "RJ_OFFLINE"
+    default_dir = Path("data") / "external" / f"conn_{conn.id}"
+    data_dir_raw = str(meta.get("data_dir") or default_dir)
+    data_dir_path = Path(os.path.expanduser(data_dir_raw))
+    try:
+        data_dir_path = data_dir_path.resolve()
+    except Exception:
+        pass
+    data_dir = str(data_dir_path)
     files_on_disk = []
-    if is_offline_files:
+    if is_offline_files or is_ib_flex_web:
         p = Path(data_dir)
+        supported_exts = {".csv", ".tsv", ".txt", ".xml"}
+        if is_rj_offline or is_chase_offline:
+            supported_exts.add(".pdf")
         if p.exists() and p.is_dir():
-            for f in sorted(p.glob("**/*")):
-                if f.is_file() and f.suffix.lower() in {".csv", ".tsv", ".xml"}:
+            for f in sorted(p.glob("**/*"))[:200]:
+                if f.is_file():
                     st = f.stat()
+                    ext = f.suffix.lower()
+                    supported = ext in supported_exts
+                    supported_label = "Yes" if supported else "No"
+                    if (is_rj_offline or is_chase_offline) and ext == ".pdf":
+                        supported_label = "Yes (Holdings total from statement PDF)"
                     files_on_disk.append(
                         {
                             "name": f.name,
                             "path": str(f),
                             "bytes": int(st.st_size),
                             "mtime": utcfromtimestamp(st.st_mtime).isoformat(),
+                            "supported": supported,
+                            "supported_label": supported_label,
                         }
                     )
     ingested_files = (
@@ -335,7 +430,10 @@ def connection_detail(
             "fixture_dir": meta.get("fixture_dir"),
             "is_offline_flex": is_offline_flex,
             "is_offline_files": is_offline_files,
+            "is_ib_flex_web": is_ib_flex_web,
             "is_chase_offline": is_chase_offline,
+            "is_chase_yodlee": is_chase_yodlee,
+            "is_rj_offline": is_rj_offline,
             "data_dir": data_dir,
             "files_on_disk": files_on_disk,
             "ingested_files": ingested_files,
@@ -346,6 +444,7 @@ def connection_detail(
             "ten_years_ago": (dt.date.today() - dt.timedelta(days=365 * 10)).isoformat(),
             "test_ok": test_ok,
             "test_msg": test_msg,
+            "error_msg": error_msg,
             "extra_queries_str": extra_queries_str,
             "withdrawals_ytd": withdrawals_ytd,
             "withdrawals_count_ytd": withdrawals_count_ytd,
@@ -363,17 +462,34 @@ def connection_update_settings(
     note: str = Form(default=""),
 ):
     conn = session.query(ExternalConnection).filter(ExternalConnection.id == connection_id).one()
-    meta = conn.metadata_json or {}
+    meta = dict(conn.metadata_json or {})
     old = {"data_dir": meta.get("data_dir"), "extra_query_ids": meta.get("extra_query_ids")}
     dd = data_dir.strip()
-    meta["data_dir"] = os.path.expanduser(dd) if dd else None
+    if dd:
+        dd_path = Path(os.path.expanduser(dd))
+        try:
+            dd_path = dd_path.resolve()
+        except Exception:
+            pass
+        meta["data_dir"] = str(dd_path)
+        # Best-effort: create dir so users can immediately drop files in (offline connectors + IB baseline statements).
+        if (conn.connector or "").upper() in {"IB_FLEX_OFFLINE", "CHASE_OFFLINE", "RJ_OFFLINE", "IB_FLEX_WEB"}:
+            try:
+                dd_path.mkdir(parents=True, exist_ok=True)
+            except Exception as e:
+                msg = urllib.parse.quote(f"Failed to create data directory: {type(e).__name__}: {e}")
+                return RedirectResponse(url=f"/sync/connections/{connection_id}?error={msg}", status_code=303)
+    else:
+        meta["data_dir"] = None
     eq = (extra_query_ids or "").strip()
     if eq:
         meta["extra_query_ids"] = _split_query_tokens(eq)
     elif (conn.connector or "").upper() == "IB_FLEX_WEB":
         # If user clears the field for IB Flex Web, treat as "no extra queries".
         meta["extra_query_ids"] = []
-    conn.metadata_json = meta
+    conn.metadata_json = dict(meta)
+    # Ensure JSON updates persist even if the ORM doesn't detect mutations for this column type.
+    flag_modified(conn, "metadata_json")
     session.flush()
     log_change(
         session,
@@ -398,22 +514,31 @@ def connection_upload_file(
     note: str = Form(default=""),
 ):
     conn = session.query(ExternalConnection).filter(ExternalConnection.id == connection_id).one()
-    meta = conn.metadata_json or {}
+    meta = dict(conn.metadata_json or {})
     dd = os.path.expanduser(str(meta.get("data_dir") or ""))
     base_dir = Path(dd) if dd else (Path("data") / "external" / f"conn_{conn.id}")
     base_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        base_dir = base_dir.resolve()
+    except Exception:
+        pass
 
     orig = Path(upload.filename or "upload.bin").name
     safe = "".join(ch for ch in orig if ch.isalnum() or ch in {".", "_", "-"}).strip("._")
     if not safe:
         safe = "upload.bin"
     dest = base_dir / safe
-    data = upload.file.read()
-    dest.write_bytes(data)
+    with dest.open("wb") as f:
+        shutil.copyfileobj(upload.file, f)
+    try:
+        size = int(dest.stat().st_size)
+    except Exception:
+        size = 0
 
     if not meta.get("data_dir"):
         meta["data_dir"] = str(base_dir)
-        conn.metadata_json = meta
+    conn.metadata_json = dict(meta)
+    flag_modified(conn, "metadata_json")
 
     log_change(
         session,
@@ -422,10 +547,22 @@ def connection_upload_file(
         entity="ExternalConnection",
         entity_id=str(conn.id),
         old=None,
-        new={"file": safe, "bytes": len(data), "data_dir": str(base_dir)},
+        new={"file": safe, "bytes": size, "data_dir": str(base_dir)},
         note=note or "Uploaded offline statement file",
     )
     session.commit()
+    ext = Path(safe).suffix.lower()
+    supported_exts = {".csv", ".tsv", ".txt", ".xml"}
+    if (conn.connector or "").upper() in {"RJ_OFFLINE", "CHASE_OFFLINE"}:
+        supported_exts.add(".pdf")
+    if ext and ext not in supported_exts:
+        hint = ".csv/.tsv/.txt/.xml"
+        if (conn.connector or "").upper() in {"RJ_OFFLINE", "CHASE_OFFLINE"}:
+            hint = ".csv/.tsv/.txt/.xml (or .pdf statements for holdings totals)"
+        msg = urllib.parse.quote(
+            f"Uploaded '{safe}', but this file type ({ext}) is not parsed. Export as {hint} and re-upload."
+        )
+        return RedirectResponse(url=f"/sync/connections/{connection_id}?error={msg}", status_code=303)
     return RedirectResponse(url=f"/sync/connections/{connection_id}", status_code=303)
 
 
@@ -446,9 +583,30 @@ def connection_run_sync(
     if (conn.status or "").upper() != "ACTIVE":
         msg = urllib.parse.quote("Connection is disabled. Re-enable it before syncing.")
         return RedirectResponse(url=f"/sync/connections/{connection_id}?error={msg}", status_code=303)
+
+    # Guard against double-submits: SQLite will frequently error with "database is locked" if we try to run
+    # two syncs concurrently in the same local DB.
+    try:
+        existing = (
+            session.query(SyncRun)
+            .filter(SyncRun.connection_id == connection_id, SyncRun.finished_at.is_(None))
+            .order_by(SyncRun.started_at.desc())
+            .first()
+        )
+        if existing is not None and existing.started_at is not None:
+            age = dt.datetime.now(dt.timezone.utc) - existing.started_at
+            if age < dt.timedelta(hours=6):
+                msg = urllib.parse.quote(f"Sync already running (started {existing.started_at.isoformat()}).")
+                return RedirectResponse(url=f"/sync/connections/{connection_id}?error={msg}", status_code=303)
+    except Exception:
+        pass
     mode_u = mode.strip().upper()
-    sd = dt.date.fromisoformat(start_date) if start_date.strip() else None
-    ed = dt.date.fromisoformat(end_date) if end_date.strip() else None
+    try:
+        sd = _parse_form_date(start_date)
+        ed = _parse_form_date(end_date)
+    except ValueError as e:
+        msg = urllib.parse.quote(str(e))
+        return RedirectResponse(url=f"/sync/connections/{connection_id}?error={msg}", status_code=303)
     store = store_payloads == "on"
     reprocess = reprocess_files == "on"
 
@@ -464,6 +622,12 @@ def connection_run_sync(
             actor=actor,
             reprocess_files=reprocess,
         )
+    except OperationalError as e:
+        if "database is locked" in str(e).lower():
+            msg = urllib.parse.quote("Sync failed: database is locked. Wait for the current sync to finish and try again.")
+        else:
+            msg = urllib.parse.quote(f"Sync failed: OperationalError: {e}")
+        return RedirectResponse(url=f"/sync/connections/{connection_id}?error={msg}", status_code=303)
     except Exception as e:
         msg = urllib.parse.quote(f"Sync failed: {type(e).__name__}: {e}")
         return RedirectResponse(url=f"/sync/connections/{connection_id}?error={msg}", status_code=303)
@@ -517,13 +681,16 @@ def connection_auth(
 ):
     conn = session.query(ExternalConnection).filter(ExternalConnection.id == connection_id).one()
     connector = (conn.connector or "").upper()
-    if connector in {"IB_FLEX_OFFLINE", "CHASE_OFFLINE"}:
+    if connector in {"IB_FLEX_OFFLINE", "CHASE_OFFLINE", "RJ_OFFLINE"}:
         raise HTTPException(status_code=400, detail="This connector does not use stored credentials.")
     cred_token_key = "IB_YODLEE_TOKEN"
     cred_qid_key = "IB_YODLEE_QUERY_ID"
-    if (conn.connector or "").upper() == "IB_FLEX_WEB":
+    if connector == "IB_FLEX_WEB":
         cred_token_key = "IB_FLEX_TOKEN"
         cred_qid_key = "IB_FLEX_QUERY_ID"
+    elif connector == "CHASE_YODLEE":
+        cred_token_key = "YODLEE_ACCESS_TOKEN"
+        cred_qid_key = "YODLEE_REFRESH_TOKEN"
     token_masked = get_credential_masked(session, connection_id=conn.id, key=cred_token_key)
     qid_masked = get_credential_masked(session, connection_id=conn.id, key=cred_qid_key)
     query_id_display = qid_masked
@@ -540,12 +707,15 @@ def connection_auth(
             "actor": actor,
             "auth_banner": auth_banner_message(),
             "conn": conn,
+            "connector": connector,
             "token_masked": token_masked,
             "query_id_masked": qid_masked,
             "query_id_display": query_id_display,
             "cred_token_key": cred_token_key,
             "cred_qid_key": cred_qid_key,
             "secret_key_ok": secret_key_available(),
+            "yodlee_base_url": (conn.metadata_json or {}).get("yodlee_base_url") or "",
+            "yodlee_api_version": (conn.metadata_json or {}).get("yodlee_api_version") or "",
         },
     )
 
@@ -556,25 +726,44 @@ def connection_auth_save(
     session: Session = Depends(db_session),
     actor: str = Depends(require_actor),
     token: str = Form(default=""),
+    refresh_token: str = Form(default=""),
     query_id: str = Form(default=""),
+    yodlee_base_url: str = Form(default=""),
+    yodlee_api_version: str = Form(default=""),
     note: str = Form(default=""),
 ):
     conn = session.query(ExternalConnection).filter(ExternalConnection.id == connection_id).one()
     connector = (conn.connector or "").upper()
-    if connector in {"IB_FLEX_OFFLINE", "CHASE_OFFLINE"}:
+    if connector in {"IB_FLEX_OFFLINE", "CHASE_OFFLINE", "RJ_OFFLINE"}:
         raise HTTPException(status_code=400, detail="This connector does not use stored credentials.")
     if not secret_key_available():
         raise HTTPException(status_code=400, detail="APP_SECRET_KEY is required to save credentials.")
     try:
         cred_token_key = "IB_YODLEE_TOKEN"
         cred_qid_key = "IB_YODLEE_QUERY_ID"
-        if (conn.connector or "").upper() == "IB_FLEX_WEB":
+        if connector == "IB_FLEX_WEB":
             cred_token_key = "IB_FLEX_TOKEN"
             cred_qid_key = "IB_FLEX_QUERY_ID"
-        if token.strip():
-            upsert_credential(session, connection_id=conn.id, key=cred_token_key, plaintext=token.strip())
-        if query_id.strip():
-            upsert_credential(session, connection_id=conn.id, key=cred_qid_key, plaintext=query_id.strip())
+        elif connector == "CHASE_YODLEE":
+            cred_token_key = "YODLEE_ACCESS_TOKEN"
+            cred_qid_key = "YODLEE_REFRESH_TOKEN"
+
+        if connector == "CHASE_YODLEE":
+            if token.strip():
+                upsert_credential(session, connection_id=conn.id, key=cred_token_key, plaintext=token.strip())
+            if refresh_token.strip():
+                upsert_credential(session, connection_id=conn.id, key=cred_qid_key, plaintext=refresh_token.strip())
+            meta = conn.metadata_json or {}
+            if yodlee_base_url.strip():
+                meta["yodlee_base_url"] = yodlee_base_url.strip()
+            if yodlee_api_version.strip():
+                meta["yodlee_api_version"] = yodlee_api_version.strip()
+            conn.metadata_json = meta
+        else:
+            if token.strip():
+                upsert_credential(session, connection_id=conn.id, key=cred_token_key, plaintext=token.strip())
+            if query_id.strip():
+                upsert_credential(session, connection_id=conn.id, key=cred_qid_key, plaintext=query_id.strip())
     except CredentialError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -607,6 +796,8 @@ def connection_test(
             "IB_YODLEE_QUERY_ID": get_credential(session, connection_id=conn.id, key="IB_YODLEE_QUERY_ID"),
             "IB_FLEX_TOKEN": get_credential(session, connection_id=conn.id, key="IB_FLEX_TOKEN"),
             "IB_FLEX_QUERY_ID": get_credential(session, connection_id=conn.id, key="IB_FLEX_QUERY_ID"),
+            "YODLEE_ACCESS_TOKEN": get_credential(session, connection_id=conn.id, key="YODLEE_ACCESS_TOKEN"),
+            "YODLEE_REFRESH_TOKEN": get_credential(session, connection_id=conn.id, key="YODLEE_REFRESH_TOKEN"),
         },
         run_settings={},
     )
@@ -714,6 +905,118 @@ def connection_purge_imported_data(
     )
     session.commit()
     return RedirectResponse(url=f"/sync/connections/{connection_id}", status_code=303)
+
+@router.post("/connections/purge-ib-flex-offline")
+def purge_all_ib_flex_offline(
+    session: Session = Depends(db_session),
+    actor: str = Depends(require_actor),
+    confirm: str = Form(default=""),
+    note: str = Form(default=""),
+):
+    """
+    Bulk purge for deprecated IB_FLEX_OFFLINE connections.
+    Intended to remove duplicate-imported artifacts from legacy connectors.
+    """
+    if (confirm or "").strip().upper() != "PURGE":
+        raise HTTPException(status_code=400, detail="Type PURGE to confirm.")
+
+    conns = (
+        session.query(ExternalConnection)
+        .filter(func.upper(func.coalesce(ExternalConnection.connector, "")) == "IB_FLEX_OFFLINE")
+        .all()
+    )
+    if not conns:
+        msg = urllib.parse.quote("No IB_FLEX_OFFLINE connections found.")
+        return RedirectResponse(url=f"/sync/connections?show_legacy=1&ok={msg}", status_code=303)
+
+    totals = {
+        "connections": 0,
+        "transactions_deleted": 0,
+        "holdings_snapshots_deleted": 0,
+        "payload_snapshots_deleted": 0,
+        "sync_runs_deleted": 0,
+        "file_ingests_deleted": 0,
+    }
+
+    for conn in conns:
+        txn_ids = [
+            r[0]
+            for r in session.query(ExternalTransactionMap.transaction_id)
+            .filter(ExternalTransactionMap.connection_id == conn.id)
+            .all()
+        ]
+        tx_deleted = 0
+        if txn_ids:
+            session.query(ExternalTransactionMap).filter(ExternalTransactionMap.connection_id == conn.id).delete(
+                synchronize_session=False
+            )
+            tx_deleted = (
+                session.query(Transaction).filter(Transaction.id.in_(txn_ids)).delete(synchronize_session=False)
+            )
+        else:
+            session.query(ExternalTransactionMap).filter(ExternalTransactionMap.connection_id == conn.id).delete(
+                synchronize_session=False
+            )
+
+        hs_deleted = session.query(ExternalHoldingSnapshot).filter(
+            ExternalHoldingSnapshot.connection_id == conn.id
+        ).delete(synchronize_session=False)
+        fi_deleted = session.query(ExternalFileIngest).filter(ExternalFileIngest.connection_id == conn.id).delete(
+            synchronize_session=False
+        )
+        run_ids = [r[0] for r in session.query(SyncRun.id).filter(SyncRun.connection_id == conn.id).all()]
+        ps_deleted = 0
+        if run_ids:
+            ps_deleted = (
+                session.query(ExternalPayloadSnapshot)
+                .filter(ExternalPayloadSnapshot.sync_run_id.in_(run_ids))
+                .delete(synchronize_session=False)
+            )
+        runs_deleted = session.query(SyncRun).filter(SyncRun.connection_id == conn.id).delete(
+            synchronize_session=False
+        )
+
+        # Reset pointers/coverage and disable connector to prevent accidental re-sync.
+        conn.last_successful_sync_at = None
+        conn.last_successful_txn_end = None
+        conn.holdings_last_asof = None
+        conn.txn_earliest_available = None
+        conn.last_full_sync_at = None
+        conn.coverage_status = "UNKNOWN"
+        conn.last_error_json = None
+        conn.status = "DISABLED"
+        session.flush()
+
+        log_change(
+            session,
+            actor=actor,
+            action="PURGE_LEGACY_IB_FLEX_OFFLINE",
+            entity="ExternalConnection",
+            entity_id=str(conn.id),
+            old=None,
+            new={
+                "transactions_deleted": int(tx_deleted),
+                "holdings_snapshots_deleted": int(hs_deleted),
+                "payload_snapshots_deleted": int(ps_deleted),
+                "sync_runs_deleted": int(runs_deleted),
+                "file_ingests_deleted": int(fi_deleted),
+                "status": str(conn.status),
+            },
+            note=note.strip() or "Purged legacy IB_FLEX_OFFLINE imported data",
+        )
+
+        totals["connections"] += 1
+        totals["transactions_deleted"] += int(tx_deleted)
+        totals["holdings_snapshots_deleted"] += int(hs_deleted)
+        totals["payload_snapshots_deleted"] += int(ps_deleted)
+        totals["sync_runs_deleted"] += int(runs_deleted)
+        totals["file_ingests_deleted"] += int(fi_deleted)
+
+    session.commit()
+    msg = urllib.parse.quote(
+        f"Purged IB_FLEX_OFFLINE: conns={totals['connections']}, tx={totals['transactions_deleted']}, snaps={totals['holdings_snapshots_deleted']}"
+    )
+    return RedirectResponse(url=f"/sync/connections?show_legacy=1&ok={msg}", status_code=303)
 
 
 @router.post("/connections/{connection_id}/rebuild-lots")

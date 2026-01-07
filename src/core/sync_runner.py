@@ -18,6 +18,8 @@ from src.core.broker_tax import link_broker_wash_sales
 from src.adapters.ib_flex_offline.adapter import IBFlexOfflineAdapter
 from src.adapters.ib_flex_web.adapter import IBFlexWebAdapter
 from src.adapters.chase_offline.adapter import ChaseOfflineAdapter
+from src.adapters.rj_offline.adapter import RJOfflineAdapter
+from src.adapters.yodlee_chase.adapter import YodleeChaseAdapter
 from src.db.audit import log_change
 from src.db.models import (
     Account,
@@ -42,6 +44,155 @@ from src.utils.time import utcfromtimestamp, utcnow
 
 class SyncConfigError(Exception):
     pass
+
+
+def _derive_holdings_snapshot_from_transactions(
+    *,
+    base_holdings: dict[str, Any],
+    txns: list[Transaction],
+    as_of: dt.datetime,
+    source_label: str,
+) -> dict[str, Any]:
+    """
+    Best-effort "roll forward" holdings snapshot using a baseline holdings snapshot plus
+    subsequent transactions. This is planning-grade (not authoritative), but makes the
+    UI reflect recent activity when a fresh holdings file hasn't been uploaded yet.
+    """
+    base_items = base_holdings.get("items") or []
+    provider_acct = "RJ:TAXABLE"
+    # Track positions by symbol (excluding cash).
+    positions: dict[str, dict[str, float | None]] = {}
+    # Track last known unit price per symbol (market_value/qty).
+    unit_price: dict[str, float] = {}
+    cash = 0.0
+    for it in base_items if isinstance(base_items, list) else []:
+        if not isinstance(it, dict):
+            continue
+        pa = str(it.get("provider_account_id") or "").strip()
+        if pa:
+            provider_acct = pa
+        sym = str(it.get("symbol") or it.get("ticker") or "").strip().upper()
+        if not sym:
+            continue
+        if bool(it.get("is_total")):
+            continue
+        try:
+            q_raw = it.get("qty")
+            if q_raw is None or str(q_raw).strip() == "":
+                q_raw = it.get("quantity")
+            qty = float(q_raw) if q_raw not in (None, "") else 0.0
+        except Exception:
+            qty = 0.0
+        try:
+            mv_raw = it.get("market_value")
+            mv = float(mv_raw) if mv_raw not in (None, "") else None
+        except Exception:
+            mv = None
+        if sym.startswith("CASH:"):
+            try:
+                cash = float(mv if mv is not None else qty)
+            except Exception:
+                cash = 0.0
+            continue
+        if qty <= 0:
+            continue
+        positions[sym] = {"qty": qty, "market_value": mv}
+        if mv is not None and abs(qty) > 1e-9:
+            unit_price[sym] = float(mv) / float(qty)
+
+    def _infer_trade_delta(tx: Transaction) -> float | None:
+        if tx.qty is None:
+            return None
+        try:
+            q = float(tx.qty)
+        except Exception:
+            return None
+        if abs(q) <= 1e-12:
+            return None
+        t = str(tx.type or "").strip().upper()
+        if t == "BUY":
+            return abs(q)
+        if t == "SELL":
+            return -abs(q)
+        # Fallback for misclassified rows: infer by cashflow sign.
+        try:
+            a = float(tx.amount or 0.0)
+        except Exception:
+            a = 0.0
+        return abs(q) if a < 0 else -abs(q)
+
+    for tx in txns:
+        try:
+            cash += float(tx.amount or 0.0)
+        except Exception:
+            pass
+        sym = str(tx.ticker or "").strip().upper()
+        if not sym or sym == "UNKNOWN":
+            continue
+        delta = _infer_trade_delta(tx)
+        if delta is None:
+            continue
+        cur_qty = float(positions.get(sym, {}).get("qty") or 0.0)
+        new_qty = cur_qty + float(delta)
+        if new_qty <= 1e-9:
+            positions.pop(sym, None)
+            unit_price.pop(sym, None)
+            continue
+        # Update unit price when we have a trade price (best-effort).
+        if sym not in unit_price or unit_price.get(sym, 0.0) <= 0:
+            try:
+                q = abs(float(tx.qty or 0.0))
+                a = abs(float(tx.amount or 0.0))
+                if q > 1e-9 and a > 1e-9:
+                    unit_price[sym] = a / q
+            except Exception:
+                pass
+        mv = None
+        if sym in unit_price:
+            mv = float(unit_price[sym]) * float(new_qty)
+        positions[sym] = {"qty": float(new_qty), "market_value": mv}
+
+    items_out: list[dict[str, Any]] = []
+    # Keep ordering stable for display.
+    for sym in sorted(positions.keys()):
+        row = positions[sym]
+        items_out.append(
+            {
+                "provider_account_id": provider_acct,
+                "symbol": sym,
+                "qty": float(row.get("qty") or 0.0),
+                "market_value": float(row["market_value"]) if row.get("market_value") is not None else None,
+                "source_file": source_label,
+            }
+        )
+    # Cash is modeled as a position item as well as a CashBalance row.
+    items_out.append(
+        {
+            "provider_account_id": provider_acct,
+            "symbol": "CASH:USD",
+            "qty": float(cash),
+            "market_value": float(cash),
+            "asset_type": "CASH",
+            "source_file": source_label,
+        }
+    )
+    out: dict[str, Any] = {
+        "as_of": as_of.isoformat(),
+        "items": items_out,
+        "source_file": source_label,
+        "derived_from_transactions": True,
+        "derived_from_holdings_as_of": base_holdings.get("as_of"),
+    }
+    out["cash_balances"] = [
+        {
+            "provider_account_id": provider_acct,
+            "currency": "USD",
+            "amount": float(cash),
+            "as_of_date": as_of.date().isoformat(),
+            "source_file": source_label,
+        }
+    ]
+    return out
 
 
 @dataclass(frozen=True)
@@ -78,6 +229,8 @@ def _adapter_for(connection: ExternalConnection) -> BrokerAdapter:
     meta = connection.metadata_json or {}
     if provider == "YODLEE" and broker == "IB" and (meta.get("fixture_dir") or meta.get("fixture_accounts")):
         return YodleeIBFixtureAdapter()
+    if provider == "YODLEE" and broker == "CHASE" and connector == "CHASE_YODLEE":
+        return YodleeChaseAdapter()
     if provider == "YODLEE" and broker == "IB":
         raise SyncConfigError("Yodlee live sync is not implemented in MVP (network is not used). Use fixtures or IB Flex Offline.")
     if provider == "IB" and connector == "IB_FLEX_OFFLINE":
@@ -86,6 +239,8 @@ def _adapter_for(connection: ExternalConnection) -> BrokerAdapter:
         return IBFlexWebAdapter()
     if provider == "CHASE" and connector == "CHASE_OFFLINE":
         return ChaseOfflineAdapter()
+    if provider == "RJ" and connector == "RJ_OFFLINE":
+        return RJOfflineAdapter()
     raise SyncConfigError(
         f"No adapter configured for provider={provider} broker={broker} connector={connector}."
     )
@@ -115,13 +270,24 @@ def _select_offline_files(
     reprocess_files: bool,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     data_dir = _offline_data_dir(connection)
+    connector = (connection.connector or "").upper()
     if not data_dir.exists() or not data_dir.is_dir():
-        return [], {"data_dir": str(data_dir), "file_selected": 0, "file_skipped_seen": 0, "file_total": 0}
+        return [], {
+            "data_dir": str(data_dir),
+            "file_total_all": 0,
+            "file_total": 0,  # supported files
+            "file_unsupported_total": 0,
+            "file_selected": 0,
+            "file_skipped_seen": 0,
+        }
 
-    all_files: list[Path] = []
-    for p in sorted(data_dir.glob("**/*")):
-        if p.is_file() and p.suffix.lower() in {".csv", ".tsv", ".xml"}:
-            all_files.append(p)
+    supported_exts = {".csv", ".tsv", ".txt", ".xml"}
+    known_unsupported_exts = {".xlsx", ".xls", ".pdf"}
+
+    all_paths = [p for p in sorted(data_dir.glob("**/*")) if p.is_file()]
+    supported_files = [p for p in all_paths if p.suffix.lower() in supported_exts]
+    unsupported_files = [p for p in all_paths if p.suffix.lower() in known_unsupported_exts]
+    all_files = supported_files
 
     seen_hashes: set[str] = set()
     if not reprocess_files and mode == "INCREMENTAL":
@@ -136,7 +302,21 @@ def _select_offline_files(
     skipped_seen = 0
     for p in all_files:
         name = p.name.lower()
-        kind = "HOLDINGS" if ("position" in name or "holding" in name or "openpositions" in name) else "TRANSACTIONS"
+        kind = "HOLDINGS" if ("position" in name or "positions" in name or "holding" in name or "openpositions" in name or "portfolio" in name) else "TRANSACTIONS"
+        # RJ exports sometimes include transaction activity inside files named like "portfolio_*".
+        # Prefer content-based detection over filename heuristics to avoid silently skipping transactions.
+        if connector == "RJ_OFFLINE":
+            try:
+                from src.adapters.rj_offline.adapter import _looks_like_holdings, _looks_like_realized_pl, _looks_like_transactions
+
+                head = p.read_text(encoding="utf-8-sig", errors="ignore")[:50000]
+                if _looks_like_realized_pl(head) or (_looks_like_transactions(head) and not _looks_like_holdings(head)):
+                    kind = "TRANSACTIONS"
+                elif _looks_like_holdings(head):
+                    kind = "HOLDINGS"
+            except Exception:
+                # Fall back to filename heuristic.
+                pass
         if kind != "TRANSACTIONS":
             continue
         h = _sha256_file(p)
@@ -156,9 +336,112 @@ def _select_offline_files(
         )
     return selected, {
         "data_dir": str(data_dir),
-        "file_total": len(all_files),
+        "file_total_all": len(all_paths),
+        "file_total": len(all_files),  # supported files
+        "file_unsupported_total": len(unsupported_files),
         "file_selected": len(selected),
         "file_skipped_seen": skipped_seen,
+    }
+
+
+def _select_offline_holdings_files(
+    session: Session,
+    *,
+    connection: ExternalConnection,
+    mode: str,
+    reprocess_files: bool,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    data_dir = _offline_data_dir(connection)
+    if not data_dir.exists() or not data_dir.is_dir():
+        return [], {"data_dir": str(data_dir), "holdings_file_total": 0, "holdings_file_selected": 0, "holdings_file_skipped_seen": 0}
+
+    connector = (connection.connector or "").upper()
+    # Holdings snapshots can come from PDFs (e.g., monthly broker statements) as well as CSV-like exports.
+    # PDF parsing is supported for RJ and Chase (via pdftotext).
+    supported_exts = {".csv", ".tsv", ".txt", ".xml"}
+    if connector in {"RJ_OFFLINE", "CHASE_OFFLINE"}:
+        supported_exts.add(".pdf")
+    all_files = [p for p in sorted(data_dir.glob("**/*")) if p.is_file() and p.suffix.lower() in supported_exts]
+
+    seen_hashes: set[str] = set()
+    if not reprocess_files and mode == "INCREMENTAL":
+        rows = (
+            session.query(ExternalFileIngest.file_hash)
+            .filter(ExternalFileIngest.connection_id == connection.id, ExternalFileIngest.kind == "HOLDINGS")
+            .all()
+        )
+        seen_hashes = {r[0] for r in rows}
+
+    selected: list[dict[str, Any]] = []
+    skipped_seen = 0
+    holdings_total = 0
+    for p in all_files:
+        name = p.name.lower()
+        if p.suffix.lower() == ".pdf":
+            kind = "HOLDINGS"
+        else:
+            kind = "HOLDINGS" if ("position" in name or "positions" in name or "holding" in name or "openpositions" in name or "portfolio" in name) else "TRANSACTIONS"
+            # RJ exports sometimes include transaction activity inside files named like "portfolio_*".
+            # Prefer content-based detection over filename heuristics to avoid misclassifying activity as holdings.
+            if connector == "RJ_OFFLINE":
+                try:
+                    from src.adapters.rj_offline.adapter import _looks_like_holdings, _looks_like_realized_pl, _looks_like_transactions
+
+                    head = p.read_text(encoding="utf-8-sig", errors="ignore")[:50000]
+                    if _looks_like_holdings(head):
+                        kind = "HOLDINGS"
+                    elif _looks_like_realized_pl(head) or _looks_like_transactions(head):
+                        kind = "TRANSACTIONS"
+                except Exception:
+                    pass
+            # IB statement exports (e.g., MTM Summary / Activity Statement with Net Asset Value) are
+            # baseline valuation points for performance reporting.
+            if kind != "HOLDINGS" and connector in {"IB_FLEX_WEB", "IB_FLEX_OFFLINE"} and p.suffix.lower() in {".csv", ".tsv", ".txt"}:
+                try:
+                    head = p.read_text(encoding="utf-8-sig", errors="ignore")[:20000].lower()
+                    # IB exports are sectioned CSV/TSV with rows like:
+                    #   Statement,Data,Title,Activity Statement
+                    #   Statement,Data,Period,"January 1, 2025 - January 31, 2025"
+                    #   Net Asset Value,Header,...
+                    # We treat any statement that includes Net Asset Value as holdings-like (it contains a total).
+                    looks_like_ib_statement = ("statement" in head) and ("statement" in head and "period" in head)
+                    has_nav_section = ("net asset value" in head) and ("net asset value,header" in head or "net asset value\theader" in head)
+                    if looks_like_ib_statement and has_nav_section:
+                        kind = "HOLDINGS"
+                except Exception:
+                    pass
+            # Chase performance report exports contain period-ending market values (valuation points) but are not holdings-by-ticker.
+            if kind != "HOLDINGS" and connector == "CHASE_OFFLINE" and p.suffix.lower() in {".csv", ".tsv", ".txt"}:
+                try:
+                    head = p.read_text(encoding="utf-8-sig", errors="ignore")[:20000].lower()
+                    if ("ending market value" in head) and (("wealth generated" in head) or ("beginning market value" in head)):
+                        kind = "HOLDINGS"
+                except Exception:
+                    pass
+        if kind != "HOLDINGS":
+            continue
+        holdings_total += 1
+        h = _sha256_file(p)
+        if not reprocess_files and mode == "INCREMENTAL" and h in seen_hashes:
+            skipped_seen += 1
+            continue
+        st = p.stat()
+        selected.append(
+            {
+                "path": str(p),
+                "file_hash": h,
+                "kind": "HOLDINGS",
+                "file_name": p.name,
+                "file_bytes": int(st.st_size),
+                "file_mtime_iso": utcfromtimestamp(st.st_mtime).isoformat(),
+            }
+        )
+
+    return selected, {
+        "data_dir": str(data_dir),
+        "holdings_file_total": int(holdings_total),
+        "holdings_file_selected": len(selected),
+        "holdings_file_skipped_seen": skipped_seen,
     }
 
 
@@ -392,14 +675,31 @@ def run_sync(
 
     run_settings: dict[str, Any] = {}
     offline_metrics: dict[str, Any] | None = None
+    offline_holdings_metrics: dict[str, Any] | None = None
     connector = (conn.connector or "").upper()
-    is_offline_files = connector in {"IB_FLEX_OFFLINE", "CHASE_OFFLINE"}
+    is_offline_files = connector in {"IB_FLEX_OFFLINE", "CHASE_OFFLINE", "RJ_OFFLINE"}
+    # Allow importing offline holdings snapshots (e.g., baseline statement valuations) even for live connectors.
+    # This is especially useful for IB Flex Web when historical holdings snapshots cannot be fetched via the API.
+    holdings_files: list[dict[str, Any]] = []
     if is_offline_files:
         files, offline_metrics = _select_offline_files(
             session, connection=conn, mode=mode_u, reprocess_files=bool(reprocess_files)
         )
+        holdings_files, offline_holdings_metrics = _select_offline_holdings_files(
+            session, connection=conn, mode=mode_u, reprocess_files=bool(reprocess_files)
+        )
         run_settings["selected_files"] = files
+        run_settings["holdings_files"] = holdings_files
         run_settings["offline_metrics"] = offline_metrics
+        run_settings["offline_holdings_metrics"] = offline_holdings_metrics
+    else:
+        # For live connectors, only select holdings-like files; transactions should still come from the adapter.
+        holdings_files, offline_holdings_metrics = _select_offline_holdings_files(
+            session, connection=conn, mode=mode_u, reprocess_files=bool(reprocess_files)
+        )
+        if holdings_files:
+            run_settings["holdings_files"] = holdings_files
+            run_settings["offline_holdings_metrics"] = offline_holdings_metrics
 
     ctx = AdapterConnectionContext(
         connection=conn,
@@ -408,6 +708,8 @@ def run_sync(
             "IB_YODLEE_QUERY_ID": get_credential(session, connection_id=conn.id, key="IB_YODLEE_QUERY_ID"),
             "IB_FLEX_TOKEN": get_credential(session, connection_id=conn.id, key="IB_FLEX_TOKEN"),
             "IB_FLEX_QUERY_ID": get_credential(session, connection_id=conn.id, key="IB_FLEX_QUERY_ID"),
+            "YODLEE_ACCESS_TOKEN": get_credential(session, connection_id=conn.id, key="YODLEE_ACCESS_TOKEN"),
+            "YODLEE_REFRESH_TOKEN": get_credential(session, connection_id=conn.id, key="YODLEE_REFRESH_TOKEN"),
         },
         run_settings=run_settings,
     )
@@ -491,11 +793,14 @@ def run_sync(
         "updated_existing": 0,
         "holdings_asof": None,
         "holdings_items_imported": 0,
+        "holdings_snapshots_imported": 0,
         "accounts_fetched": 0,
         "file_count": 0,  # offline: files processed this run
         "file_new_recorded": 0,  # offline: new file hashes added
         "file_selected": 0,
         "file_skipped_seen": 0,
+        "holdings_file_selected": 0,
+        "holdings_file_skipped_seen": 0,
         "data_dir": None,
         # Live connectors: report-level payload idempotency tracking.
         "report_payloads_recorded": 0,
@@ -503,8 +808,15 @@ def run_sync(
     }
     if offline_metrics:
         coverage["data_dir"] = offline_metrics.get("data_dir")
+        coverage["file_total"] = int(offline_metrics.get("file_total") or 0)
+        coverage["file_total_all"] = int(offline_metrics.get("file_total_all") or 0)
+        coverage["file_unsupported_total"] = int(offline_metrics.get("file_unsupported_total") or 0)
         coverage["file_selected"] = int(offline_metrics.get("file_selected") or 0)
         coverage["file_skipped_seen"] = int(offline_metrics.get("file_skipped_seen") or 0)
+    if offline_holdings_metrics:
+        coverage["holdings_file_total"] = int(offline_holdings_metrics.get("holdings_file_total") or 0)
+        coverage["holdings_file_selected"] = int(offline_holdings_metrics.get("holdings_file_selected") or 0)
+        coverage["holdings_file_skipped_seen"] = int(offline_holdings_metrics.get("holdings_file_skipped_seen") or 0)
 
     try:
         # FULL mode negotiation happens after the SyncRun record exists so network/provider failures do not 500 the UI.
@@ -577,7 +889,7 @@ def run_sync(
         latest: dt.date | None = None
         is_offline_flex = (conn.provider or "").upper() == "IB" and (conn.connector or "").upper() == "IB_FLEX_OFFLINE"
 
-        if is_offline_flex and not ((ctx.run_settings or {}).get("selected_files") or []):
+        if is_offline_files and not ((ctx.run_settings or {}).get("selected_files") or []):
             exhausted = True
         while not exhausted:
             try:
@@ -823,6 +1135,10 @@ def run_sync(
                     description = str(it.get("description") or "")
                     qty = it.get("qty")
                     qty_f = float(qty) if qty not in (None, "") else None
+                    # Some providers encode SELL quantities as negative numbers (e.g., RJ offline exports).
+                    # Normalize BUY/SELL quantities to positive values for downstream lot reconstruction.
+                    if tx_type in {"BUY", "SELL"} and qty_f is not None:
+                        qty_f = abs(float(qty_f))
                     symbol = it.get("ticker") or it.get("symbol")
                     provider_account_id = str(it.get("provider_account_id") or it.get("account_id") or "")
 
@@ -898,8 +1214,11 @@ def run_sync(
                                     "provider_account_id": provider_account_id,
                                     "raw_type": it.get("type"),
                                     "description": description,
+                                    "additional_detail": it.get("additional_detail"),
                                     "currency": it.get("currency"),
                                     "cashflow_kind": it.get("cashflow_kind"),
+                                    "source_file": it.get("source_file"),
+                                    "source_row": it.get("source_row"),
                                 },
                             )
                             session.add(txn)
@@ -974,7 +1293,10 @@ def run_sync(
                 break
             # If a next_cursor is provided, keep paginating regardless of count.
             # Some providers return short pages even when more data exists.
-            if len(items) == 0:
+            #
+            # Offline file connectors can legitimately produce empty pages (e.g., a holdings-only file in the
+            # transactions iterator). Do not treat that as exhaustion when a next_cursor exists.
+            if len(items) == 0 and not is_offline_files:
                 exhausted = True
                 break
 
@@ -983,94 +1305,310 @@ def run_sync(
 
         if pull_holdings:
             try:
-                holdings = adapter.fetch_holdings(ctx, as_of=now_dt)
-                if store_payloads:
-                    session.add(
-                        ExternalPayloadSnapshot(
-                            sync_run_id=run.id, kind="holdings", cursor=None, payload_json=holdings
-                        )
-                    )
-                skipped_hashes = (ctx.run_settings or {}).get("skipped_payload_hashes")
-                if isinstance(skipped_hashes, list) and skipped_hashes and not reprocess_files:
-                    # If we skipped all transaction pages due to report-level idempotency, adapters may return empty
-                    # holdings (no parsing happened). Avoid writing an empty snapshot in that case.
-                    if isinstance(holdings, dict) and not list(holdings.get("items") or []):
-                        coverage["holdings_skipped"] = int(coverage.get("holdings_skipped") or 0) + 1
-                        warnings.append("Holdings snapshot skipped: this run only re-fetched already-imported report payload(s).")
-                        raise ProviderError("Holdings skipped")
-                # Live connectors may return holdings derived from one or more report payload hashes. If we've already
-                # ingested those payloads and we're not explicitly reprocessing, skip inserting another identical
-                # snapshot (prevents duplicate snapshots when IB returns the same report content).
-                if isinstance(holdings, dict) and not reprocess_files:
-                    ph = holdings.get("payload_hashes")
-                    if isinstance(ph, list) and ph:
-                        seen = (
-                            session.query(ExternalFileIngest.file_hash)
-                            .filter(ExternalFileIngest.connection_id == conn.id, ExternalFileIngest.kind == "REPORT_PAYLOAD")
-                            .all()
-                        )
-                        seen_set = {r[0] for r in seen}
-                        new_hashes = set((ctx.run_settings or {}).get("new_payload_hashes") or [])
-                        if all((str(h) in seen_set) and (str(h) not in new_hashes) for h in ph):
-                            coverage["holdings_skipped"] = int(coverage.get("holdings_skipped") or 0) + 1
-                            warnings.append("Holdings snapshot skipped: derived from an already-imported report payload (idempotent).")
-                            raise ProviderError("Holdings skipped")
-                as_of_str = holdings.get("as_of") or now_dt.isoformat()
-                as_of_dt = dt.datetime.fromisoformat(as_of_str.replace("Z", "+00:00")) if isinstance(as_of_str, str) else now_dt
-                # Idempotency: offline files often reuse the same as_of (file mtime), so repeated runs can create
-                # duplicate snapshots. Upsert by (connection_id, as_of).
-                existing_snap = (
-                    session.query(ExternalHoldingSnapshot)
-                    .filter(ExternalHoldingSnapshot.connection_id == conn.id, ExternalHoldingSnapshot.as_of == as_of_dt)
-                    .order_by(ExternalHoldingSnapshot.id.desc())
-                    .first()
-                )
-                if existing_snap is not None:
-                    existing_snap.payload_json = holdings
-                else:
-                    session.add(ExternalHoldingSnapshot(connection_id=conn.id, as_of=as_of_dt, payload_json=holdings))
-                coverage["holdings_asof"] = as_of_dt.isoformat()
-                coverage["holdings_items_imported"] = len(list(holdings.get("items") or [])) if isinstance(holdings, dict) else 0
+                def _import_holdings_payload(holdings: dict[str, Any], *, source_file: dict[str, Any] | None = None) -> None:
+                    as_of_str = holdings.get("as_of") or now_dt.isoformat()
+                    try:
+                        as_of_dt = dt.datetime.fromisoformat(str(as_of_str).replace("Z", "+00:00"))
+                    except Exception:
+                        as_of_dt = now_dt
 
-                # Optional: import cash balances when provided by the adapter.
-                # MVP assumes USD cash; non-USD is ignored with a warning (no FX in DB schema).
-                if isinstance(holdings, dict) and isinstance(holdings.get("cash_balances"), list) and account_map:
-                    cash_by_account_id: dict[int, float] = {}
-                    cash_date_by_account_id: dict[int, dt.date] = {}
-                    ignored_non_usd = 0
-                    for r in holdings.get("cash_balances") or []:
-                        try:
-                            ccy = str((r or {}).get("currency") or "USD").strip().upper()
-                            if ccy and ccy != "USD":
-                                ignored_non_usd += 1
-                                continue
-                            provider_account_id = str((r or {}).get("provider_account_id") or "")
-                            acct_id = account_map.get(provider_account_id) if provider_account_id else None
-                            if acct_id is None:
-                                acct_id = next(iter(account_map.values()))
-                            amt = float((r or {}).get("amount"))
-                            cash_by_account_id[acct_id] = float(cash_by_account_id.get(acct_id) or 0.0) + amt
-                            d_s = (r or {}).get("as_of_date")
-                            if isinstance(d_s, str) and d_s.strip():
+                    # Track min/max as-of (useful for debugging performance coverage).
+                    prev_min = str(coverage.get("holdings_asof_min") or "").strip()
+                    prev_max = str(coverage.get("holdings_asof_max") or "").strip()
+                    try:
+                        prev_min_dt = dt.datetime.fromisoformat(prev_min.replace("Z", "+00:00")) if prev_min else None
+                    except Exception:
+                        prev_min_dt = None
+                    try:
+                        prev_max_dt = dt.datetime.fromisoformat(prev_max.replace("Z", "+00:00")) if prev_max else None
+                    except Exception:
+                        prev_max_dt = None
+                    if prev_min_dt is None or as_of_dt < prev_min_dt:
+                        coverage["holdings_asof_min"] = as_of_dt.isoformat()
+                    if prev_max_dt is None or as_of_dt > prev_max_dt:
+                        coverage["holdings_asof_max"] = as_of_dt.isoformat()
+
+                    existing_snap = (
+                        session.query(ExternalHoldingSnapshot)
+                        .filter(ExternalHoldingSnapshot.connection_id == conn.id, ExternalHoldingSnapshot.as_of == as_of_dt)
+                        .order_by(ExternalHoldingSnapshot.id.desc())
+                        .first()
+                    )
+                    if existing_snap is not None:
+                        existing_snap.payload_json = holdings
+                    else:
+                        session.add(ExternalHoldingSnapshot(connection_id=conn.id, as_of=as_of_dt, payload_json=holdings))
+
+                    try:
+                        items_list = list(holdings.get("items") or [])
+                        items_n = len(items_list)
+                    except Exception:
+                        items_list = []
+                        items_n = 0
+                    coverage["holdings_snapshots_imported"] = int(coverage.get("holdings_snapshots_imported") or 0) + 1
+                    coverage["holdings_items_imported"] = int(coverage.get("holdings_items_imported") or 0) + int(items_n)
+
+                    prev_asof = str(coverage.get("holdings_asof") or "").strip()
+                    try:
+                        prev_dt = dt.datetime.fromisoformat(prev_asof.replace("Z", "+00:00")) if prev_asof else None
+                    except Exception:
+                        prev_dt = None
+                    best_dt = as_of_dt if (prev_dt is None or as_of_dt > prev_dt) else prev_dt
+                    coverage["holdings_asof"] = best_dt.isoformat()
+
+                    # Small debug rollup: which valuation points did we ingest this run?
+                    # Keep it small to avoid bloating coverage_json.
+                    try:
+                        dbg = coverage.setdefault("holdings_snapshot_debug", [])
+                        if isinstance(dbg, list) and len(dbg) < 30:
+                            total_value = holdings.get("statement_total_value")
+                            if total_value is None and items_list:
                                 try:
-                                    cash_date_by_account_id[acct_id] = dt.date.fromisoformat(d_s.strip())
+                                    for it in items_list:
+                                        if isinstance(it, dict) and bool(it.get("is_total")):
+                                            total_value = it.get("market_value")
+                                            break
                                 except Exception:
                                     pass
-                        except Exception:
-                            continue
+                            src_name = None
+                            try:
+                                src_name = str(holdings.get("source_file") or "").strip() or None
+                            except Exception:
+                                src_name = None
+                            if source_file and not src_name:
+                                try:
+                                    src_name = str(source_file.get("file_name") or "").strip() or None
+                                except Exception:
+                                    src_name = None
+                            dbg.append(
+                                {
+                                    "as_of": as_of_dt.isoformat(),
+                                    "source_file": src_name,
+                                    "items": int(items_n),
+                                    "statement_period_start": holdings.get("statement_period_start"),
+                                    "statement_period_end": holdings.get("statement_period_end"),
+                                    "statement_total_value": float(total_value) if total_value is not None else None,
+                                }
+                            )
+                    except Exception:
+                        pass
 
-                    for acct_id, amt in cash_by_account_id.items():
-                        cb_date = cash_date_by_account_id.get(acct_id) or as_of_dt.date()
-                        existing_cb = session.query(CashBalance).filter(
-                            CashBalance.account_id == acct_id, CashBalance.as_of_date == cb_date
-                        ).one_or_none()
-                        if existing_cb is not None:
-                            existing_cb.amount = float(amt)
+                    # Record file ingestion for holdings files (idempotent).
+                    if source_file:
+                        try:
+                            with session.begin_nested():
+                                session.add(
+                                    ExternalFileIngest(
+                                        connection_id=conn.id,
+                                        kind="HOLDINGS",
+                                        file_name=str(source_file.get("file_name") or Path(str(source_file.get("path"))).name),
+                                        file_hash=str(source_file.get("file_hash")),
+                                        file_bytes=int(source_file.get("file_bytes") or 0) or None,
+                                        file_mtime=dt.datetime.fromisoformat(str(source_file.get("file_mtime_iso")))
+                                        if source_file.get("file_mtime_iso")
+                                        else None,
+                                    )
+                                )
+                        except IntegrityError:
+                            pass
+                        except Exception:
+                            pass
+
+                    # Optional: import cash balances when provided by the adapter.
+                    # MVP assumes USD cash; non-USD is ignored with a warning (no FX in DB schema).
+                    if isinstance(holdings.get("cash_balances"), list) and account_map:
+                        cash_by_account_id: dict[int, float] = {}
+                        cash_date_by_account_id: dict[int, dt.date] = {}
+                        ignored_non_usd = 0
+                        for r in holdings.get("cash_balances") or []:
+                            try:
+                                ccy = str((r or {}).get("currency") or "USD").strip().upper()
+                                if ccy and ccy != "USD":
+                                    ignored_non_usd += 1
+                                    continue
+                                provider_account_id = str((r or {}).get("provider_account_id") or "")
+                                acct_id = account_map.get(provider_account_id) if provider_account_id else None
+                                if acct_id is None:
+                                    acct_id = next(iter(account_map.values()))
+                                amt = float((r or {}).get("amount"))
+                                cash_by_account_id[acct_id] = float(cash_by_account_id.get(acct_id) or 0.0) + amt
+                                d_s = (r or {}).get("as_of_date")
+                                if isinstance(d_s, str) and d_s.strip():
+                                    try:
+                                        cash_date_by_account_id[acct_id] = dt.date.fromisoformat(d_s.strip())
+                                    except Exception:
+                                        pass
+                            except Exception:
+                                continue
+
+                        for acct_id, amt in cash_by_account_id.items():
+                            cb_date = cash_date_by_account_id.get(acct_id) or as_of_dt.date()
+                            existing_cb = session.query(CashBalance).filter(
+                                CashBalance.account_id == acct_id, CashBalance.as_of_date == cb_date
+                            ).one_or_none()
+                            if existing_cb is not None:
+                                existing_cb.amount = float(amt)
+                            else:
+                                session.add(CashBalance(account_id=acct_id, as_of_date=cb_date, amount=float(amt)))
+                        if ignored_non_usd:
+                            warnings.append(f"Ignored {ignored_non_usd} non-USD cash row(s); MVP does not model FX cash.")
+                        coverage["cash_balances_imported"] = int(coverage.get("cash_balances_imported") or 0) + int(len(cash_by_account_id))
+
+                if is_offline_files:
+                    holdings_files = (ctx.run_settings or {}).get("holdings_files") or []
+                    if isinstance(holdings_files, list) and holdings_files:
+                        for f in holdings_files:
+                            try:
+                                (ctx.run_settings or {})["holdings_file_path"] = str(f.get("path") or "")
+                                holdings = adapter.fetch_holdings(ctx, as_of=None)
+                                if isinstance(holdings, dict):
+                                    if store_payloads:
+                                        session.add(
+                                            ExternalPayloadSnapshot(
+                                                sync_run_id=run.id,
+                                                kind="holdings",
+                                                cursor=str(f.get("file_name") or f.get("path") or ""),
+                                                payload_json=holdings,
+                                            )
+                                        )
+                                    snaps = holdings.get("snapshots")
+                                    if isinstance(snaps, list) and snaps:
+                                        first = True
+                                        for s in snaps:
+                                            if not isinstance(s, dict):
+                                                continue
+                                            _import_holdings_payload(s, source_file=f if first else None)
+                                            first = False
+                                    else:
+                                        _import_holdings_payload(holdings, source_file=f)
+                            except ProviderError as e:
+                                if str(e) != "Holdings skipped":
+                                    warnings.append(f"Provider error fetching holdings: {type(e).__name__}: {e}")
+                            except Exception as e:
+                                warnings.append(f"Failed importing holdings file {Path(str(f.get('path') or '')).name}: {type(e).__name__}")
+                            finally:
+                                try:
+                                    (ctx.run_settings or {}).pop("holdings_file_path", None)
+                                except Exception:
+                                    pass
+                    else:
+                        # Offline file connectors: do not stamp an old holdings file with "now" just because a
+                        # transactions-only incremental sync ran. For RJ, roll forward the last holdings file using
+                        # the newly-imported transactions so the UI reflects recent activity.
+                        if connector == "RJ_OFFLINE" and account_map:
+                            try:
+                                base_holdings = adapter.fetch_holdings(ctx, as_of=None)
+                            except ProviderError:
+                                base_holdings = {}
+                            if isinstance(base_holdings, dict) and list(base_holdings.get("items") or []):
+                                # Apply transactions for this connection within the effective sync window.
+                                # We intentionally do not trust the holdings file's mtime-based as-of, since it can
+                                # be misleading when users copy old files into the directory.
+                                start_roll = eff_start
+                                end_roll = eff_end
+                                acct_ids = list({int(x) for x in account_map.values() if x})
+                                tx_rows = (
+                                    session.query(Transaction)
+                                    .join(ExternalTransactionMap, ExternalTransactionMap.transaction_id == Transaction.id)
+                                    .filter(
+                                        ExternalTransactionMap.connection_id == conn.id,
+                                        Transaction.account_id.in_(acct_ids),
+                                        Transaction.date >= start_roll,
+                                        Transaction.date <= end_roll,
+                                    )
+                                    .order_by(Transaction.date.asc(), Transaction.id.asc())
+                                    .all()
+                                )
+                                if tx_rows:
+                                    derived = _derive_holdings_snapshot_from_transactions(
+                                        base_holdings=base_holdings,
+                                        txns=tx_rows,
+                                        as_of=now_dt,
+                                        source_label=f"DERIVED_FROM_TXNS:{base_holdings.get('source_file') or 'RJ'}",
+                                    )
+                                    _import_holdings_payload(derived, source_file=None)
+                                    coverage["holdings_derived_txn_count"] = int(len(tx_rows))
+                                else:
+                                    coverage["holdings_skipped"] = int(coverage.get("holdings_skipped") or 0) + 1
+                                    warnings.append("Holdings snapshot not updated: no new holdings file selected and no post-snapshot transactions found.")
+                            else:
+                                coverage["holdings_skipped"] = int(coverage.get("holdings_skipped") or 0) + 1
+                                warnings.append("Holdings snapshot not updated: no holdings/positions file found to use as a baseline.")
                         else:
-                            session.add(CashBalance(account_id=acct_id, as_of_date=cb_date, amount=float(amt)))
-                    if ignored_non_usd:
-                        warnings.append(f"Ignored {ignored_non_usd} non-USD cash row(s); MVP does not model FX cash.")
-                    coverage["cash_balances_imported"] = int(len(cash_by_account_id))
+                            # Preserve existing behavior for other offline connectors (e.g. Chase): adapters may be
+                            # able to infer positions from activity-only exports when no positions file exists.
+                            holdings = adapter.fetch_holdings(ctx, as_of=now_dt)
+                            if isinstance(holdings, dict):
+                                if store_payloads:
+                                    session.add(
+                                        ExternalPayloadSnapshot(
+                                            sync_run_id=run.id, kind="holdings", cursor=None, payload_json=holdings
+                                        )
+                                    )
+                                _import_holdings_payload(holdings, source_file=None)
+                else:
+                    # Import any uploaded holdings statement files first (baseline valuation points), then pull live holdings.
+                    holdings_files = (ctx.run_settings or {}).get("holdings_files") or []
+                    if isinstance(holdings_files, list) and holdings_files:
+                        for f in holdings_files:
+                            try:
+                                (ctx.run_settings or {})["holdings_file_path"] = str(f.get("path") or "")
+                                holdings0 = adapter.fetch_holdings(ctx, as_of=None)
+                                if isinstance(holdings0, dict):
+                                    if store_payloads:
+                                        session.add(
+                                            ExternalPayloadSnapshot(
+                                                sync_run_id=run.id,
+                                                kind="holdings",
+                                                cursor=str(f.get("file_name") or f.get("path") or ""),
+                                                payload_json=holdings0,
+                                            )
+                                        )
+                                    _import_holdings_payload(holdings0, source_file=f)
+                            except ProviderError as e:
+                                if str(e) != "Holdings skipped":
+                                    warnings.append(f"Provider error importing holdings file: {type(e).__name__}: {e}")
+                            except Exception:
+                                warnings.append(f"Failed importing holdings file {Path(str(f.get('path') or '')).name}")
+                            finally:
+                                try:
+                                    (ctx.run_settings or {}).pop("holdings_file_path", None)
+                                except Exception:
+                                    pass
+                    holdings = adapter.fetch_holdings(ctx, as_of=now_dt)
+                    if store_payloads:
+                        session.add(
+                            ExternalPayloadSnapshot(
+                                sync_run_id=run.id, kind="holdings", cursor=None, payload_json=holdings
+                            )
+                        )
+                    skipped_hashes = (ctx.run_settings or {}).get("skipped_payload_hashes")
+                    if isinstance(skipped_hashes, list) and skipped_hashes and not reprocess_files:
+                        # If we skipped all transaction pages due to report-level idempotency, adapters may return empty
+                        # holdings (no parsing happened). Avoid writing an empty snapshot in that case.
+                        if isinstance(holdings, dict) and not list(holdings.get("items") or []) and not list(holdings.get("snapshots") or []):
+                            coverage["holdings_skipped"] = int(coverage.get("holdings_skipped") or 0) + 1
+                            warnings.append("Holdings snapshot skipped: this run only re-fetched already-imported report payload(s).")
+                            raise ProviderError("Holdings skipped")
+                    # Live connectors may return holdings derived from one or more report payload hashes. If we've already
+                    # ingested those payloads and we're not explicitly reprocessing, skip inserting another identical
+                    # snapshot (prevents duplicate snapshots when IB returns the same report content).
+                    if isinstance(holdings, dict) and not reprocess_files:
+                        ph = holdings.get("payload_hashes")
+                        if isinstance(ph, list) and ph:
+                            seen = (
+                                session.query(ExternalFileIngest.file_hash)
+                                .filter(ExternalFileIngest.connection_id == conn.id, ExternalFileIngest.kind == "REPORT_PAYLOAD")
+                                .all()
+                            )
+                            seen_set = {r[0] for r in seen}
+                            new_hashes = set((ctx.run_settings or {}).get("new_payload_hashes") or [])
+                            if all((str(h) in seen_set) and (str(h) not in new_hashes) for h in ph):
+                                coverage["holdings_skipped"] = int(coverage.get("holdings_skipped") or 0) + 1
+                                warnings.append("Holdings snapshot skipped: derived from an already-imported report payload (idempotent).")
+                                raise ProviderError("Holdings skipped")
+                    if isinstance(holdings, dict):
+                        _import_holdings_payload(holdings, source_file=None)
             except ProviderError as e:
                 # A deliberate "skip" uses ProviderError; keep it quiet.
                 if str(e) != "Holdings skipped":
@@ -1105,11 +1643,47 @@ def run_sync(
                 coverage["ib_flex_web_query_audit"] = qa[:50]
         except Exception:
             pass
+        # Persist safe Yodlee metrics (no secrets).
+        try:
+            hits = (ctx.run_settings or {}).get("yodlee_rate_limit_hits")
+            if hits is not None:
+                coverage["yodlee_rate_limit_hits"] = int(hits)
+        except Exception:
+            pass
 
-        if is_offline_files and coverage.get("file_count", 0) and coverage.get("txn_count", 0) == 0:
+        offline_imported_any = (
+            int(coverage.get("txn_count") or 0) > 0
+            or int(coverage.get("closed_lot_rows_imported") or 0) > 0
+            or int(coverage.get("wash_sale_rows_imported") or 0) > 0
+            or int(coverage.get("cash_balances_imported") or 0) > 0
+            or int(coverage.get("holdings_items_imported") or 0) > 0
+        )
+        if is_offline_files and int(coverage.get("file_total") or 0) == 0 and not offline_imported_any:
+            run.status = "PARTIAL"
+            unsupported = int(coverage.get("file_unsupported_total") or 0)
+            if unsupported > 0:
+                if (conn.connector or "").upper() == "RJ_OFFLINE":
+                    warnings.append(
+                        "No supported offline transaction files were found. "
+                        "CSV is required for transaction history; PDF statements can be used for holdings/performance if `pdftotext` is installed."
+                    )
+                else:
+                    warnings.append(
+                        "No supported offline files were found. "
+                        "It looks like you uploaded Excel/PDF exports; re-export as .csv/.tsv/.txt/.xml and re-run sync."
+                    )
+            else:
+                dd = str(coverage.get("data_dir") or "").strip()
+                loc = f" in {dd}" if dd else ""
+                warnings.append(
+                    "No offline files were found for this connection"
+                    + loc
+                    + ". Upload exports on the connection detail page, or set the Data directory to where the files live."
+                )
+        elif is_offline_files and coverage.get("file_count", 0) and not offline_imported_any:
             run.status = "PARTIAL"
             warnings.append(
-                "Offline files were processed but no transactions were parsed; check the file format/headers (IB Activity exports include a preamble)."
+                "Offline files were processed but no records were imported; check the file format/headers and date range."
             )
         elif not exhausted:
             run.status = "PARTIAL"
@@ -1175,6 +1749,11 @@ def run_sync(
                     "status": run.status,
                     "warnings": warnings[:50],
                     "parse_fail_count": int(coverage.get("parse_fail_count") or 0),
+                    "data_dir": coverage.get("data_dir"),
+                    "file_total_all": int(coverage.get("file_total_all") or 0),
+                    "file_total": int(coverage.get("file_total") or 0),
+                    "file_selected": int(coverage.get("file_selected") or 0),
+                    "file_unsupported_total": int(coverage.get("file_unsupported_total") or 0),
                 }
             )
 

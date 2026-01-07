@@ -1,0 +1,39 @@
+{% extends "layout.html" %}
+{% block content %}
+  <h1>Purge Expense Data</h1>
+
+  {% if request.query_params.get("error") %}
+    <div class="banner banner--warn">{{ request.query_params.get("error") }}</div>
+  {% endif %}
+
+  <div class="box">
+    <div class="banner banner--warn">
+      This permanently deletes expense data. Type <code>PURGE</code> to confirm.
+    </div>
+  </div>
+
+  <h2>Purge one account</h2>
+  <form method="post" action="/expenses/purge/account" class="box">
+    <label>Account
+      <select name="account_id" required>
+        <option value="">(select)</option>
+        {% for a in accounts %}
+          <option value="{{ a.id }}">{{ a.institution }} — {{ a.name }}{% if a.last4_masked %} (****{{ a.last4_masked }}){% endif %}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>Confirm <input name="confirm" placeholder="PURGE" /></label>
+    <button type="submit">Purge account</button>
+  </form>
+
+  <h2>Purge all expense data</h2>
+  <form method="post" action="/expenses/purge/all" class="box">
+    <label><input type="checkbox" name="include_rules" /> Also delete learned rules</label>
+    <label><input type="checkbox" name="include_categories" /> Also delete custom categories</label>
+    <label>Confirm <input name="confirm" placeholder="PURGE" /></label>
+    <button type="submit">Purge all</button>
+  </form>
+
+  <div class="muted"><a href="/expenses">Back to Expenses</a></div>
+{% endblock %}
+

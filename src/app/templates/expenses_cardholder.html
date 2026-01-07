@@ -1,0 +1,48 @@
+{% extends "layout.html" %}
+{% block content %}
+  <h1>Card Member: {{ cardholder }}</h1>
+  <div class="muted">
+    <a href="/expenses/reports?year={{ year }}{% if month %}&month={{ month }}{% endif %}{% if account_id and account_id!='0' %}&account_id={{ account_id }}{% endif %}">Back to reports</a> •
+    <a href="/expenses/cardholders?year={{ year }}{% if month %}&month={{ month }}{% endif %}{% if account_id and account_id!='0' %}&account_id={{ account_id }}{% endif %}">All card members</a>
+  </div>
+
+  <div class="box">
+    <div class="muted">Charge spend total (selected period; payments/credits excluded)</div>
+    <div>Spend: <strong>{{ spend_total|usd }}</strong></div>
+  </div>
+
+  {% if txns %}
+    <div class="table-scroll table-scroll--resizable">
+      <table>
+        <thead>
+          <tr>
+            <th class="col-date">Posted</th>
+            <th>Account</th>
+            <th>Merchant</th>
+            <th>Description</th>
+            <th>Category</th>
+            <th class="nowrap num">Amount</th>
+          </tr>
+        </thead>
+        <tbody>
+        {% for t in txns %}
+          <tr>
+            <td class="nowrap">{{ t.posted_date }}</td>
+            <td class="nowrap">
+              {{ t.institution }} {% if t.account_last4_masked %}****{{ t.account_last4_masked }}{% elif t.expense_account and t.expense_account.last4_masked %}****{{ t.expense_account.last4_masked }}{% endif %}
+            </td>
+            <td class="nowrap">
+              <a href="/expenses/merchant?name={{ t.merchant_norm|urlencode }}&year={{ year }}{% if month %}&month={{ month }}{% endif %}{% if account_id and account_id!='0' %}&account_id={{ account_id }}{% endif %}">{{ t.merchant_norm }}</a>
+            </td>
+            <td>{{ t.description_norm }}</td>
+            <td class="nowrap">{{ t.category_user or t.category_system or "Unknown" }}</td>
+            <td class="nowrap num">{{ t.amount|usd }}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% else %}
+    <div class="muted">No charge transactions found for this card member.</div>
+  {% endif %}
+{% endblock %}

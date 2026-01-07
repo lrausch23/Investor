@@ -62,7 +62,8 @@ def test_full_sync_imports_transactions_and_sets_earliest(session, tmp_path: Pat
     types = {t.type for t in session.query(Transaction).all()}
     assert "BUY" in types
     assert types != {"OTHER"}
-    assert session.query(ExternalFileIngest).count() == 1
+    # One transaction file + one holdings/positions file.
+    assert session.query(ExternalFileIngest).count() == 2
 
 
 def test_positions_cash_section_imports_cash_balance_latest_report_date(session, tmp_path: Path):

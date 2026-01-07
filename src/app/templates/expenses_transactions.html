@@ -1,0 +1,74 @@
+{% extends "layout.html" %}
+{% block content %}
+  <h1>Expense Transactions</h1>
+  <form method="get" action="/expenses/transactions" class="box">
+    <div class="grid3">
+      <label>Year <input name="year" value="{{ year or '' }}" size="6" /></label>
+      <label>Month <input name="month" value="{{ month or '' }}" size="4" placeholder="1-12" /></label>
+      <label>Account
+        <select name="account_id">
+          <option value="0">(all)</option>
+          <option value="credit" {% if account_id=="credit" %}selected{% endif %}>(all credit cards)</option>
+          <option value="bank" {% if account_id=="bank" %}selected{% endif %}>(all bank accounts)</option>
+          {% for a in accounts %}
+            <option value="{{ a.id }}" {% if account_id==(a.id|string) %}selected{% endif %}>{{ a.institution }} — {{ a.name }}</option>
+          {% endfor %}
+        </select>
+      </label>
+    </div>
+    <div class="grid3">
+      <label>Category
+        <select name="category">
+          <option value="">(any)</option>
+          {% for c in categories %}
+            <option value="{{ c }}" {% if category==c %}selected{% endif %}>{{ c }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>Search <input name="q" value="{{ q }}" size="40" placeholder="matches description" /></label>
+      <label>Page size <input name="page_size" value="{{ page_size }}" size="6" /></label>
+    </div>
+    <input type="hidden" name="page" value="1" />
+    <button type="submit">Filter</button>
+  </form>
+
+  <div class="muted">Matches: {{ total }} • Spend total: {{ spend_total|usd }}</div>
+  <div class="muted">
+    Page {{ page }} •
+    <a href="/expenses/transactions?year={{ year }}&month={{ month }}&account_id={{ account_id }}&category={{ category }}&q={{ q }}&page={{ page-1 }}&page_size={{ page_size }}">Prev</a> |
+    <a href="/expenses/transactions?year={{ year }}&month={{ month }}&account_id={{ account_id }}&category={{ category }}&q={{ q }}&page={{ page+1 }}&page_size={{ page_size }}">Next</a>
+  </div>
+
+  <div class="table-scroll table-scroll--resizable">
+    <table>
+      <thead>
+        <tr>
+          <th class="col-date">Posted</th>
+          <th>Account</th>
+          <th>Cardholder</th>
+          <th>Merchant</th>
+          <th>Description</th>
+          <th>Category</th>
+          <th class="nowrap num">Amount</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for t in txns %}
+          <tr>
+            <td class="nowrap">{{ t.posted_date }}</td>
+            <td class="nowrap">
+              {{ t.institution }} {% if t.account_last4_masked %}****{{ t.account_last4_masked }}{% elif t.expense_account and t.expense_account.last4_masked %}****{{ t.expense_account.last4_masked }}{% endif %}
+            </td>
+            <td class="nowrap">{{ t.cardholder_name or "" }}</td>
+            <td class="nowrap">
+              <a href="/expenses/merchant?name={{ t.merchant_norm|urlencode }}&year={{ year }}{% if month %}&month={{ month }}{% endif %}{% if account_id and account_id!='0' %}&account_id={{ account_id }}{% endif %}">{{ t.merchant_norm }}</a>
+            </td>
+            <td>{{ t.description_norm }}</td>
+            <td class="nowrap">{{ t.category_user or t.category_system or "Unknown" }}</td>
+            <td class="nowrap num">{{ t.amount|usd }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+{% endblock %}

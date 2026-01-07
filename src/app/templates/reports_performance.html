@@ -1,0 +1,216 @@
+{% extends "layout.html" %}
+{% block content %}
+  <h1>Reports</h1>
+  <p><a class="muted" href="/reports">← Back to Reports</a></p>
+
+  <h2>Performance</h2>
+  {% if ok_msg %}
+    <div class="banner banner--ok">{{ ok_msg }}</div>
+  {% endif %}
+  {% if error_msg %}
+    <div class="banner banner--warn">{{ error_msg }}</div>
+  {% endif %}
+  <div class="box">
+    <form method="get" action="/reports/performance">
+      <div class="grid3">
+        <label>Scope<br/>
+          <select name="scope">
+            <option value="household" {% if scope == "household" %}selected{% endif %}>Household</option>
+            <option value="trust" {% if scope == "trust" %}selected{% endif %}>Trust only</option>
+            <option value="ira" {% if scope == "ira" %}selected{% endif %}>IRA only</option>
+          </select>
+        </label>
+        <label>Account<br/>
+          <select name="account_id">
+            <option value="" {% if not account_id %}selected{% endif %}>All</option>
+            {% for a in account_options %}
+              <option value="{{ a.id }}" {% if account_id == a.id %}selected{% endif %}>{{ a.name }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label>Date range<br/>
+          <select name="period" id="period_sel" onchange="toggleYear()">
+            <option value="ytd" {% if period == "ytd" %}selected{% endif %}>YTD</option>
+            <option value="year" {% if period == "year" %}selected{% endif %}>Calendar year</option>
+          </select>
+        </label>
+        <label id="year_wrap">Year<br/>
+          <select name="year">
+            {% for y in year_options %}
+              <option value="{{ y }}" {% if year == y %}selected{% endif %}>{{ y }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label>Frequency<br/>
+          <select name="freq">
+            <option value="month_end" {% if freq == "month_end" %}selected{% endif %}>Monthly (month-end)</option>
+            <option value="daily" {% if freq == "daily" %}selected{% endif %}>Daily (all snapshots)</option>
+          </select>
+        </label>
+        <label>&nbsp;<br/><button type="submit">Run</button></label>
+      </div>
+      <div class="muted">
+        Performance is computed from holdings snapshots + TRANSFER cashflows.
+        Period: <b>{{ period_label }}</b> ({{ start_date }} → {{ end_date }}).
+      </div>
+    </form>
+    <div style="margin-top:10px">
+      <a class="muted" href="/reports/performance.csv?scope={{ scope }}&account_id={{ account_id or '' }}&period={{ period }}&year={{ year }}&freq={{ freq }}">Download CSV</a>
+    </div>
+  </div>
+
+  <h3>Benchmark (S&P 500 proxy: {{ benchmark_info.label }})</h3>
+  <div class="box">
+    <div class="muted">File: <code>{{ benchmark_info.path }}</code></div>
+    {% if benchmark_info.exists %}
+      <div class="muted">Loaded: {{ benchmark_info.bytes }} bytes, mtime={{ benchmark_info.mtime }}</div>
+    {% else %}
+      <div class="banner banner--warn">No benchmark file uploaded yet. Upload a CSV with columns like <code>Date</code> and <code>Adj Close</code> (preferred) or <code>Close</code>.</div>
+    {% endif %}
+    <form method="post" action="/reports/benchmarks/voo/upload?scope={{ scope }}&account_id={{ account_id or '' }}&period={{ period }}&year={{ year }}&freq={{ freq }}" enctype="multipart/form-data" style="margin-top:10px">
+      <label>Upload {{ benchmark_info.label }} CSV <input type="file" name="upload"/></label>
+      <button type="submit">Upload</button>
+    </form>
+    <div class="muted" style="margin-top:6px">Note: benchmark prices are loaded from a local CSV (no network fetch).</div>
+    {% if report.benchmark_period_start and report.benchmark_period_end %}
+      <div class="muted" style="margin-top:6px">
+        Selected period: {{ report.benchmark_period_start }} → {{ report.benchmark_period_end }}
+      </div>
+    {% endif %}
+    <div class="muted" style="margin-top:6px">
+      Benchmark coverage: {{ report.benchmark_coverage_start or "—" }} → {{ report.benchmark_coverage_end or "—" }} —
+      TWR: {% if report.benchmark_period_twr is none %}—{% else %}{{ "%.2f"|format(report.benchmark_period_twr * 100.0) }}%{% endif %},
+      Sharpe: {% if report.benchmark_period_sharpe is none %}—{% else %}{{ "%.2f"|format(report.benchmark_period_sharpe) }}{% endif %}
+    </div>
+  </div>
+
+  {% if report.warnings %}
+    <div class="box">
+      <b>Warnings</b>
+      <ul>
+        {% for w in report.warnings %}<li>{{ w }}</li>{% endfor %}
+      </ul>
+    </div>
+  {% endif %}
+
+  <h3>Results</h3>
+  {% if report.baseline_grace_days is not none and report.requested_start %}
+  <div class="muted" style="margin-bottom:10px">
+    Baseline requirement: need a holdings snapshot near period start (<code>{{ report.requested_start }}</code>, within ~{{ report.baseline_grace_days }} days).
+    Returns are computed from holdings snapshot valuations; transactions alone are not enough.
+  </div>
+  {% endif %}
+  <div class="box">
+    <b>Data Availability</b>
+    <div class="muted" style="margin-top:6px">Period: {{ start_date }} → {{ end_date }}</div>
+    <table style="margin-top:8px">
+      <tr><th>Account</th><th>Transactions</th><th>Valuation points</th></tr>
+      {% for r in report.rows %}
+        <tr>
+          <td>{{ r.portfolio_name }}</td>
+          <td class="muted">
+            {% if r.txn_count and r.txn_count > 0 %}
+              {{ r.txn_count }} txn(s) ({{ r.txn_start or "—" }} → {{ r.txn_end or "—" }})
+            {% else %}
+              0 txn(s)
+            {% endif %}
+          </td>
+          <td class="muted">
+            {{ r.valuation_points }} point(s) ({{ r.coverage_start or "—" }} → {{ r.coverage_end or "—" }})
+          </td>
+        </tr>
+      {% endfor %}
+    </table>
+  </div>
+  <table>
+    <tr>
+      <th>Account</th>
+      <th>Taxpayer</th>
+      <th>Valuation coverage</th>
+      <th>Begin value</th>
+      <th>End value</th>
+      <th>Deposits</th>
+      <th>Withdrawals</th>
+      <th>Fees</th>
+      <th>Withholding</th>
+      <th>Other cash out</th>
+      <th>Total cash out</th>
+      <th>Gain value</th>
+      <th>IRR</th>
+      <th>XIRR</th>
+      <th>TWR</th>
+      <th>Sharpe</th>
+      <th>{{ benchmark_info.label }} TWR</th>
+      <th>{{ benchmark_info.label }} Sharpe</th>
+      <th>Excess TWR</th>
+    </tr>
+    {% if report.combined %}
+      {% set r = report.combined %}
+      <tr>
+        <td><b>{{ r.portfolio_name }}</b></td>
+        <td class="muted">{{ r.taxpayer_name }}</td>
+        <td class="muted">{{ r.coverage_start or "—" }} → {{ r.coverage_end or "—" }}</td>
+        <td>{{ r.begin_value|usd(0) }}</td>
+        <td>{{ r.end_value|usd(0) }}</td>
+        <td>{{ r.contributions|usd(0) }}</td>
+        <td>{{ r.withdrawals|usd(0) }}</td>
+        <td>{{ r.fees|usd(0) }}</td>
+        <td>{{ r.withholding|usd(0) }}</td>
+        <td>{{ r.other_cash_out|usd(0) }}</td>
+        <td>{{ r.total_cash_out|usd(0) }}</td>
+        <td>{{ r.gain_value|usd(0) }}</td>
+        <td>{% if r.irr is none %}—{% else %}{{ "%.2f"|format(r.irr * 100.0) }}%{% endif %}</td>
+        <td>{% if r.xirr is none %}—{% else %}{{ "%.2f"|format(r.xirr * 100.0) }}%{% endif %}</td>
+        <td>{% if r.twr is none %}—{% else %}{{ "%.2f"|format(r.twr * 100.0) }}%{% endif %}</td>
+        <td>{% if r.sharpe is none %}—{% else %}{{ "%.2f"|format(r.sharpe) }}{% endif %}</td>
+        <td>{% if r.benchmark_twr is none %}—{% else %}{{ "%.2f"|format(r.benchmark_twr * 100.0) }}%{% endif %}</td>
+        <td>{% if r.benchmark_sharpe is none %}—{% else %}{{ "%.2f"|format(r.benchmark_sharpe) }}{% endif %}</td>
+        <td>{% if r.excess_twr is none %}—{% else %}{{ "%.2f"|format(r.excess_twr * 100.0) }}%{% endif %}</td>
+      </tr>
+    {% endif %}
+    {% for r in report.rows %}
+      <tr>
+        <td>{{ r.portfolio_name }}</td>
+        <td class="muted">{{ r.taxpayer_name }} ({{ r.taxpayer_type }})</td>
+        <td class="muted">{{ r.coverage_start or "—" }} → {{ r.coverage_end or "—" }} <span class="muted">({{ r.valuation_points }} pts)</span></td>
+        <td>{{ r.begin_value|usd(0) }}</td>
+        <td>{{ r.end_value|usd(0) }}</td>
+        <td>{{ r.contributions|usd(0) }}</td>
+        <td>{{ r.withdrawals|usd(0) }}</td>
+        <td>{{ r.fees|usd(0) }}</td>
+        <td>{{ r.withholding|usd(0) }}</td>
+        <td>{{ r.other_cash_out|usd(0) }}</td>
+        <td>{{ r.total_cash_out|usd(0) }}</td>
+        <td>{{ r.gain_value|usd(0) }}</td>
+        <td>{% if r.irr is none %}—{% else %}{{ "%.2f"|format(r.irr * 100.0) }}%{% endif %}</td>
+        <td>{% if r.xirr is none %}—{% else %}{{ "%.2f"|format(r.xirr * 100.0) }}%{% endif %}</td>
+        <td>{% if r.twr is none %}—{% else %}{{ "%.2f"|format(r.twr * 100.0) }}%{% endif %}</td>
+        <td>{% if r.sharpe is none %}—{% else %}{{ "%.2f"|format(r.sharpe) }}{% endif %}</td>
+        <td>{% if r.benchmark_twr is none %}—{% else %}{{ "%.2f"|format(r.benchmark_twr * 100.0) }}%{% endif %}</td>
+        <td>{% if r.benchmark_sharpe is none %}—{% else %}{{ "%.2f"|format(r.benchmark_sharpe) }}{% endif %}</td>
+        <td>{% if r.excess_twr is none %}—{% else %}{{ "%.2f"|format(r.excess_twr * 100.0) }}%{% endif %}</td>
+      </tr>
+      {% if r.warnings and r.warnings|length > 0 %}
+        <tr>
+          <td colspan="19" class="muted">
+            {% for w in r.warnings %}• {{ w }} {% endfor %}
+          </td>
+        </tr>
+      {% endif %}
+    {% endfor %}
+  </table>
+
+  <div class="muted" style="margin-top:10px">
+    Notes: Deposits/Withdrawals are inferred from cash TRANSFER rows (with internal FX/multi-currency sweeps filtered out when they net to 0). Total cash out = Withdrawals + Fees + Withholding + Other cash out. Gain value = End − Begin − Net investor flow (adds back withdrawals, subtracts contributions). Benchmark uses local CSV prices for {{ benchmark_info.label }}.
+  </div>
+
+  <script>
+    function toggleYear() {
+      const sel = document.getElementById("period_sel");
+      const wrap = document.getElementById("year_wrap");
+      if (!sel || !wrap) return;
+      wrap.style.display = (sel.value === "year") ? "block" : "none";
+    }
+    toggleYear();
+  </script>
+{% endblock %}

@@ -26,6 +26,23 @@ uvicorn src.app.main:app --reload
 
 App DB is created at `data/investor.db`.
 
+## Monthly Performance Report (standalone)
+
+A standalone, local reporting pipeline lives in `portfolio_report/README.md` and runs via:
+
+```bash
+python -m portfolio_report --help
+```
+
+### Market data (Yahoo Finance cache)
+
+The monthly report can optionally fetch and cache missing price history using `yfinance`:
+
+- Cache directory: `data/prices/yfinance/` (one file per ticker)
+- Optional deps: `pandas`, `yfinance` (and `pyarrow` for Parquet)
+
+If these deps aren't installed, the report still runs using any existing local CSVs in `data/prices/`.
+
 ### Makefile shortcuts
 
 ```bash
@@ -201,7 +218,14 @@ DB note: the app runs lightweight SQLite schema upgrades on startup (adds missin
 
 If your environment is network-restricted (or you want to validate the sync runner on real brokerage exports), the codebase supports an **IB Flex (Offline files)** connector that reads local `.csv`/`.xml` exports.
 
-Note: to avoid double-counting from multiple feeds, the default UI only allows creating `IB_FLEX_WEB` and `CHASE_OFFLINE` connections. Existing/legacy offline connections can still be viewed/disabled and continue to work.
+## Expense Analysis (NEW)
+
+Local-first expense ingestion and analysis (credit card + bank statements) lives under `src/investor/expenses/`.
+
+- Docs: `docs/expenses.md`
+- Web UI: `/expenses`
+
+Note: to avoid double-counting from multiple feeds, the default UI only allows creating `IB_FLEX_WEB`, `CHASE_OFFLINE`, and `RJ_OFFLINE` connections. Existing/legacy connections can still be viewed/disabled and continue to work.
 
 Notes / limitations:
 - This connector does not call IB/Yodlee APIs; it only reads local files.
@@ -227,6 +251,18 @@ Recommended exports (to avoid misclassified cashflows):
 IRA behavior:
 - Included in holdings / bucket allocation / portfolio value.
 - Excluded from reconstructed wash-sale logic and taxable gain calculations (but withholding is still shown if present).
+
+## Sync (Raymond James Offline CSV) — local files (no network)
+
+Use this for a taxable RJ account imported from local CSV/TSV exports:
+
+- Create connection: `Sync → Connections` → Connector = `Raymond James (Offline CSV)`
+- Upload your RJ export(s) on the connection detail page, or drop them into the data directory and run sync.
+
+Recommended export columns (the parser is best-effort):
+- **Holdings / Positions snapshot**: `Symbol`/`Ticker`, `Quantity`/`Shares`, `Market Value`/`Value` (+ `Cost Basis` if available)
+- **Activity / Transactions**: `Date`, `Description`, `Amount`/`Net Amount`, `Symbol`/`Ticker` (+ `Quantity` when applicable)
+- **Realized P&L / Closed lots**: `Opening Date`, `Opening Amount`, `Closing Date`, `Closing Amount`, `Realized Gain/(Loss)$` (symbol is extracted from `Description (Symbol/CUSIP)` like `... (AMD)`)
 
 ## Sync (IB Flex Web Service) — live manual refresh (network)
 
@@ -254,6 +290,14 @@ Override (comma-separated) if needed:
 
 ```bash
 export ALLOWED_OUTBOUND_HOSTS=ndcdyn.interactivebrokers.com,www.interactivebrokers.com
+```
+
+Entries can be hostnames (recommended) or full `https://...` URLs; only the hostname is used.
+
+Disable outbound host allowlist (unsafe; not recommended):
+
+```bash
+export DISABLE_OUTBOUND_HOST_ALLOWLIST=1
 ```
 
 Optional (advanced) base URL override:

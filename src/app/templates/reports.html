@@ -1,0 +1,193 @@
+{% extends "layout.html" %}
+{% block content %}
+  <h1>Reports</h1>
+  <div class="muted" style="margin-bottom:10px">
+    <a class="muted" href="/reports/performance">Performance (IRR/TWR/Sharpe)</a>
+    <span class="muted">•</span>
+    <a class="muted" href="/reports/monthly">Monthly Performance Report</a>
+  </div>
+
+  <h2>Cash Out</h2>
+  <div class="box">
+    <form method="get" action="/reports">
+      <div class="grid3">
+        <label>Scope<br/>
+          <select name="scope">
+            <option value="household" {% if scope == "household" %}selected{% endif %}>Household</option>
+            <option value="trust" {% if scope == "trust" %}selected{% endif %}>Trust only</option>
+            <option value="personal" {% if scope == "personal" %}selected{% endif %}>Personal only (non-IRA)</option>
+            <option value="ira" {% if scope == "ira" %}selected{% endif %}>IRA only</option>
+          </select>
+        </label>
+        <label>Date range<br/>
+          <select name="period" id="period_sel" onchange="toggleYear()">
+            <option value="ytd" {% if period == "ytd" %}selected{% endif %}>YTD</option>
+            <option value="year" {% if period == "year" %}selected{% endif %}>Calendar year</option>
+          </select>
+        </label>
+        <label id="year_wrap">Year<br/>
+          <select name="year">
+            {% for y in year_options %}
+              <option value="{{ y }}" {% if year == y %}selected{% endif %}>{{ y }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label>View<br/>
+          <select name="view">
+            <option value="accounts" {% if view == "accounts" %}selected{% endif %}>Per account</option>
+            <option value="combined" {% if view == "combined" %}selected{% endif %}>Combined</option>
+          </select>
+        </label>
+        <label>&nbsp;<br/><button type="submit">Run</button></label>
+      </div>
+      <div class="muted">
+        Cash out includes: Withdrawals (<code>TRANSFER</code>, <code>amount &lt; 0</code>), Fees (<code>FEE</code>), Taxes withheld (<code>WITHHOLDING</code>), and Other cash out (<code>OTHER</code>, <code>amount &lt; 0</code>). Deposits are <code>TRANSFER</code> with <code>amount &gt; 0</code>.
+        Net cash out = Total cash out − Deposits − Fees − Taxes withheld.
+        Scope note: <b>Personal only</b> excludes IRA accounts; use <b>IRA only</b> for IRA accounts.
+        Period: <b>{{ period_label }}</b>.
+      </div>
+    </form>
+  </div>
+
+  {% if view == "combined" %}
+    <div class="box">
+      <div><b>Total deposits:</b> {{ (combined_deposit_total or 0.0)|usd(2) }} <span class="muted">({{ combined_deposit_count or 0 }} txn(s))</span></div>
+      <div><b>Total cash out:</b> {{ combined_total|usd(2) }} <span class="muted">({{ combined_count }} txn(s))</span></div>
+      <div><b>Total fees:</b> {{ (combined_fee_total or 0.0)|usd(2) }} <span class="muted">({{ combined_fee_count or 0 }} txn(s))</span></div>
+      <div><b>Total taxes withheld:</b> {{ (combined_withholding_total or 0.0)|usd(2) }} <span class="muted">({{ combined_withholding_count or 0 }} txn(s))</span></div>
+      <div><b>Net total cash out:</b> {{ (combined_net_total or 0.0)|usd(2) }}</div>
+    </div>
+    {% if rows and rows|length > 0 %}
+      <div class="box">
+        <div class="muted">Accounts in scope (select one for transaction-level details):</div>
+        <table>
+          <tr><th>Account</th><th>Taxpayer</th><th></th></tr>
+          {% for r in rows %}
+            <tr>
+              <td>{{ r.account_name }}</td>
+              <td class="muted">{{ r.taxpayer_name }} ({{ r.taxpayer_type }})</td>
+              <td class="muted">
+                <a class="muted" href="/reports?scope={{ scope }}&period={{ period }}&year={{ year }}&view={{ view }}&account_id={{ r.account_id }}">details</a>
+              </td>
+            </tr>
+          {% endfor %}
+        </table>
+      </div>
+    {% endif %}
+  {% else %}
+    <div class="box">
+      <div><b>Total deposits:</b> {{ (combined_deposit_total or 0.0)|usd(2) }} <span class="muted">({{ combined_deposit_count or 0 }} txn(s))</span></div>
+      <div><b>Total cash out:</b> {{ combined_total|usd(2) }} <span class="muted">({{ combined_count }} txn(s))</span></div>
+      <div><b>Total fees:</b> {{ (combined_fee_total or 0.0)|usd(2) }} <span class="muted">({{ combined_fee_count or 0 }} txn(s))</span></div>
+      <div><b>Total taxes withheld:</b> {{ (combined_withholding_total or 0.0)|usd(2) }} <span class="muted">({{ combined_withholding_count or 0 }} txn(s))</span></div>
+      <div><b>Net total cash out:</b> {{ (combined_net_total or 0.0)|usd(2) }}</div>
+    </div>
+    {% if rows and rows|length > 0 %}
+      <table>
+        <tr>
+          <th>Account</th>
+          <th>Taxpayer</th>
+          {% if show_overall %}
+            <th>Overall</th>
+          {% endif %}
+          <th>Deposits</th>
+          <th>Withdrawals</th>
+          <th>Fees</th>
+          <th>Taxes withheld</th>
+          <th>Other cash out</th>
+          <th>Total cash out</th>
+          <th>Net cash out</th>
+          <th></th>
+        </tr>
+        {% for r in rows %}
+          <tr>
+            <td>{{ r.account_name }}</td>
+            <td class="muted">{{ r.taxpayer_name }} ({{ r.taxpayer_type }})</td>
+            {% if show_overall %}
+              {% set tot = ((r.withdrawal_total or 0.0)|float) + ((r.fee_total or 0.0)|float) + ((r.withholding_total or 0.0)|float) + ((r.other_total or 0.0)|float) %}
+              <td class="muted">
+                {% if (combined_total or 0.0) > 0 %}
+                  {{ ((100.0 * tot / combined_total)|round(1)) }}%
+                {% else %}
+                  —
+                {% endif %}
+              </td>
+            {% endif %}
+            <td class="muted">{{ (r.deposit_total or 0.0)|usd(2) }} <span class="muted">({{ r.deposit_count or 0 }})</span></td>
+            <td class="muted">{{ (r.withdrawal_total or 0.0)|usd(2) }} <span class="muted">({{ r.withdrawal_count or 0 }})</span></td>
+            <td class="muted">{{ (r.fee_total or 0.0)|usd(2) }} <span class="muted">({{ r.fee_count or 0 }})</span></td>
+            <td class="muted">{{ (r.withholding_total or 0.0)|usd(2) }} <span class="muted">({{ r.withholding_count or 0 }})</span></td>
+            <td class="muted">{{ (r.other_total or 0.0)|usd(2) }} <span class="muted">({{ r.other_count or 0 }})</span></td>
+            <td>
+              {% if not show_overall %}
+                {% set tot = ((r.withdrawal_total or 0.0)|float) + ((r.fee_total or 0.0)|float) + ((r.withholding_total or 0.0)|float) + ((r.other_total or 0.0)|float) %}
+              {% endif %}
+              {{ tot|usd(2) }}
+            </td>
+            <td class="muted">{{ (tot - ((r.deposit_total or 0.0)|float) - ((r.fee_total or 0.0)|float) - ((r.withholding_total or 0.0)|float))|usd(2) }}</td>
+            <td class="muted">
+              <a class="muted" href="/reports?scope={{ scope }}&period={{ period }}&year={{ year }}&view={{ view }}&account_id={{ r.account_id }}">details</a>
+            </td>
+          </tr>
+        {% endfor %}
+      </table>
+    {% else %}
+      <div class="muted">No cash-out transactions found for this period/scope.</div>
+    {% endif %}
+  {% endif %}
+
+  {% if selected_account %}
+    <h3>Details: {{ selected_account.name }}</h3>
+    <div class="box">
+      <div class="muted">
+        Showing deposits + cash out (withdrawals, fees, taxes withheld, other) for {{ period_label }}.
+        <a class="muted" href="/reports?scope={{ scope }}&period={{ period }}&year={{ year }}&view={{ view }}">Clear</a>
+      </div>
+      {% if detail_rows and detail_rows|length > 0 %}
+        <table>
+          <tr><th>Date</th><th>Flow</th><th>Type</th><th>Amount</th><th>Description</th><th>Additional detail</th><th>Source</th><th>Provider txn id</th></tr>
+          {% for t, m, c in detail_rows %}
+            <tr>
+              <td>{{ t.date }}</td>
+              <td class="muted">
+                {% if t.type == "TRANSFER" %}
+                  {% if t.amount > 0 %}DEPOSIT{% else %}WITHDRAWAL{% endif %}
+                {% elif t.type == "WITHHOLDING" %}
+                  TAX
+                {% else %}
+                  CASH OUT
+                {% endif %}
+              </td>
+              <td class="muted">{{ t.type }}</td>
+              {% if t.type == "TRANSFER" %}
+                <td>{{ (t.amount if t.amount > 0 else (-t.amount))|usd(2) }}</td>
+              {% elif t.type == "WITHHOLDING" %}
+                <td>{{ (t.amount)|usd(2) }}</td>
+              {% else %}
+                <td>{{ (-t.amount)|usd(2) }}</td>
+              {% endif %}
+              <td class="muted">{{ (t.lot_links_json.get("description") if t.lot_links_json else "") or "" }}</td>
+              <td class="muted">{{ (t.lot_links_json.get("additional_detail") if t.lot_links_json else "") or "" }}</td>
+              <td class="muted">{% if c %}#{{ c.id }} — {{ c.name }}{% else %}Manual{% endif %}</td>
+              <td class="muted">{{ m.provider_txn_id if m else "" }}</td>
+            </tr>
+          {% endfor %}
+        </table>
+      {% else %}
+        <div class="muted">No cash-out transactions found for this account in this period.</div>
+      {% endif %}
+    </div>
+  {% elif account_id %}
+    <div class="banner banner--warn">Selected account is not available in this scope.</div>
+  {% endif %}
+
+  <script>
+    function toggleYear() {
+      const sel = document.getElementById("period_sel");
+      const wrap = document.getElementById("year_wrap");
+      if (!sel || !wrap) return;
+      wrap.style.display = (sel.value === "year") ? "block" : "none";
+    }
+    toggleYear();
+  </script>
+{% endblock %}

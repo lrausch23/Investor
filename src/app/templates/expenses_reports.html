@@ -1,0 +1,108 @@
+{% extends "layout.html" %}
+{% block content %}
+  <h1>Expense Reports</h1>
+  <form method="get" action="/expenses/reports" class="box">
+    <label>Year <input name="year" value="{{ year }}" size="6" /></label>
+    <label>Month (optional) <input name="month" value="{{ month or '' }}" size="4" placeholder="1-12" /></label>
+    <label>Account
+      <select name="account_id">
+        <option value="0">(all)</option>
+        <option value="credit" {% if account_id=="credit" %}selected{% endif %}>(all credit cards)</option>
+        <option value="bank" {% if account_id=="bank" %}selected{% endif %}>(all bank accounts)</option>
+        {% for a in accounts %}
+          <option value="{{ a.id }}" {% if account_id==(a.id|string) %}selected{% endif %}>{{ a.institution }} — {{ a.name }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <button type="submit">Run</button>
+  </form>
+
+	  <h2>By Category</h2>
+		  <table>
+		    <thead><tr><th>Category</th><th class="num">Spend</th><th class="num">Txn count</th></tr></thead>
+		    <tbody>
+		      <tr>
+		        <td class="nowrap">
+		          <a href="/expenses/transactions?year={{ year }}{% if month %}&month={{ month }}{% endif %}{% if account_id and account_id!='0' %}&account_id={{ account_id }}{% endif %}">All</a>
+		        </td>
+		        <td class="nowrap num">{{ totals_spend|usd }}</td>
+		        <td class="nowrap num">{{ totals_txn_count }}</td>
+		      </tr>
+		      {% for r in cat_rows %}
+		        <tr>
+		          <td class="nowrap">
+		            <a href="/expenses/category?name={{ r.key|urlencode }}&year={{ year }}{% if month %}&month={{ month }}{% endif %}{% if account_id and account_id!='0' %}&account_id={{ account_id }}{% endif %}">{{ r.key }}</a>
+		          </td>
+		          <td class="nowrap num">{{ r.spend|usd }}</td>
+		          <td class="nowrap num">{{ r.txn_count }}</td>
+		        </tr>
+		      {% endfor %}
+		      <tr>
+		        <th class="nowrap">Total</th>
+		        <th class="nowrap num">{{ totals_spend|usd }}</th>
+		        <th class="nowrap num">{{ totals_txn_count }}</th>
+		      </tr>
+		    </tbody>
+		  </table>
+
+  {% if budget_rows %}
+    <h2>Budgets (Month)</h2>
+	    <table>
+	      <thead><tr><th>Category</th><th class="num">Spend</th><th class="num">Budget</th><th class="num">Under/Over</th></tr></thead>
+	      <tbody>
+	        {% for b in budget_rows %}
+	          <tr>
+	            <td class="nowrap">{{ b.category }}</td>
+	            <td class="nowrap num">{{ b.spend|usd }}</td>
+	            <td class="nowrap num">{{ b.budget|usd }}</td>
+	            <td class="nowrap num {% if b.over_under < 0 %}cell-bad{% else %}cell-ok{% endif %}">{{ b.over_under|usd }}</td>
+	          </tr>
+	        {% endfor %}
+	      </tbody>
+	    </table>
+	  {% endif %}
+
+	  <h2>Merchants by Spend</h2>
+	  <div class="muted">Charges only (payments/credits/transfers excluded). <a href="/expenses/merchants?year={{ year }}{% if month %}&month={{ month }}{% endif %}{% if account_id and account_id!='0' %}&account_id={{ account_id }}{% endif %}">View all</a></div>
+		  <table>
+	    <thead><tr><th>Merchant</th><th>Category</th><th class="num">Spend</th><th class="num">Txn count</th></tr></thead>
+	    <tbody>
+	      {% for r in merchant_rows %}
+		        <tr>
+		          <td class="nowrap">
+		            <a href="/expenses/merchant?name={{ r.merchant|urlencode }}&year={{ year }}{% if month %}&month={{ month }}{% endif %}{% if account_id and account_id!='0' %}&account_id={{ account_id }}{% endif %}">{{ r.merchant }}</a>
+		          </td>
+	          <td class="nowrap">{{ r.category }}</td>
+	          <td class="nowrap num">{{ r.spend|usd }}</td>
+	          <td class="nowrap num">{{ r.txn_count }}</td>
+	        </tr>
+	      {% endfor %}
+	    </tbody>
+	  </table>
+
+	  <h2>Charges by Card Member</h2>
+	  <div class="muted">Charges only (payments/credits/transfers excluded). <a href="/expenses/cardholders?year={{ year }}{% if month %}&month={{ month }}{% endif %}{% if account_id and account_id!='0' %}&account_id={{ account_id }}{% endif %}">View all</a></div>
+		  <table>
+	    <thead><tr><th>Card Member</th><th class="num">Spend</th><th class="num">Txn count</th></tr></thead>
+	    <tbody>
+	      {% for r in cardholder_rows %}
+		        <tr>
+		          <td class="nowrap">
+		            <a href="/expenses/cardholder?name={{ r.cardholder|urlencode }}&year={{ year }}{% if month %}&month={{ month }}{% endif %}{% if account_id and account_id!='0' %}&account_id={{ account_id }}{% endif %}">{{ r.cardholder }}</a>
+		          </td>
+	          <td class="nowrap num">{{ r.spend|usd }}</td>
+	          <td class="nowrap num">{{ r.txn_count }}</td>
+	        </tr>
+	      {% endfor %}
+	    </tbody>
+	  </table>
+
+  {% if opportunities %}
+    <h2>Opportunities</h2>
+    <ul>
+      {% for o in opportunities %}
+        <li>{{ o }}</li>
+      {% endfor %}
+    </ul>
+  {% endif %}
+{% endblock %}

@@ -8,6 +8,8 @@ import re
 import time
 import urllib.parse
 import xml.etree.ElementTree as ET
+import csv
+import io
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
@@ -41,6 +43,146 @@ def _strip_ns(tag: str) -> str:
 
 def _yyyymmdd(d: dt.date) -> str:
     return d.strftime("%Y%m%d")
+
+def _end_of_day_utc(d: dt.date) -> dt.datetime:
+    return dt.datetime(d.year, d.month, d.day, 23, 59, 59, tzinfo=dt.timezone.utc)
+
+def _parse_statement_period_range(v: str) -> tuple[dt.date | None, dt.date | None]:
+    """
+    Parse strings like "December 1, 2024 - December 31, 2024".
+    """
+    s = (v or "").strip()
+    if not s or "-" not in s:
+        return None, None
+    a, b = [x.strip() for x in s.split("-", 1)]
+    for fmt in ("%B %d, %Y", "%b %d, %Y"):
+        try:
+            return dt.datetime.strptime(a, fmt).date(), dt.datetime.strptime(b, fmt).date()
+        except Exception:
+            continue
+    return None, None
+
+def _sniff_delimiter(sample: str) -> str:
+    # IB statement exports often arrive as TSV even when the extension is .csv.
+    if sample.count("\t") >= sample.count(","):
+        return "\t"
+    return ","
+
+def _as_float_clean(v: str | None) -> float | None:
+    if v is None:
+        return None
+    s = str(v).strip()
+    if not s:
+        return None
+    # Remove thousands separators and %.
+    s = s.replace(",", "").replace("%", "").strip()
+    try:
+        return float(s)
+    except Exception:
+        return None
+
+def _parse_ib_mtm_summary_statement(path: Path) -> dict[str, Any]:
+    """
+    Parse an IB "MTM Summary" statement export and return a holdings snapshot dict.
+
+    We only extract valuation totals (Net Asset Value -> Total -> Current Total) and cash (Net Asset Value -> Cash),
+    which are sufficient to establish a baseline valuation point for performance reporting.
+    """
+    text = path.read_text(encoding="utf-8-sig", errors="ignore")
+    sample = text[:8192]
+    delim = _sniff_delimiter(sample)
+    reader = csv.reader(io.StringIO(text), delimiter=delim)
+
+    account_id: str | None = None
+    period_raw: str | None = None
+
+    nav_header: dict[str, int] | None = None
+    nav_total_current_total: float | None = None
+    nav_cash_current_total: float | None = None
+
+    def norm(s: str) -> str:
+        return str(s or "").strip().strip('"').strip()
+
+    for row in reader:
+        if not row:
+            continue
+        row = [norm(c) for c in row]
+        if len(row) < 2:
+            continue
+        section = row[0]
+        kind = row[1]
+
+        # Account id + period live in the "Statement"/"Account Information" sections.
+        if section == "Statement" and kind == "Data" and len(row) >= 4 and row[2] == "Period":
+            period_raw = row[3]
+            continue
+        if section == "Account Information" and kind == "Data" and len(row) >= 4 and row[2] == "Account":
+            account_id = row[3].strip() or None
+            continue
+
+        # Net Asset Value section has the valuation totals.
+        if section == "Net Asset Value" and kind == "Header":
+            # Header columns begin at index 2.
+            nav_header = {norm(h).lower(): i for i, h in enumerate(row)}
+            continue
+        if section == "Net Asset Value" and kind == "Data" and nav_header is not None and len(row) >= 3:
+            asset_class = row[2].strip()
+            # Locate the "Current Total" column, allowing minor header variations.
+            cur_total_idx = None
+            for key in ("current total", "currenttotal"):
+                if key in nav_header:
+                    cur_total_idx = nav_header[key]
+                    break
+            if cur_total_idx is None or cur_total_idx >= len(row):
+                continue
+            cur_total = _as_float_clean(row[cur_total_idx])
+            if cur_total is None:
+                continue
+            if asset_class.strip().lower() == "total":
+                nav_total_current_total = float(cur_total)
+            if asset_class.strip().lower() == "cash":
+                nav_cash_current_total = float(cur_total)
+
+    period_start, period_end = _parse_statement_period_range(period_raw or "")
+    if period_end is None:
+        raise ProviderError(f"IB statement '{path.name}' is missing a parsable period end date.")
+    if nav_total_current_total is None:
+        raise ProviderError(f"IB statement '{path.name}' is missing Net Asset Value Total -> Current Total.")
+
+    provider_account_id = f"IBFLEX:{account_id}" if account_id else "IBFLEX-1"
+    as_of_dt = _end_of_day_utc(period_end)
+
+    items: list[dict[str, Any]] = [
+        {
+            "provider_account_id": provider_account_id,
+            "symbol": "TOTAL",
+            "qty": None,
+            "market_value": float(nav_total_current_total),
+            "is_total": True,
+            "source": "IB Statement (MTM Summary)",
+        }
+    ]
+    out: dict[str, Any] = {
+        "as_of": as_of_dt.isoformat(),
+        "items": items,
+        "source_file": path.name,
+        "statement_total_value": float(nav_total_current_total),
+    }
+    if period_start is not None:
+        out["statement_period_start"] = period_start.isoformat()
+    out["statement_period_end"] = period_end.isoformat()
+
+    if nav_cash_current_total is not None:
+        out["cash_balances"] = [
+            {
+                "provider_account_id": provider_account_id,
+                "currency": "USD",
+                "amount": float(nav_cash_current_total),
+                "as_of_date": period_end.isoformat(),
+                "source_file": path.name,
+            }
+        ]
+    return out
 
 
 def _parse_ib_dt_raw(value: str | None) -> Optional[dt.datetime]:
@@ -85,6 +227,31 @@ def _parse_ib_date(value: str | None) -> Optional[dt.date]:
 
 def _sha256_hex(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
+
+def _extract_balance_from_attrs(attrs: dict[str, Any]) -> float | None:
+    # Prefer explicit cash balance fields over generic "balance" (which can be ambiguous across report types).
+    for k in (
+        "endingCash",
+        "EndingCash",
+        "endingCashBalance",
+        "EndingCashBalance",
+        "totalCashBalance",
+        "TotalCashBalance",
+        "cashBalance",
+        "CashBalance",
+        "endingBalance",
+        "EndingBalance",
+        "endingbalance",
+        "endingcash",
+        "cashbalance",
+        "balance",
+        "Balance",
+    ):
+        if k in attrs and attrs.get(k) not in (None, ""):
+            v = _as_float_or_none(attrs.get(k))
+            if v is not None:
+                return float(v)
+    return None
 
 
 def _redact(s: str, secrets: list[str]) -> str:
@@ -675,7 +842,14 @@ class IBFlexWebAdapter(BrokerAdapter):
             msg = _redact(f"{type(e).__name__}: {e}", [token] + query_ids)
             return {"ok": False, "message": msg}
 
-    def _parse_report_transactions(self, rep: FlexReport) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, Any]]:
+    def _parse_report_transactions(
+        self,
+        connection: Any,
+        rep: FlexReport,
+        *,
+        start_date: dt.date,
+        end_date: dt.date,
+    ) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, Any]]:
         """
         Returns:
           - items: normalized transaction-like records for sync runner
@@ -712,7 +886,100 @@ class IBFlexWebAdapter(BrokerAdapter):
             raise ProviderError("IB Flex report payload was not XML.")
 
         # Holdings snapshot (Open Positions).
-        holdings_items: list[dict[str, Any]] = []
+        #
+        # IMPORTANT: We anchor holdings/cash to the report's own reportDate values. IB Flex queries can ignore
+        # requested ranges (e.g., period=LastBusinessDay) and may include multiple reportDate values in one payload.
+        # If we store holdings "as_of" the requested end date, we can end up mixing cash from one day with positions
+        # from another, which breaks portfolio valuations and performance reporting.
+        holdings_items_by_date: dict[dt.date, list[dict[str, Any]]] = {}
+        equity_by_acct_date: dict[tuple[str, dt.date], dict[str, float]] = {}
+        cash_report_by_acct_date: dict[tuple[str, dt.date], float] = {}
+        flex_meta: dict[str, Any] = {}
+
+        # FlexStatement meta (useful for debugging "range ignored" issues).
+        for el in root.iter():
+            tag = _strip_ns(el.tag)
+            if tag != "FlexStatement":
+                continue
+            attrs = getattr(el, "attrib", {}) or {}
+            flex_meta = {
+                "accountId": (attrs.get("accountId") or attrs.get("AccountId") or "").strip() or None,
+                "fromDate": attrs.get("fromDate") or attrs.get("FromDate"),
+                "toDate": attrs.get("toDate") or attrs.get("ToDate"),
+                "period": attrs.get("period") or attrs.get("Period"),
+                "whenGenerated": attrs.get("whenGenerated") or attrs.get("WhenGenerated"),
+            }
+            break
+
+        # Equity summary (base-currency cash/stock/total by reportDate).
+        for el in root.iter():
+            tag = _strip_ns(el.tag)
+            if tag != "EquitySummaryByReportDateInBase":
+                continue
+            attrs = getattr(el, "attrib", {}) or {}
+            d = _parse_ib_date(str(attrs.get("reportDate") or attrs.get("ReportDate") or "") or None)
+            if d is None:
+                continue
+            acct = (attrs.get("accountId") or attrs.get("clientAccountID") or attrs.get("ClientAccountID") or "").strip()
+            provider_account_id = f"IBFLEX:{acct}" if acct else "IBFLEX-1"
+            cash = _as_float_or_none(attrs.get("cash") or attrs.get("Cash") or attrs.get("cashLong") or attrs.get("CashLong"))
+            stock = _as_float_or_none(attrs.get("stock") or attrs.get("Stock") or attrs.get("stockLong") or attrs.get("StockLong"))
+            total = _as_float_or_none(attrs.get("total") or attrs.get("Total") or attrs.get("totalLong") or attrs.get("TotalLong"))
+            rec: dict[str, float] = {}
+            if cash is not None:
+                rec["cash"] = float(cash)
+            if stock is not None:
+                rec["stock"] = float(stock)
+            if total is not None:
+                rec["total"] = float(total)
+            if rec:
+                equity_by_acct_date[(provider_account_id, d)] = rec
+
+        # Cash report (base-currency ending cash by toDate).
+        for el in root.iter():
+            tag = _strip_ns(el.tag)
+            if tag != "CashReportCurrency":
+                continue
+            attrs = getattr(el, "attrib", {}) or {}
+            d = _parse_ib_date(str(attrs.get("toDate") or attrs.get("ToDate") or "") or None)
+            if d is None:
+                continue
+            acct = (attrs.get("accountId") or attrs.get("clientAccountID") or attrs.get("ClientAccountID") or "").strip()
+            provider_account_id = f"IBFLEX:{acct}" if acct else "IBFLEX-1"
+            ccy = str(attrs.get("currency") or attrs.get("CurrencyPrimary") or attrs.get("currencyPrimary") or "").strip().upper()
+            if ccy and ccy not in {"USD", "BASE_SUMMARY", "BASE"}:
+                continue
+            bal = _as_float_or_none(
+                attrs.get("endingCashSec")
+                or attrs.get("EndingCashSec")
+                or attrs.get("endingCash")
+                or attrs.get("EndingCash")
+            )
+            if bal is None:
+                bal = _extract_balance_from_attrs(attrs)
+            if bal is None:
+                continue
+            cash_report_by_acct_date[(provider_account_id, d)] = float(bal)
+
+        # Some Flex queries expose cash balances as <CashReport ... endingCash="..."> without CashReportCurrency rows.
+        # Anchor those to the report's toDate when present; otherwise use the requested end date.
+        for el in root.iter():
+            tag = _strip_ns(el.tag)
+            if tag != "CashReport":
+                continue
+            attrs = getattr(el, "attrib", {}) or {}
+            acct = (attrs.get("accountId") or attrs.get("clientAccountID") or attrs.get("ClientAccountID") or "").strip()
+            provider_account_id = f"IBFLEX:{acct}" if acct else "IBFLEX-1"
+            d = (
+                _parse_ib_date(str(attrs.get("toDate") or attrs.get("ToDate") or "") or None)
+                or _parse_ib_date(str(flex_meta.get("toDate") or "") or None)
+                or end_date
+            )
+            bal = _extract_balance_from_attrs(attrs)
+            if bal is None:
+                continue
+            cash_report_by_acct_date[(provider_account_id, d)] = float(bal)
+
         for el in root.iter():
             tag = _strip_ns(el.tag)
             if tag not in {"OpenPosition", "OpenPositions", "Position", "OpenPositionsSummary"}:
@@ -731,12 +998,15 @@ class IBFlexWebAdapter(BrokerAdapter):
             basis = _as_float_or_none(attrs.get("costBasis") or attrs.get("costBasisMoney") or attrs.get("CostBasis"))
             acct = (attrs.get("accountId") or attrs.get("clientAccountID") or attrs.get("ClientAccountID") or "").strip()
             provider_account_id = f"IBFLEX:{acct}" if acct else "IBFLEX-1"
+            report_date = _parse_ib_date(str(attrs.get("reportDate") or attrs.get("ReportDate") or "") or None)
+            if report_date is None:
+                report_date = _parse_ib_date(str(flex_meta.get("toDate") or "") or None) or end_date
             sym_u = sym.strip().upper()
             # Cash positions often show symbol="USD" or similar; normalize to CASH:USD for internal cash fallback.
             asset_class = (attrs.get("assetClass") or attrs.get("AssetClass") or "").strip().upper()
             if asset_class == "CASH" or sym_u in {"USD", "CASH", "CASHUSD"}:
                 sym_u = "CASH:USD"
-            holdings_items.append(
+            holdings_items_by_date.setdefault(report_date, []).append(
                 {
                     "provider_account_id": provider_account_id,
                     "symbol": sym_u,
@@ -746,7 +1016,12 @@ class IBFlexWebAdapter(BrokerAdapter):
                     "source": "IB Flex (Web)",
                 }
             )
-        metrics["holdings_items_seen"] = len([h for h in holdings_items if not str(h.get("symbol") or "").startswith("CASH:")])
+        metrics["holdings_items_seen"] = sum(
+            1
+            for items_d in holdings_items_by_date.values()
+            for h in items_d
+            if not str(h.get("symbol") or "").startswith("CASH:")
+        )
 
         # Trades + multi-detail trade rows (CLOSED_LOT/WASH_SALE).
         for el in root.iter():
@@ -882,6 +1157,7 @@ class IBFlexWebAdapter(BrokerAdapter):
             symbol = (attrs.get("symbol") or attrs.get("Symbol") or "").strip().upper() or None
             raw_type = (attrs.get("type") or attrs.get("Type") or attrs.get("transactionType") or "").strip()
             desc = (attrs.get("description") or attrs.get("Description") or "").strip()
+            ccy = str(attrs.get("currency") or attrs.get("CurrencyPrimary") or attrs.get("currencyPrimary") or "USD").strip().upper() or "USD"
             row = {
                 "ClientAccountID": acct,
                 "Date/Time": dt_raw,
@@ -889,7 +1165,7 @@ class IBFlexWebAdapter(BrokerAdapter):
                 "Type": raw_type,
                 "Description": desc or raw_type,
                 "Symbol": symbol or "",
-                "CurrencyPrimary": attrs.get("currency") or attrs.get("CurrencyPrimary") or "USD",
+                "CurrencyPrimary": ccy,
                 "LevelOfDetail": level or "DETAIL",
             }
             amt = _as_float_or_none(amt_s)
@@ -923,7 +1199,163 @@ class IBFlexWebAdapter(BrokerAdapter):
                 }
             )
 
-        holdings = {"as_of": utcnow().isoformat(), "items": holdings_items, "payload_hashes": [rep.payload_hash]}
+        # Build one or more holdings snapshots, keyed by reportDate values present in the payload.
+        all_dates: set[dt.date] = set(holdings_items_by_date.keys())
+        all_dates.update({d for (_acct, d) in equity_by_acct_date.keys()})
+        all_dates.update({d for (_acct, d) in cash_report_by_acct_date.keys()})
+        candidate_dates = sorted(all_dates)
+
+        # Only create snapshots for dates <= requested end_date; do not fabricate a historical snapshot
+        # if the Flex query template ignored the requested end date and returned only future dates.
+        usable_dates = [d for d in candidate_dates if d <= end_date]
+        if not usable_dates and candidate_dates:
+            period = str(flex_meta.get("period") or "").strip() or None
+            fd = str(flex_meta.get("fromDate") or "").strip() or None
+            td = str(flex_meta.get("toDate") or "").strip() or None
+            self._warn(
+                connection,
+                f"IB Flex holdings report ignored requested end date {end_date}; "
+                f"reportDate range is {candidate_dates[0]} → {candidate_dates[-1]} "
+                f"(period={period or '—'}, fromDate={fd or '—'}, toDate={td or '—'}). "
+                "No holdings snapshot was created for this run.",
+            )
+            # Return a marker without an as_of so fetch_holdings will skip inserting an empty snapshot.
+            holdings = {"payload_hashes": [rep.payload_hash]}
+            return items, holdings, metrics
+
+        dates_out = usable_dates or ([end_date] if not candidate_dates else [])
+
+        statement_period_start = _parse_ib_date(str(flex_meta.get("fromDate") or "") or None)
+        statement_period_end = _parse_ib_date(str(flex_meta.get("toDate") or "") or None)
+
+        snapshots: list[dict[str, Any]] = []
+        for d in dates_out:
+            snap_items: list[dict[str, Any]] = []
+            snap_items.extend(holdings_items_by_date.get(d) or [])
+
+            cash_balances: list[dict[str, Any]] = []
+            # Add per-account totals + cash from EquitySummary, falling back to CashReportCurrency.
+            for (provider_account_id, dd), rec in equity_by_acct_date.items():
+                if dd != d:
+                    continue
+                total = rec.get("total")
+                cash = rec.get("cash")
+                if total is not None and float(total) > 0:
+                    snap_items.append(
+                        {
+                            "provider_account_id": provider_account_id,
+                            "symbol": "TOTAL",
+                            "qty": None,
+                            "market_value": float(total),
+                            "is_total": True,
+                            "source": "IB Flex (Web)",
+                        }
+                    )
+                if cash is None:
+                    cash = cash_report_by_acct_date.get((provider_account_id, d))
+                if cash is not None:
+                    cash_balances.append(
+                        {
+                            "provider_account_id": provider_account_id,
+                            "currency": "USD",
+                            "amount": float(cash),
+                            "as_of_date": d.isoformat(),
+                            "source_file": f"IB_FLEX_WEB:{rep.query_id}",
+                        }
+                    )
+                    # Surface cash as a holdings item for valuation when TOTAL is absent.
+                    if not any(
+                        str(it.get("provider_account_id") or "") == provider_account_id
+                        and str(it.get("symbol") or "").upper() == "CASH:USD"
+                        for it in snap_items
+                        if isinstance(it, dict)
+                    ):
+                        amt = float(cash)
+                        if abs(amt) > 1e-9:
+                            snap_items.append(
+                                {
+                                    "provider_account_id": provider_account_id,
+                                    "symbol": "CASH:USD",
+                                    "qty": float(amt),
+                                    "market_value": float(amt),
+                                    "asset_type": "CASH",
+                                    "source": "IB Flex (Web)",
+                                }
+                            )
+
+            if not cash_balances:
+                for (provider_account_id, dd), bal in cash_report_by_acct_date.items():
+                    if dd != d:
+                        continue
+                    cash_balances.append(
+                        {
+                            "provider_account_id": provider_account_id,
+                            "currency": "USD",
+                            "amount": float(bal),
+                            "as_of_date": d.isoformat(),
+                            "source_file": f"IB_FLEX_WEB:{rep.query_id}",
+                        }
+                    )
+                    if not any(
+                        str(it.get("provider_account_id") or "") == provider_account_id
+                        and str(it.get("symbol") or "").upper() == "CASH:USD"
+                        for it in snap_items
+                        if isinstance(it, dict)
+                    ):
+                        amt = float(bal)
+                        if abs(amt) > 1e-9:
+                            snap_items.append(
+                                {
+                                    "provider_account_id": provider_account_id,
+                                    "symbol": "CASH:USD",
+                                    "qty": float(amt),
+                                    "market_value": float(amt),
+                                    "asset_type": "CASH",
+                                    "source": "IB Flex (Web)",
+                                }
+                            )
+
+            snap: dict[str, Any] = {
+                "as_of": _end_of_day_utc(d).isoformat(),
+                "items": snap_items,
+                "payload_hashes": [rep.payload_hash],
+                "source_file": rep.payload_path or f"IB_FLEX_WEB:{rep.query_id}",
+            }
+            if statement_period_start is not None:
+                snap["statement_period_start"] = statement_period_start.isoformat()
+            if statement_period_end is not None:
+                snap["statement_period_end"] = statement_period_end.isoformat()
+            # Prefer EquitySummary total when present for this date (used by sync debug rollups).
+            for (_provider_account_id, dd), rec in equity_by_acct_date.items():
+                if dd == d and rec.get("total") is not None:
+                    snap["statement_total_value"] = float(rec.get("total") or 0.0)
+                    break
+            if cash_balances:
+                snap["cash_balances"] = cash_balances
+                # Emit CASH_BALANCE records too (allows importing cash even if holdings snapshots are skipped later).
+                for c in cash_balances:
+                    items.append(
+                        {
+                            "record_kind": "CASH_BALANCE",
+                            "provider_account_id": c.get("provider_account_id"),
+                            "currency": "USD",
+                            "as_of_date": d.isoformat(),
+                            "amount": float(c.get("amount") or 0.0),
+                            "source_file": f"IB_FLEX_WEB:{rep.query_id}",
+                            "source_file_hash": rep.payload_hash,
+                        }
+                    )
+            snapshots.append(snap)
+
+        latest_snap = max(snapshots, key=lambda s: str(s.get("as_of") or ""), default=None)
+        holdings: dict[str, Any] = {
+            "as_of": str((latest_snap or {}).get("as_of") or _end_of_day_utc(end_date).isoformat()),
+            "items": list((latest_snap or {}).get("items") or []),
+            "payload_hashes": [rep.payload_hash],
+            "snapshots": snapshots,
+        }
+        if isinstance((latest_snap or {}).get("cash_balances"), list):
+            holdings["cash_balances"] = (latest_snap or {}).get("cash_balances")
         return items, holdings, metrics
 
     def fetch_transactions(
@@ -960,7 +1392,7 @@ class IBFlexWebAdapter(BrokerAdapter):
                 idx += 1
                 continue
 
-            items, holdings, metrics = self._parse_report_transactions(rep)
+            items, holdings, metrics = self._parse_report_transactions(connection, rep, start_date=start_date, end_date=end_date)
             # Cache holdings by payload hash so fetch_holdings can reuse without extra network.
             hcache = rs.setdefault("_ib_flex_web_holdings_cache", {})
             if isinstance(hcache, dict):
@@ -974,25 +1406,55 @@ class IBFlexWebAdapter(BrokerAdapter):
 
     def fetch_holdings(self, connection: Any, as_of: dt.datetime | None = None) -> dict[str, Any]:
         rs = getattr(connection, "run_settings", None) or {}
+        forced_path = str(rs.get("holdings_file_path") or "").strip()
+        if forced_path:
+            try:
+                p0 = Path(os.path.expanduser(forced_path))
+                if p0.exists() and p0.is_file():
+                    # Allow importing a local broker statement export (baseline valuation).
+                    return _parse_ib_mtm_summary_statement(p0)
+            except Exception as e:
+                raise ProviderError(f"Failed to parse IB statement file {Path(forced_path).name}: {type(e).__name__}: {e}")
         # If transactions pages already parsed, reuse cached holdings.
         hcache = rs.get("_ib_flex_web_holdings_cache") or {}
-        # De-dupe holdings by (provider_account_id, symbol): multiple Flex queries may return OpenPositions
-        # sections that overlap. For UI/portfolio metrics, we treat positions as already aggregated per symbol.
-        items_by_key: dict[tuple[str, str], dict[str, Any]] = {}
+        # De-dupe holdings by (provider_account_id, symbol) within each snapshot date; multiple Flex queries may return
+        # overlapping OpenPositions sections. For UI we expose a "latest snapshot" view, and for sync_runner we
+        # expose all snapshots so multiple valuation points can be persisted.
+        snapshots_by_asof: dict[str, dict[str, Any]] = {}
         payload_hashes: list[str] = []
         if isinstance(hcache, dict):
             for h, snap in hcache.items():
                 if not isinstance(snap, dict):
                     continue
                 payload_hashes.append(str(h))
-                for it in snap.get("items") or []:
-                    if isinstance(it, dict):
+                snap_list = snap.get("snapshots") if isinstance(snap.get("snapshots"), list) else [snap]
+                for s in snap_list:
+                    if not isinstance(s, dict):
+                        continue
+                    asof_raw = str(s.get("as_of") or "").replace("Z", "+00:00").strip()
+                    if not asof_raw:
+                        continue
+                    bucket = snapshots_by_asof.setdefault(asof_raw, {"as_of": asof_raw, "items": [], "payload_hashes": []})
+                    bh = bucket.get("payload_hashes")
+                    if isinstance(bh, list) and str(h) not in bh:
+                        bh.append(str(h))
+
+                    items_by_key: dict[tuple[str, str], dict[str, Any]] = {}
+                    for it in list(bucket.get("items") or []):
+                        if not isinstance(it, dict):
+                            continue
+                        acct = str(it.get("provider_account_id") or "").strip()
+                        sym = str(it.get("symbol") or it.get("ticker") or "").strip().upper()
+                        if acct and sym:
+                            items_by_key[(acct, sym)] = dict(it)
+                    for it in s.get("items") or []:
+                        if not isinstance(it, dict):
+                            continue
                         acct = str(it.get("provider_account_id") or "").strip()
                         sym = str(it.get("symbol") or it.get("ticker") or "").strip().upper()
                         if not acct or not sym:
                             continue
                         k = (acct, sym)
-                        # Prefer the first seen; if later one has more populated values, replace.
                         if k not in items_by_key:
                             items_by_key[k] = dict(it)
                         else:
@@ -1001,8 +1463,38 @@ class IBFlexWebAdapter(BrokerAdapter):
                             it_mv = it.get("market_value")
                             cur_qty = cur.get("qty")
                             it_qty = it.get("qty")
-                            # Replace if current is missing key numeric fields but new has them.
                             if (cur_mv in (None, "") and it_mv not in (None, "")) or (cur_qty in (None, "") and it_qty not in (None, "")):
                                 items_by_key[k] = dict(it)
-        out = {"as_of": (as_of or utcnow()).isoformat(), "items": list(items_by_key.values()), "payload_hashes": payload_hashes}
+                    bucket["items"] = list(items_by_key.values())
+
+                    if isinstance(s.get("cash_balances"), list):
+                        bucket["cash_balances"] = s.get("cash_balances")
+
+        # Drop empty snapshots (no holdings items and no cash). Without this, an "ignored range" report
+        # could cause us to insert a misleading 0-value valuation point.
+        for k in list(snapshots_by_asof.keys()):
+            b = snapshots_by_asof.get(k) or {}
+            if not list(b.get("items") or []) and not list(b.get("cash_balances") or []):
+                snapshots_by_asof.pop(k, None)
+
+        if not snapshots_by_asof:
+            raise ProviderError("Holdings skipped")
+
+        best_asof_raw = max(snapshots_by_asof.keys())
+        latest = snapshots_by_asof.get(best_asof_raw) or {}
+        try:
+            best_asof = dt.datetime.fromisoformat(best_asof_raw.replace("Z", "+00:00"))
+        except Exception:
+            best_asof = None
+        out_asof = best_asof or as_of or utcnow()
+
+        snapshots = [snapshots_by_asof[k] for k in sorted(snapshots_by_asof.keys())]
+        out: dict[str, Any] = {
+            "as_of": out_asof.isoformat(),
+            "items": list(latest.get("items") or []),
+            "payload_hashes": sorted(set(payload_hashes)),
+            "snapshots": snapshots,
+        }
+        if isinstance(latest.get("cash_balances"), list):
+            out["cash_balances"] = latest.get("cash_balances")
         return out

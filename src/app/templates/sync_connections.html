@@ -2,11 +2,19 @@
 {% block content %}
   <h1>Sync → Connections</h1>
   <p class="muted">
-    This UI supports <b>IB Flex (Web Service)</b> and <b>Chase (Offline CSV)</b>.
-    Other legacy connectors may exist in the DB; disable them to avoid double-counting.
+    This UI supports <b>IB Flex (Web Service)</b>, <b>Chase (Offline CSV)</b>, and <b>Raymond James (Offline CSV)</b>.
+    Legacy connectors are hidden by default to avoid confusion.
+    {% if not show_legacy %}
+      <a class="muted" href="/sync/connections?show_legacy=1">Show legacy</a>
+    {% else %}
+      <a class="muted" href="/sync/connections">Hide legacy</a>
+    {% endif %}
   </p>
   {% if not secret_key_ok %}
     <div class="banner banner--warn">APP_SECRET_KEY is not set: saving credentials to DB is disabled.</div>
+  {% endif %}
+  {% if ok %}
+    <div class="banner banner--ok">{{ ok }}</div>
   {% endif %}
   {% if error %}
     <div class="banner banner--warn">{{ error }}</div>
@@ -25,6 +33,7 @@
         <select name="connection_kind" id="create_kind" onchange="toggleCreateKind()">
           <option value="IB_FLEX_WEB" selected>IB Flex (Web Service)</option>
           <option value="CHASE_OFFLINE">Chase (Offline CSV)</option>
+          <option value="RJ_OFFLINE">Raymond James (Offline CSV)</option>
         </select>
       </label>
       <label>Taxpayer<br/>
@@ -44,10 +53,10 @@
         <a href="#" class="muted">IP allowlist help (link)</a>
       </div>
     </div>
-    <div id="create_chase_offline" class="grid3" style="display:none">
-      <label>Data directory (optional)<br/><input name="data_dir" size="80" placeholder="e.g. ~/Downloads/Chase_IRA_Exports"/></label>
+    <div id="create_offline" class="grid3" style="display:none">
+      <label>Data directory (optional)<br/><input name="data_dir" size="80" placeholder="e.g. ~/Downloads/RJ_Exports"/></label>
       <div class="muted">
-        Upload files after creating the connection, or drop Chase CSV exports into the data directory and run sync.
+        Upload files after creating the connection, or drop exports into the data directory and run sync.
       </div>
     </div>
     <label>Audit note <input name="note" size="60"/></label><br/>
@@ -55,6 +64,18 @@
   </form>
 
   <h2>Existing Connections</h2>
+  {% if show_legacy and legacy_ib_flex_offline_count and legacy_ib_flex_offline_count > 0 %}
+    <div class="banner banner--warn">
+      <div>
+        <b>Legacy IB Flex (Offline) detected</b> ({{ legacy_ib_flex_offline_count }} connection(s)). This connector is deprecated and can cause duplicate imports.
+      </div>
+      <form method="post" action="/sync/connections/purge-ib-flex-offline" style="margin-top:8px">
+        <label class="muted">Type <code>PURGE</code> to confirm <input name="confirm" size="12" placeholder="PURGE"/></label>
+        <label class="muted">Audit note <input name="note" size="40"/></label>
+        <button type="submit">Purge + disable all IB Flex (Offline)</button>
+      </form>
+    </div>
+  {% endif %}
   {% if not connections %}
     <p>No connections yet.</p>
   {% else %}
@@ -62,15 +83,31 @@
       <tr><th>ID</th><th>Name</th><th>Status</th><th>Provider</th><th>Broker</th><th>Taxpayer</th><th>Coverage</th><th>Last success</th><th>Last full</th><th>Actions</th></tr>
       {% for c in connections %}
         {% set last = latest_by_conn.get(c.id) %}
-        {% set is_flex_web = (c.provider|upper == "IB" and (c.connector or "")|upper == "IB_FLEX_WEB") %}
-        {% set is_chase_offline = (c.provider|upper == "CHASE" and (c.connector or "")|upper == "CHASE_OFFLINE") %}
+        {% set connector = (c.connector or "")|upper %}
+        {% set is_flex_web = (connector == "IB_FLEX_WEB") %}
+        {% set is_chase_yodlee = (connector == "CHASE_YODLEE") %}
+        {% set is_chase_offline = (connector == "CHASE_OFFLINE") %}
+        {% set is_rj_offline = (connector == "RJ_OFFLINE") %}
+        {% set is_live = is_flex_web or is_chase_yodlee %}
         <tr>
           <td>{{ c.id }}</td>
           <td>
             <a href="/sync/connections/{{ c.id }}">{{ c.name }}</a>
             {% if is_flex_web %}<span class="muted">(IB Flex / web)</span>{% endif %}
+            {% if is_chase_yodlee %}<span class="muted">(Chase / Yodlee)</span>{% endif %}
             {% if is_chase_offline %}<span class="muted">(Chase / offline)</span>{% endif %}
-            {% if not is_flex_web and not is_chase_offline %}<span class="muted">(legacy connector; disable to avoid duplicates)</span>{% endif %}
+            {% if is_rj_offline %}<span class="muted">(RJ / offline)</span>{% endif %}
+            {% if not is_live and not is_chase_offline and not is_rj_offline %}<span class="muted">(legacy connector; disable to avoid duplicates)</span>{% endif %}
+            {% if is_chase_offline or is_rj_offline %}
+              {% set dd = (c.metadata_json or {}).get("data_dir") or ("data/external/conn_" ~ c.id) %}
+              <div class="muted" style="margin-top:4px">Data dir: <code>{{ dd }}</code></div>
+              <form method="post" action="/sync/connections/{{ c.id }}/settings" style="margin-top:6px">
+                <label class="muted">Edit data directory<br/><input name="data_dir" value="{{ dd }}" size="60"/></label>
+                <input type="hidden" name="extra_query_ids" value=""/>
+                <label class="muted">Audit note <input name="note" size="30"/></label>
+                <button type="submit">Save</button>
+              </form>
+            {% endif %}
           </td>
           <td>{{ c.status }}</td>
           <td>{{ c.provider }}</td>
@@ -80,7 +117,7 @@
           <td class="muted">{{ c.last_successful_sync_at|local_dt }}</td>
           <td class="muted">{{ c.last_full_sync_at|local_dt }}</td>
           <td>
-            {% if is_flex_web %}
+            {% if is_live %}
               <details>
                 <summary>Sync Now</summary>
                 <form method="post" action="/sync/connections/{{ c.id }}/run">
@@ -96,12 +133,16 @@
                       <span>Store raw payload snapshots</span><br/>
                       <input type="checkbox" name="store_payloads" id="payloads_{{ c.id }}"/>
                     </label>
+                    <label>
+                      <span>Reprocess payloads/files</span><br/>
+                      <input type="checkbox" name="reprocess_files"/>
+                    </label>
                   </div>
                   <div id="full_fields_{{ c.id }}" style="display:none" class="box">
                     <b>FULL range</b>
                     <div class="grid3">
-                      <label>Start date<br/><input name="start_date" value="{{ ten_years_ago }}"/></label>
-                      <label>End date<br/><input name="end_date" value="{{ today }}"/></label>
+                      <label>Start date<br/><input name="start_date" value="{{ ten_years_ago }}" placeholder="YYYY-MM-DD (or MM/DD/YYYY)"/></label>
+                      <label>End date<br/><input name="end_date" value="{{ today }}" placeholder="YYYY-MM-DD (or MM/DD/YYYY)"/></label>
                     </div>
                     <div class="muted">Default stores payload snapshots ON for FULL.</div>
                   </div>
@@ -145,17 +186,21 @@
     function toggleCreateKind() {
       const kind = document.getElementById("create_kind").value;
       const ib = document.getElementById("create_ib_web");
-      const ch = document.getElementById("create_chase_offline");
+      const offline = document.getElementById("create_offline");
       const name = document.getElementById("create_name");
-      if (kind === "CHASE_OFFLINE") {
+      if (kind === "CHASE_OFFLINE" || kind === "RJ_OFFLINE") {
         ib.style.display = "none";
-        ch.style.display = "grid";
-        if (name.value === "IB Flex (Web)") name.value = "Chase IRA (Offline)";
-      } else {
-        ib.style.display = "grid";
-        ch.style.display = "none";
-        if (name.value === "Chase IRA (Offline)") name.value = "IB Flex (Web)";
+        offline.style.display = "grid";
+        if (kind === "CHASE_OFFLINE") {
+          if (name.value === "IB Flex (Web)" || name.value === "RJ (Offline)") name.value = "Chase IRA (Offline)";
+        } else {
+          if (name.value === "IB Flex (Web)" || name.value === "Chase IRA (Offline)") name.value = "RJ (Offline)";
+        }
+        return;
       }
+      ib.style.display = "grid";
+      offline.style.display = "none";
+      if (name.value === "Chase IRA (Offline)" || name.value === "RJ (Offline)") name.value = "IB Flex (Web)";
     }
     function toggleSyncMode(selectEl, connId) {
       const full = document.getElementById("full_fields_" + connId);

@@ -6,6 +6,9 @@
   {% if view.warnings and view.warnings|length > 0 %}
     <div class="banner banner--warn">Warnings: {{ view.warnings }}</div>
   {% endif %}
+  {% if hints and hints|length > 0 %}
+    <div class="banner banner--warn">Hint: {{ hints|join(" ") }}</div>
+  {% endif %}
 
   <div class="box">
     <form method="get" action="/holdings">
@@ -21,7 +24,14 @@
           <select name="account_id">
             <option value="" {% if not account_id %}selected{% endif %}>Combined (all accounts)</option>
             {% for a in accounts %}
-              <option value="{{ a.id }}" {% if account_id == a.id %}selected{% endif %}>{{ a.name }}</option>
+              <option value="{{ a.id }}" {% if account_id == a.id %}selected{% endif %}>
+                {{ a.name }}
+                {% if accounts_with_positions and (a.id in accounts_with_positions) %}
+                  (has holdings)
+                {% else %}
+                  (no holdings)
+                {% endif %}
+              </option>
             {% endfor %}
           </select>
         </label>
@@ -49,6 +59,9 @@
   {% if (view.as_of is none) and (view.total_value|float == 0.0) %}
     <p class="muted">No synced holdings found yet. Run Sync and ensure a `positions*` export is present (and that it contains position rows).</p>
   {% else %}
+    {% if not view.positions or view.positions|length == 0 %}
+      <p class="muted">No positions for the current filters. Try “Combined (all accounts)” or an account marked “has holdings”.</p>
+    {% endif %}
     <table>
       <tr>
         <th>Account</th>

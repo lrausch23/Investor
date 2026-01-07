@@ -10,17 +10,37 @@
   <h2>Current</h2>
   <table>
     <tr><th>Key</th><th>Value</th></tr>
-    <tr><td>{{ cred_token_key }}</td><td>{{ token_masked }}</td></tr>
-    <tr><td>{{ cred_qid_key }}</td><td>{{ query_id_display }}</td></tr>
+    {% if connector == "CHASE_YODLEE" %}
+      <tr><td>YODLEE_ACCESS_TOKEN</td><td>{{ token_masked }}</td></tr>
+      <tr><td>YODLEE_REFRESH_TOKEN</td><td>{{ query_id_masked }}</td></tr>
+      <tr><td>yodlee_base_url</td><td class="muted">{{ yodlee_base_url or "env YODLEE_BASE_URL" }}</td></tr>
+      <tr><td>yodlee_api_version</td><td class="muted">{{ yodlee_api_version or "env YODLEE_API_VERSION" }}</td></tr>
+    {% else %}
+      <tr><td>{{ cred_token_key }}</td><td>{{ token_masked }}</td></tr>
+      <tr><td>{{ cred_qid_key }}</td><td>{{ query_id_display }}</td></tr>
+    {% endif %}
   </table>
 
   <h2>Update</h2>
   <form method="post" action="/sync/connections/{{ conn.id }}/auth">
-    <div class="grid2">
-      <label>Token<br/><input name="token" type="password" placeholder="paste token"/></label>
-      <label>Flex Query ID (numeric) or name<br/><input name="query_id" type="text" size="80" placeholder="e.g. 1354277"/></label>
-    </div>
-    {% if (conn.connector or "")|upper == "IB_FLEX_WEB" %}
+    {% if connector == "CHASE_YODLEE" %}
+      <div class="grid2">
+        <label>Yodlee access token<br/><input name="token" type="password" placeholder="paste access token (not Chase credentials)"/></label>
+        <label>Yodlee refresh token (optional)<br/><input name="refresh_token" type="password" placeholder="paste refresh token"/></label>
+      </div>
+      <div class="grid2" style="margin-top:6px">
+        <label>Yodlee base URL (optional)<br/><input name="yodlee_base_url" type="text" size="80" value="{{ yodlee_base_url }}" placeholder="defaults to env YODLEE_BASE_URL"/></label>
+        <label>Yodlee API version (optional)<br/><input name="yodlee_api_version" type="text" size="40" value="{{ yodlee_api_version }}" placeholder="e.g. 1.1"/></label>
+      </div>
+      <input type="hidden" name="query_id" value=""/>
+      <div class="muted">Live calls require <code>NETWORK_ENABLED=1</code> and a Yodlee host allowlisted in <code>ALLOWED_OUTBOUND_HOSTS</code>.</div>
+    {% else %}
+      <div class="grid2">
+        <label>Token<br/><input name="token" type="password" placeholder="paste token"/></label>
+        <label>Flex Query ID (numeric) or name<br/><input name="query_id" type="text" size="80" placeholder="e.g. 1354277"/></label>
+      </div>
+    {% endif %}
+    {% if connector == "IB_FLEX_WEB" %}
       <div class="muted">Query can be the Flex Query <b>name</b> from IB Portal (Reports → Flex Queries), or the numeric id if available.</div>
       <div class="muted">Flex Web Service is IP restricted; ensure your server IP is allowlisted in IB Portal.</div>
     {% endif %}

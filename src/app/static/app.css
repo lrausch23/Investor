@@ -6,10 +6,12 @@ table { border-collapse: collapse; width: 100%; margin: 8px 0 18px 0; }
 th, td { border: 1px solid #e5e7eb; padding: 6px 8px; text-align: left; }
 th { background: #f3f4f6; }
 .table-scroll { max-height: 340px; overflow: auto; border: 1px solid #e5e7eb; }
+.table-scroll--resizable { height: 340px; width: 80vw; min-width: 320px; max-width: 95vw; min-height: 200px; max-height: 80vh; resize: both; overflow: auto; margin: 0 auto; }
 .table-scroll table { margin: 0; border: 0; }
 .table-scroll th, .table-scroll td { border-left: 0; border-right: 0; }
 .table-scroll th { position: sticky; top: 0; z-index: 1; }
 .nowrap { white-space: nowrap; }
+.num { text-align: right !important; font-variant-numeric: tabular-nums; font-feature-settings: "tnum"; }
 .col-date { width: 120px; }
 .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .grid3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; }

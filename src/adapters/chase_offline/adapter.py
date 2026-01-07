@@ -5,12 +5,16 @@ import datetime as dt
 import hashlib
 import io
 import os
+import re
+import shutil
+import subprocess
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
 from src.importers.adapters import BrokerAdapter, ProviderError
-from src.utils.time import utcfromtimestamp, utcnow
+from src.utils.time import date_from_filename, end_of_day_utc, utcfromtimestamp, utcnow
 
 
 def _sha256_bytes(b: bytes) -> str:
@@ -56,6 +60,12 @@ def _parse_date(v: Any) -> dt.date | None:
         pass
     # MM/DD/YYYY
     for fmt in ("%m/%d/%Y", "%m/%d/%y"):
+        try:
+            return dt.datetime.strptime(s.split()[0], fmt).date()
+        except Exception:
+            continue
+    # 31-Dec-25 / 31-Dec-2025 (common in exported reports)
+    for fmt in ("%d-%b-%y", "%d-%b-%Y", "%d-%B-%y", "%d-%B-%Y"):
         try:
             return dt.datetime.strptime(s.split()[0], fmt).date()
         except Exception:
@@ -239,9 +249,304 @@ def _list_files(data_dir: Path) -> list[Path]:
         return []
     out: list[Path] = []
     for p in sorted(data_dir.glob("**/*")):
-        if p.is_file() and p.suffix.lower() in {".csv", ".tsv", ".txt"}:
+        if p.is_file() and p.suffix.lower() in {".csv", ".tsv", ".txt", ".pdf"}:
             out.append(p)
     return out
+
+
+def _pdf_to_text(path: Path) -> str:
+    exe = shutil.which("pdftotext")
+    if not exe:
+        raise ProviderError(
+            "Chase PDF statements require the `pdftotext` utility (Poppler). "
+            "Install it (e.g., `brew install poppler`) or export holdings as CSV instead."
+        )
+    with tempfile.NamedTemporaryFile(prefix="chase_stmt_", suffix=".txt", delete=False) as tmp:
+        out_path = Path(tmp.name)
+    try:
+        p = subprocess.run(
+            [exe, "-layout", str(path), str(out_path)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        if p.returncode != 0:
+            err = (p.stderr or p.stdout or "").strip()
+            hint = f": {err[:200]}" if err else ""
+            raise ProviderError(f"Failed to extract text from PDF {path.name} via pdftotext{hint}")
+        return out_path.read_text(encoding="utf-8", errors="replace")
+    finally:
+        try:
+            out_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+
+def _extract_statement_period(text: str) -> tuple[dt.date | None, dt.date | None]:
+    """
+    Best-effort extraction of (period_start, period_end) from Chase statement PDF text.
+    """
+    s = " ".join((text or "").split())
+    if not s:
+        return None, None
+    date_pat = r"(?:\d{1,2}[./-]\d{1,2}[./-]\d{2,4})"
+
+    m = re.search(
+        rf"(?i)(statement\s+period|for\s+the\s+period)\s*[:\-]?\s*({date_pat})\s*(?:-|to|through|thru|–|—)\s*({date_pat})",
+        s,
+    )
+    if m:
+        start_d = _parse_date(str(m.group(2)).strip())
+        end_d = _parse_date(str(m.group(3)).strip())
+        return start_d, end_d
+
+    # "From Jan 1, 2025 to Jan 31, 2025"
+    m2 = re.search(
+        r"(?i)\bfrom\s+([A-Za-z]{3,9}\s+\d{1,2},\s+\d{4})\s+to\s+([A-Za-z]{3,9}\s+\d{1,2},\s+\d{4})\b",
+        s,
+    )
+    if not m2:
+        # "Jan 1, 2025 - Jan 31, 2025"
+        m2 = re.search(
+            r"(?i)\b([A-Za-z]{3,9}\s+\d{1,2},\s+\d{4})\s*(?:-|to|through|thru|–|—)\s*([A-Za-z]{3,9}\s+\d{1,2},\s+\d{4})\b",
+            s,
+        )
+    if not m2:
+        return None, None
+    start_s = str(m2.group(1)).strip()
+    end_s = str(m2.group(2)).strip()
+    for fmt in ("%B %d, %Y", "%b %d, %Y"):
+        try:
+            return dt.datetime.strptime(start_s, fmt).date(), dt.datetime.strptime(end_s, fmt).date()
+        except Exception:
+            continue
+    return None, None
+
+
+def _extract_statement_total_value(text: str) -> float | None:
+    """
+    Extract a best-effort portfolio total / ending market value from Chase statement PDF text.
+    """
+    lines = (text or "").splitlines()
+    keys = (
+        "ENDING MARKET VALUE",
+        "TOTAL ACCOUNT VALUE",
+        "TOTAL PORTFOLIO VALUE",
+        "TOTAL MARKET VALUE",
+        "NET ASSET VALUE",
+        "TOTAL ASSETS",
+        "TOTAL VALUE",
+        "PORTFOLIO TOTAL",
+        "ENDING BALANCE",
+    )
+    noise = ("CHANGE", "GAIN", "LOSS", "RETURN", "YIELD", "PERCENT", "%")
+    money_re = re.compile(r"(?P<amt>\(?\$?\d[\d,]*\.?\d*\)?\*?)")
+    best: tuple[int, float] | None = None  # (score, value)
+
+    def _score_line(u: str) -> int:
+        score = 0
+        if "ENDING MARKET VALUE" in u:
+            score += 110
+        if "TOTAL ACCOUNT VALUE" in u:
+            score += 100
+        if "NET ASSET VALUE" in u:
+            score += 90
+        if "TOTAL PORTFOLIO VALUE" in u:
+            score += 80
+        if "TOTAL MARKET VALUE" in u:
+            score += 70
+        if "TOTAL ASSETS" in u:
+            score += 60
+        if "TOTAL VALUE" in u:
+            score += 40
+        if any(n in u for n in noise):
+            score -= 25
+        return score
+
+    def _consider(u: str, raw_amt: str) -> None:
+        nonlocal best
+        v = _as_float(raw_amt)
+        if v is None or v <= 0:
+            return
+        score = _score_line(u)
+        s = str(raw_amt or "")
+        if "," in s or v >= 1000:
+            score += 10
+        if v < 100:
+            score -= 10
+        if best is None or score > best[0] or (score == best[0] and v > best[1]):
+            best = (int(score), float(v))
+
+    for i, raw in enumerate(lines):
+        line = str(raw or "").strip()
+        if not line:
+            continue
+        u = line.upper()
+        if not any(k in u for k in keys):
+            continue
+        lookahead = [line]
+        for j in range(1, 6):
+            if i + j < len(lines):
+                nxt = str(lines[i + j] or "").strip()
+                if nxt:
+                    lookahead.append(nxt)
+        for block_line in lookahead:
+            bu = block_line.upper()
+            for m in money_re.finditer(block_line):
+                _consider(bu, m.group("amt"))
+
+    return best[1] if best is not None else None
+
+
+def _parse_chase_statement_pdf(path: Path) -> dict[str, Any]:
+    text = _pdf_to_text(path)
+    start_d, end_d = _extract_statement_period(text)
+    if end_d is None:
+        # Fallback: use the latest explicit date in the text.
+        dates: list[dt.date] = []
+        for m in re.finditer(r"(?<!\d)(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})(?!\d)", text or ""):
+            try:
+                mo = int(m.group(1))
+                da = int(m.group(2))
+                y = int(m.group(3))
+                if y < 100:
+                    y = 2000 + y
+                dates.append(dt.date(y, mo, da))
+            except Exception:
+                continue
+        end_d = max(dates) if dates else None
+    if end_d is None:
+        raise ProviderError(f"Chase statement '{path.name}' is missing a parsable period end date.")
+
+    total = _extract_statement_total_value(text)
+    if total is None:
+        raise ProviderError(f"Chase statement '{path.name}' is missing a parsable ending total value.")
+
+    as_of_dt = end_of_day_utc(end_d)
+    out: dict[str, Any] = {
+        "as_of": as_of_dt.isoformat(),
+        "items": [
+            {
+                "provider_account_id": "CHASE:IRA",
+                "symbol": "TOTAL",
+                "qty": None,
+                "market_value": float(total),
+                "is_total": True,
+                "source": "Chase Statement PDF",
+                "source_file": path.name,
+            }
+        ],
+        "source_file": path.name,
+        "statement_total_value": float(total),
+        "statement_period_end": end_d.isoformat(),
+    }
+    if start_d is not None:
+        out["statement_period_start"] = start_d.isoformat()
+    return out
+
+
+def _looks_like_chase_performance_report(text: str) -> bool:
+    """
+    Detect Chase "Performance" exports that contain ending market value per period (not positions-by-ticker).
+    """
+    t = (text or "").lower()
+    if "ending market value" not in t:
+        return False
+    # Reduce false positives by requiring at least one other known column/phrase.
+    return ("wealth generated" in t) or ("beginning market value" in t) or ("net contributions" in t)
+
+
+def _parse_chase_performance_report_csv(path: Path) -> dict[str, Any]:
+    """
+    Parse a Chase performance export CSV/TSV into multiple valuation snapshots (TOTAL rows only).
+
+    The export is often a report-like table where:
+    - a row contains the ending market value, but not a clean period end date, and
+    - a nearby "From <start> to <end>" row provides the period end date.
+    """
+    text = path.read_text(encoding="utf-8-sig", errors="ignore")
+    delimiter = _sniff_delimiter(text)
+    lines = text.splitlines()
+    header_idx = _find_header_line_index_with_delim(lines, {"date", "ending_market_value"}, delimiter)
+    if header_idx is None:
+        raise ProviderError(f"Chase performance export '{path.name}' is missing a usable header row.")
+
+    reader = csv.DictReader(io.StringIO("\n".join(lines[header_idx:])), delimiter=delimiter)
+    pending_total: float | None = None
+    snapshots: list[dict[str, Any]] = []
+    for raw in reader:
+        if not any((str(v).strip() for v in (raw or {}).values())):
+            continue
+        row = _lower_keys(raw)
+        date_cell = str(row.get("date") or "").strip()
+        end_cell = row.get("ending_market_value")
+        end_val = _as_float(end_cell)
+        if end_val is not None:
+            pending_total = float(end_val)
+
+        # "From Jan 1, 2025 to Jan 31, 2025" rows provide the period end date.
+        if date_cell.lower().startswith("from "):
+            _sd, ed = _extract_statement_period(date_cell)
+            if ed is None:
+                continue
+            if pending_total is None:
+                continue
+            as_of_dt = end_of_day_utc(ed)
+            snapshots.append(
+                {
+                    "as_of": as_of_dt.isoformat(),
+                    "items": [
+                        {
+                            "provider_account_id": "CHASE:IRA",
+                            "symbol": "TOTAL",
+                            "qty": None,
+                            "market_value": float(pending_total),
+                            "is_total": True,
+                            "source": "Chase Performance CSV",
+                            "source_file": path.name,
+                        }
+                    ],
+                    "source_file": path.name,
+                    "statement_total_value": float(pending_total),
+                    "statement_period_end": ed.isoformat(),
+                }
+            )
+            pending_total = None
+            continue
+
+        # Some exports may place the period end date directly in the Date column (e.g. "31-Dec-25").
+        d = _parse_date(date_cell)
+        if d is not None and end_val is not None:
+            as_of_dt = end_of_day_utc(d)
+            snapshots.append(
+                {
+                    "as_of": as_of_dt.isoformat(),
+                    "items": [
+                        {
+                            "provider_account_id": "CHASE:IRA",
+                            "symbol": "TOTAL",
+                            "qty": None,
+                            "market_value": float(end_val),
+                            "is_total": True,
+                            "source": "Chase Performance CSV",
+                            "source_file": path.name,
+                        }
+                    ],
+                    "source_file": path.name,
+                    "statement_total_value": float(end_val),
+                    "statement_period_end": d.isoformat(),
+                }
+            )
+            pending_total = None
+
+    # De-duplicate by as_of (keep last).
+    by_asof: dict[str, dict[str, Any]] = {}
+    for s in snapshots:
+        by_asof[str(s.get("as_of") or "")] = s
+    out_snaps = [v for k, v in sorted(by_asof.items(), key=lambda kv: kv[0]) if k]
+    if not out_snaps:
+        raise ProviderError(f"Chase performance export '{path.name}' contained 0 usable valuation rows.")
+    return {"snapshots": out_snaps, "source_file": path.name, "source": "Chase Performance CSV"}
 
 
 def _is_holdings_filename(name: str) -> bool:
@@ -312,47 +617,77 @@ class ChaseOfflineAdapter(BrokerAdapter):
         data_dir = self._data_dir(connection)
         files = _list_files(data_dir)
         if not files:
-            return {"ok": False, "message": f"No .csv files found in {data_dir}."}
-        return {"ok": True, "message": f"OK (Chase offline): {len(files)} CSV file(s) found.", "data_dir": str(data_dir)}
+            return {"ok": False, "message": f"No supported statement files found in {data_dir}."}
+        return {"ok": True, "message": f"OK (Chase offline): {len(files)} file(s) found.", "data_dir": str(data_dir)}
 
     def fetch_accounts(self, connection: Any) -> list[dict[str, Any]]:
         # Use a stable mapping to the internal account name.
         return [{"provider_account_id": "CHASE:IRA", "name": "Chase IRA", "account_type": "IRA"}]
 
     def fetch_holdings(self, connection: Any, as_of: dt.datetime | None = None) -> dict[str, Any]:
-        data_dir = self._data_dir(connection)
-        files = _list_files(data_dir)
-        holdings_files: list[Path] = []
-        # Prefer header-based classification (filenames vary in Chase exports).
-        for p in files:
+        run_settings = getattr(connection, "run_settings", None) or {}
+        forced_path = str(run_settings.get("holdings_file_path") or "").strip()
+        forced: Path | None = None
+        if forced_path:
             try:
-                txt = p.read_text(encoding="utf-8-sig")
+                p0 = Path(os.path.expanduser(forced_path))
+                if p0.exists() and p0.is_file():
+                    forced = p0
             except Exception:
-                continue
-            if _looks_like_holdings(txt):
-                holdings_files.append(p)
-        # Do not treat a file as holdings based on name alone; Chase activity statements often include Quantity.
-        if not holdings_files:
-            holdings_files = []
-        # Fall back to any CSV that looks like a positions file by header.
-        if not holdings_files:
-            for p in files:
-                if not _is_transactions_filename(p.name):
-                    holdings_files.append(p)
-        if not holdings_files:
-            # Fallback: infer open positions from transaction history so holdings views are not all-zero.
-            run_settings = getattr(connection, "run_settings", None) or {}
-            warnings = run_settings.setdefault("adapter_warnings", [])
-            if isinstance(warnings, list):
-                warnings.append(
-                    "No Chase positions/holdings CSV found; holdings snapshot estimated from BUY/SELL history (market value uses last trade price)."
-                )
-            return self._infer_holdings_from_transactions(connection, as_of=as_of)
+                forced = None
 
-        # Choose newest file by mtime.
-        holdings_files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+        data_dir = self._data_dir(connection)
+        holdings_files: list[Path] = []
+        if forced is not None:
+            if forced.suffix.lower() == ".pdf":
+                return _parse_chase_statement_pdf(forced)
+            if forced.suffix.lower() in {".csv", ".tsv", ".txt"}:
+                try:
+                    head = forced.read_text(encoding="utf-8-sig", errors="ignore")[:20000]
+                except Exception:
+                    head = ""
+                if _looks_like_chase_performance_report(head):
+                    return _parse_chase_performance_report_csv(forced)
+            holdings_files = [forced]
+        else:
+            files = _list_files(data_dir)
+            # Prefer header-based classification (filenames vary in Chase exports).
+            for p in files:
+                if p.suffix.lower() == ".pdf":
+                    holdings_files.append(p)
+                    continue
+                try:
+                    txt = p.read_text(encoding="utf-8-sig")
+                except Exception:
+                    continue
+                if _looks_like_holdings(txt):
+                    holdings_files.append(p)
+            # Do not treat a file as holdings based on name alone; Chase activity statements often include Quantity.
+            if not holdings_files:
+                holdings_files = []
+            # Fall back to any CSV that looks like a positions file by header.
+            if not holdings_files:
+                for p in files:
+                    if not _is_transactions_filename(p.name):
+                        holdings_files.append(p)
+            if not holdings_files:
+                # Fallback: infer open positions from transaction history so holdings views are not all-zero.
+                warnings = run_settings.setdefault("adapter_warnings", [])
+                if isinstance(warnings, list):
+                    warnings.append(
+                        "No Chase positions/holdings CSV found; holdings snapshot estimated from BUY/SELL history (market value uses last trade price)."
+                    )
+                return self._infer_holdings_from_transactions(connection, as_of=as_of)
+
+            # Choose newest file by mtime.
+            holdings_files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+
         p = holdings_files[0]
+        if p.suffix.lower() == ".pdf":
+            return _parse_chase_statement_pdf(p)
         file_mtime_asof = utcfromtimestamp(p.stat().st_mtime)
+        name_date = date_from_filename(p.name)
+        file_name_asof = end_of_day_utc(name_date) if name_date else None
         items: list[dict[str, Any]] = []
         cash_balances: list[dict[str, Any]] = []
         cash_total: float = 0.0
@@ -360,6 +695,8 @@ class ChaseOfflineAdapter(BrokerAdapter):
 
         try:
             text = p.read_text(encoding="utf-8-sig")
+            if p.suffix.lower() in {".csv", ".tsv", ".txt"} and _looks_like_chase_performance_report(text[:20000]):
+                return _parse_chase_performance_report_csv(p)
             _hdr, rows = _read_csv_rows(text)
             for r in rows:
                 row = _lower_keys(r)
@@ -379,7 +716,7 @@ class ChaseOfflineAdapter(BrokerAdapter):
                 asof_s = row.get("as_of") or row.get("pricing_date")
                 d = _parse_date(asof_s)
                 if d is not None:
-                    candidate = dt.datetime.combine(d, dt.time.min, tzinfo=dt.timezone.utc)
+                    candidate = end_of_day_utc(d)
                     if inferred_asof is None or candidate > inferred_asof:
                         inferred_asof = candidate
 
@@ -429,7 +766,7 @@ class ChaseOfflineAdapter(BrokerAdapter):
                 )
             return self._infer_holdings_from_transactions(connection, as_of=as_of)
 
-        as_of_dt = inferred_asof or file_mtime_asof
+        as_of_dt = as_of or inferred_asof or file_name_asof or file_mtime_asof
         if abs(float(cash_total)) > 1e-9:
             cash_balances.append(
                 {

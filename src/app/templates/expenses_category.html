@@ -1,0 +1,119 @@
+{% extends "layout.html" %}
+{% block content %}
+  <h1>Category: {{ category }}</h1>
+  <div class="muted">
+    <a href="/expenses/reports?year={{ year }}{% if month %}&month={{ month }}{% endif %}{% if account_id and account_id!='0' %}&account_id={{ account_id }}{% endif %}">Back to reports</a> •
+    <a href="/expenses/transactions?year={{ year }}{% if month %}&month={{ month }}{% endif %}{% if account_id and account_id!='0' %}&account_id={{ account_id }}{% endif %}&category={{ category|urlencode }}">View all transactions</a>
+  </div>
+
+  <div class="box">
+    <div class="muted">Totals for this category (selected period)</div>
+    <div>Spend: <strong>{{ spend_total|usd }}</strong> • Payment: <strong>{{ income_total|usd }}</strong> • Net: <strong>{{ (spend_total - income_total)|usd }}</strong></div>
+    <div class="muted">Tip: set a per-transaction override to fix Unknowns; overrides persist even if you rebuild system categories.</div>
+  </div>
+
+  {% if merchant_summary_rows %}
+    <h2>Merchants in this category</h2>
+    <div class="muted">Use this to mark a merchant as recurring and set frequency (used by the recurring report).</div>
+    <div class="table-scroll table-scroll--resizable">
+      <table>
+        <thead>
+          <tr>
+            <th>Merchant</th>
+            <th class="num">Spend</th>
+            <th class="num">Txn count</th>
+            <th>Recurring</th>
+            <th>Frequency</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for r in merchant_summary_rows %}
+            <tr>
+              <td class="nowrap">
+                <a href="/expenses/merchant?name={{ r.merchant|urlencode }}&year={{ year }}{% if month %}&month={{ month }}{% endif %}{% if account_id and account_id!='0' %}&account_id={{ account_id }}{% endif %}">{{ r.merchant }}</a>
+              </td>
+              <td class="nowrap num">{{ r.spend|usd }}</td>
+              <td class="nowrap num">{{ r.txn_count }}</td>
+              <td class="nowrap">{{ "Yes" if r.recurring_enabled else "No" }}</td>
+              <td class="nowrap">{{ r.cadence }}</td>
+              <td class="nowrap">
+                <form method="post" action="/expenses/merchant/recurring">
+                  <input type="hidden" name="merchant" value="{{ r.merchant }}" />
+                  <input type="hidden" name="return_to" value="{{ request.url }}" />
+                  <label class="nowrap">
+                    <input type="checkbox" name="recurring_enabled" value="1" {% if r.recurring_enabled %}checked{% endif %}/>
+                    recurring
+                  </label>
+                  <select name="cadence">
+                    {% set sel = r.cadence %}
+                    <option value="UNKNOWN" {% if sel=="UNKNOWN" %}selected{% endif %}>(auto)</option>
+                    <option value="WEEKLY" {% if sel=="WEEKLY" %}selected{% endif %}>Weekly</option>
+                    <option value="MONTHLY" {% if sel=="MONTHLY" %}selected{% endif %}>Monthly</option>
+                    <option value="QUARTERLY" {% if sel=="QUARTERLY" %}selected{% endif %}>Quarterly</option>
+                    <option value="SEMIANNUAL" {% if sel=="SEMIANNUAL" %}selected{% endif %}>Semiannual</option>
+                    <option value="ANNUAL" {% if sel=="ANNUAL" %}selected{% endif %}>Annual</option>
+                  </select>
+                  <button type="submit">Save</button>
+                </form>
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% endif %}
+
+  <h2>Transactions (latest 500)</h2>
+  {% if txns %}
+    <div class="table-scroll table-scroll--resizable">
+      <table>
+        <thead>
+          <tr>
+            <th class="col-date">Posted</th>
+            <th>Account</th>
+            <th>Cardholder</th>
+            <th>Merchant</th>
+            <th>Description</th>
+            <th>Category</th>
+            <th class="nowrap num">Amount</th>
+            <th>Override</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for t in txns %}
+            <tr>
+              <td class="nowrap">{{ t.posted_date }}</td>
+              <td class="nowrap">
+                {{ t.institution }} {% if t.account_last4_masked %}****{{ t.account_last4_masked }}{% elif t.expense_account and t.expense_account.last4_masked %}****{{ t.expense_account.last4_masked }}{% endif %}
+              </td>
+              <td class="nowrap">{{ t.cardholder_name or "" }}</td>
+              <td class="nowrap">
+                <a href="/expenses/merchant?name={{ t.merchant_norm|urlencode }}&year={{ year }}{% if month %}&month={{ month }}{% endif %}{% if account_id and account_id!='0' %}&account_id={{ account_id }}{% endif %}">{{ t.merchant_norm }}</a>
+              </td>
+              <td>{{ t.description_norm }}</td>
+              <td class="nowrap">{{ t.category_user or t.category_system or "Unknown" }}</td>
+              <td class="nowrap num">{{ t.amount|usd }}</td>
+              <td class="nowrap">
+                <form method="post" action="/expenses/txn/category">
+                  <input type="hidden" name="txn_id" value="{{ t.txn_id }}" />
+                  <input type="hidden" name="return_to" value="{{ request.url }}" />
+                  <select name="category">
+                    <option value="">(clear override)</option>
+                    {% for c in categories %}
+                      <option value="{{ c }}" {% if t.category_user==c %}selected{% endif %}>{{ c }}</option>
+                    {% endfor %}
+                  </select>
+                  <input name="new_category" placeholder="New category" size="14" />
+                  <button type="submit">Save</button>
+                </form>
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% else %}
+    <div class="muted">No transactions found for this category.</div>
+  {% endif %}
+{% endblock %}

@@ -3,6 +3,10 @@
   <h1>Setup</h1>
   <p>This MVP supports “Create Defaults” to bootstrap Trust/Personal + accounts and a starter policy.</p>
 
+  {% if error %}
+    <div class="banner banner--warn">{{ error }}</div>
+  {% endif %}
+
   <form method="post" action="/setup/defaults">
     <label>Audit note (optional): <input type="text" name="note" size="60"/></label>
     <button type="submit">Create Defaults</button>
@@ -62,9 +66,64 @@
 
   <h2>Accounts</h2>
   <table>
-    <tr><th>ID</th><th>Name</th><th>Broker</th><th>Type</th><th>Taxpayer</th></tr>
+    <tr><th>ID</th><th>Name</th><th>Broker</th><th>Type</th><th>Taxpayer</th><th>Refs</th><th>Actions</th></tr>
     {% for a in accounts %}
-      <tr><td>{{ a.id }}</td><td>{{ a.name }}</td><td>{{ a.broker }}</td><td>{{ a.account_type }}</td><td>{{ a.taxpayer_entity_id }}</td></tr>
+      {% set tp = tp_by_id.get(a.taxpayer_entity_id) %}
+      {% set refs = usage_by_account_id.get(a.id, 0) %}
+      {% set maps = maps_by_account_id.get(a.id, 0) %}
+      {% set blocked = delete_blocked_by_account_id.get(a.id, false) %}
+      <tr>
+        <td>{{ a.id }}</td>
+        <td>{{ a.name }}</td>
+        <td>{{ a.broker }}</td>
+        <td>{{ a.account_type }}</td>
+        <td>{% if tp %}{{ tp.name }} ({{ tp.type }}){% else %}{{ a.taxpayer_entity_id }}{% endif %}</td>
+        <td class="muted">
+          {{ refs }}
+          {% if maps and maps|int > 0 %}
+            <span class="muted">(maps={{ maps }})</span>
+          {% endif %}
+        </td>
+        <td>
+          <details>
+            <summary>Edit</summary>
+            <form method="post" action="/setup/accounts/{{ a.id }}/update" class="box">
+              <label>Name <input name="name" value="{{ a.name }}" /></label>
+              <label>Broker
+                <select name="broker">
+                  <option value="IB" {% if a.broker == "IB" %}selected{% endif %}>IB</option>
+                  <option value="RJ" {% if a.broker == "RJ" %}selected{% endif %}>RJ</option>
+                  <option value="CHASE" {% if a.broker == "CHASE" %}selected{% endif %}>CHASE</option>
+                  <option value="MANUAL" {% if a.broker == "MANUAL" %}selected{% endif %}>MANUAL</option>
+                </select>
+              </label>
+              <label>Type
+                <select name="account_type">
+                  <option value="TAXABLE" {% if a.account_type == "TAXABLE" %}selected{% endif %}>TAXABLE</option>
+                  <option value="IRA" {% if a.account_type == "IRA" %}selected{% endif %}>IRA</option>
+                  <option value="OTHER" {% if a.account_type == "OTHER" %}selected{% endif %}>OTHER</option>
+                </select>
+              </label>
+              <label>Taxpayer
+                <select name="taxpayer_entity_id">
+                  {% for t in taxpayers %}
+                    <option value="{{ t.id }}" {% if t.id == a.taxpayer_entity_id %}selected{% endif %}>{{ t.name }} ({{ t.type }})</option>
+                  {% endfor %}
+                </select>
+              </label>
+              <label>Audit note <input name="note" size="40"/></label>
+              <button type="submit">Update</button>
+            </form>
+          </details>
+          <form method="post" action="/setup/accounts/{{ a.id }}/delete" style="display:inline" onsubmit="return confirm('Delete account {{ a.name }} (id={{ a.id }})?');">
+            <input type="hidden" name="note" value="Delete account from Setup"/>
+            <button type="submit" {% if blocked %}disabled{% endif %}>Delete</button>
+          </form>
+          {% if blocked %}
+            <span class="muted">in use</span>
+          {% endif %}
+        </td>
+      </tr>
     {% endfor %}
   </table>
 

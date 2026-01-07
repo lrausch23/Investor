@@ -120,3 +120,12 @@ def ensure_sqlite_schema(engine: Engine) -> None:
         cols = _table_columns(engine, "broker_lot_closures")
         if "taxpayer_entity_id" not in cols:
             _add_column(engine, "broker_lot_closures", "taxpayer_entity_id INTEGER")
+
+    if "expense_transactions" in existing_tables:
+        cols = _table_columns(engine, "expense_transactions")
+        if "category_hint" not in cols:
+            _add_column(engine, "expense_transactions", "category_hint VARCHAR(100)")
+        if "account_last4_masked" not in cols:
+            _add_column(engine, "expense_transactions", "account_last4_masked VARCHAR(8)")
+        if "cardholder_name" not in cols:
+            _add_column(engine, "expense_transactions", "cardholder_name VARCHAR(200)")

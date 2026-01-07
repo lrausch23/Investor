@@ -1,0 +1,117 @@
+{% extends "layout.html" %}
+{% block content %}
+	  <h1>Recurring Charges</h1>
+	  <form method="get" action="/expenses/recurring" class="box">
+	    <label>Year <input name="year" value="{{ year }}" size="6" /></label>
+	    <label>Min months <input name="min_months" value="{{ min_months }}" size="4" /></label>
+      <label>Category
+        <select name="category">
+          <option value="">(all)</option>
+          {% for r in cat_rows %}
+            <option value="{{ r.category }}" {% if category==r.category %}selected{% endif %}>{{ r.category }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>Frequency
+        <select name="cadence">
+          <option value="">(all)</option>
+          {% for r in cadence_rows %}
+            <option value="{{ r.cadence }}" {% if cadence==r.cadence %}selected{% endif %}>{{ r.cadence }}</option>
+          {% endfor %}
+        </select>
+      </label>
+	    <button type="submit">Run</button>
+	  </form>
+
+    {% if cadence_groups %}
+      <div class="box">
+        <div class="muted">Recurring totals (all merchants)</div>
+        <div>
+          Est. monthly total: <strong>{{ recurring_monthly_total|usd }}</strong> •
+          Sum of typical amounts: <strong>{{ recurring_amount_total|usd }}</strong>
+        </div>
+      </div>
+
+      <h2>Baseline Budget by Frequency</h2>
+      {% for g in cadence_groups %}
+        <h3 class="nowrap">
+          {{ g.cadence }}
+          • <a class="muted" href="/expenses/recurring/transactions?year={{ year }}&min_months={{ min_months }}&cadence={{ g.cadence }}{% if category %}&category={{ category|urlencode }}{% endif %}">transactions</a>
+        </h3>
+        <div class="muted">
+          Est. monthly: <strong>{{ g.est_monthly_total|usd }}</strong> •
+          Total (per period): <strong>{{ g.period_total|usd }}</strong>
+        </div>
+        {% if g.rows %}
+          <div class="table-scroll table-scroll--resizable">
+            <table>
+              <thead><tr><th>Merchant</th><th class="num">Amount (per period)</th><th class="num">Est. Monthly</th><th>Category</th></tr></thead>
+              <tbody>
+                {% for r in g.rows %}
+                  <tr>
+                    <td class="nowrap">
+                      <a href="/expenses/merchant?name={{ r.merchant|urlencode }}&year={{ year }}&return_to={{ request.url|urlencode }}">{{ r.merchant }}</a>
+                    </td>
+                    <td class="nowrap num">{{ r.amount|usd }}</td>
+                    <td class="nowrap num">{{ r.monthly_equivalent|usd }}</td>
+                    <td class="nowrap">{{ r.category or "Unknown" }}</td>
+                  </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        {% else %}
+          <div class="muted">No recurring merchants found for this frequency.</div>
+        {% endif %}
+      {% endfor %}
+    {% endif %}
+
+    {% if cat_rows %}
+      <h2>Recurring by Category</h2>
+      <table>
+        <thead><tr><th>Category</th><th class="num">Est. Monthly</th></tr></thead>
+        <tbody>
+          {% for r in cat_rows %}
+            <tr>
+              <td class="nowrap">
+                <a href="/expenses/recurring?year={{ year }}&min_months={{ min_months }}&category={{ r.category|urlencode }}{% if cadence %}&cadence={{ cadence }}{% endif %}">{{ r.category }}</a>
+                • <a class="muted" href="/expenses/recurring/transactions?year={{ year }}&min_months={{ min_months }}&category={{ r.category|urlencode }}{% if cadence %}&cadence={{ cadence }}{% endif %}">transactions</a>
+                • <a class="muted" href="/expenses/category?name={{ r.category|urlencode }}&year={{ year }}">all transactions</a>
+              </td>
+              <td class="nowrap num">{{ r.monthly|usd }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% endif %}
+
+	  {% if items %}
+      {% if category or cadence %}
+        <div class="muted">
+          {% if category %}Filtered category: <strong>{{ category }}</strong>{% endif %}
+          {% if category and cadence %} • {% endif %}
+          {% if cadence %}Filtered frequency: <strong>{{ cadence }}</strong>{% endif %}
+          • <a href="/expenses/recurring/transactions?year={{ year }}&min_months={{ min_months }}{% if category %}&category={{ category|urlencode }}{% endif %}{% if cadence %}&cadence={{ cadence }}{% endif %}">view transactions</a>
+          • <a href="/expenses/recurring?year={{ year }}&min_months={{ min_months }}">clear</a>
+        </div>
+      {% endif %}
+		    <table>
+		      <thead><tr><th>Merchant</th><th class="num">Est. Monthly</th><th class="num">Amount</th><th class="num">Occurrences</th><th class="num">Months</th><th>Cadence</th><th>Category</th></tr></thead>
+		      <tbody>
+		        {% for r in items %}
+		          <tr>
+		            <td class="nowrap"><a href="/expenses/merchant?name={{ r.merchant|urlencode }}&year={{ year }}&return_to={{ request.url|urlencode }}">{{ r.merchant }}</a></td>
+		            <td class="nowrap num">{{ r.monthly_equivalent|usd }}</td>
+		            <td class="nowrap num">{{ r.amount|usd }}</td>
+		            <td class="nowrap num">{{ r.occurrences }}</td>
+		            <td class="nowrap num">{{ r.months_present }}</td>
+		            <td class="nowrap">{{ r.cadence }}</td>
+		            <td class="nowrap">{{ r.category or "Unknown" }}</td>
+		          </tr>
+		        {% endfor %}
+		      </tbody>
+		    </table>
+	  {% else %}
+	    <div class="muted">No recurring items found.</div>
+	  {% endif %}
+{% endblock %}

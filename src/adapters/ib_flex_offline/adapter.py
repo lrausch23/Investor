@@ -13,7 +13,7 @@ from typing import Any, Optional
 from xml.etree import ElementTree
 
 from src.importers.adapters import BrokerAdapter, ProviderError
-from src.utils.time import utcnow
+from src.utils.time import date_from_filename, end_of_day_utc, utcnow
 from src.utils.time import utcfromtimestamp
 
 
@@ -544,6 +544,17 @@ class IBFlexOfflineAdapter(BrokerAdapter):
         return out
 
     def fetch_holdings(self, connection: Any, as_of: dt.datetime | None = None) -> dict[str, Any]:
+        run_settings = getattr(connection, "run_settings", None) or {}
+        forced_path = str(run_settings.get("holdings_file_path") or "").strip()
+        forced: Path | None = None
+        if forced_path:
+            try:
+                p0 = Path(os.path.expanduser(forced_path))
+                if p0.exists() and p0.is_file():
+                    forced = p0
+            except Exception:
+                forced = None
+
         files = self._selected_files(connection)
         holdings_files = [f for f in files if f.kind == "HOLDINGS"]
         if not holdings_files:
@@ -556,13 +567,19 @@ class IBFlexOfflineAdapter(BrokerAdapter):
         if not holdings_files:
             return {"as_of": (as_of or utcnow()).isoformat(), "items": []}
 
-        # Choose the newest holdings file.
-        holdings_files.sort(key=lambda f: f.path.stat().st_mtime, reverse=True)
-        p = holdings_files[0].path
+        if forced is not None:
+            p = forced
+        else:
+            # Choose the newest holdings file.
+            holdings_files.sort(key=lambda f: f.path.stat().st_mtime, reverse=True)
+            p = holdings_files[0].path
         items: list[dict[str, Any]] = []
         cash_balances: list[dict[str, Any]] = []
         try:
-            file_asof = utcfromtimestamp(p.stat().st_mtime)
+            file_mtime_asof = utcfromtimestamp(p.stat().st_mtime)
+            name_date = date_from_filename(p.name)
+            file_name_asof = end_of_day_utc(name_date) if name_date else None
+            inferred_report_date: dt.date | None = None
             if p.suffix.lower() == ".csv":
                 text = p.read_text(encoding="utf-8-sig")
                 fallback_acct = _extract_preamble_account(text)
@@ -574,6 +591,14 @@ class IBFlexOfflineAdapter(BrokerAdapter):
                         cb_s = _get_any(row, ["costbasismoney", "cost basis money", "costbasis", "cost basis"])
                         px_s = _get_any(row, ["price", "markprice", "closeprice", "mark price"])
                         acct = _get_any(row, ["clientaccountid", "account", "accountid", "accountnumber"])
+                        report_date_s = _get_any(row, ["reportdate", "todate", "date"])
+                        if report_date_s:
+                            try:
+                                rd = _parse_date(report_date_s)
+                                if inferred_report_date is None or rd > inferred_report_date:
+                                    inferred_report_date = rd
+                            except Exception:
+                                pass
                         if not symbol:
                             continue
                         qty = _as_float(qty_s) if qty_s is not None else None
@@ -635,6 +660,8 @@ class IBFlexOfflineAdapter(BrokerAdapter):
                             report_date = _parse_date(report_date_s)
                         except Exception:
                             report_date = None
+                    if report_date is not None and (inferred_report_date is None or report_date > inferred_report_date):
+                        inferred_report_date = report_date
 
                     key = (provider_account_id, ccy)
                     existing = cash_candidates.get(key)
@@ -694,7 +721,9 @@ class IBFlexOfflineAdapter(BrokerAdapter):
         except Exception as e:
             raise ProviderError(f"Failed to parse holdings file {p.name}: {type(e).__name__}: {e}")
 
-        out: dict[str, Any] = {"as_of": file_asof.isoformat(), "items": items, "source_file": p.name}
+        inferred_asof_dt = end_of_day_utc(inferred_report_date) if inferred_report_date else None
+        as_of_dt = as_of or inferred_asof_dt or file_name_asof or file_mtime_asof
+        out: dict[str, Any] = {"as_of": as_of_dt.isoformat(), "items": items, "source_file": p.name}
         if cash_balances:
             out["cash_balances"] = cash_balances
         return out

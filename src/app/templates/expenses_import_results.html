@@ -1,0 +1,43 @@
+{% extends "layout.html" %}
+{% block content %}
+  <h1>Expense Import Results</h1>
+  <div class="muted"><a href="/expenses">Back to Expenses</a></div>
+
+  {% if cfg_path %}
+    <div class="muted">Config: {{ cfg_path }}</div>
+  {% endif %}
+
+  {% if results %}
+    <table>
+      <thead>
+        <tr>
+          <th>File</th>
+          <th>Status</th>
+          <th>Inserted</th>
+          <th>Dupes skipped</th>
+          <th>Format</th>
+          <th>Account</th>
+          <th>Error</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in results %}
+          {% set res = r.get("result") or {} %}
+          <tr>
+            <td class="nowrap">{{ r.get("file_name") }}</td>
+            <td class="nowrap">{{ r.get("status") }}</td>
+            <td class="nowrap">{{ res.get("inserted","") }}</td>
+            <td class="nowrap">{{ res.get("duplicates_skipped","") }}</td>
+            <td class="nowrap">{{ res.get("format_name","") }}</td>
+            <td class="nowrap">{{ res.get("institution","") }} {{ res.get("account_name","") }}</td>
+            <td>{{ r.get("error","") }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <div class="muted">If a file shows “Unknown/Ambiguous format”, re-run the import with a specific format selected, or add a new provider importer.</div>
+  {% else %}
+    <div class="muted">No files processed.</div>
+  {% endif %}
+{% endblock %}
+

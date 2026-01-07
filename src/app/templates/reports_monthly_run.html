@@ -1,0 +1,53 @@
+{% extends "layout.html" %}
+{% block content %}
+  <h1>Monthly Report Run</h1>
+  <p>
+    <a class="muted" href="/reports/monthly">← Monthly Report</a>
+    <span class="muted">•</span>
+    <a class="muted" href="/reports">Reports</a>
+  </p>
+
+  {% if ok_msg %}
+    <div class="banner banner--ok">Run complete.</div>
+  {% endif %}
+
+  <div class="box">
+    <div><b>Run id:</b> <code>{{ run_id }}</code></div>
+    <div class="muted" style="margin-top:6px">
+      Period: {{ meta.start_date }} → {{ meta.end_date }} (as-of {{ meta.asof }}) • Benchmark: {{ meta.benchmark }}
+    </div>
+    {% if meta.summary %}
+      <div class="muted" style="margin-top:6px">
+        TWR: {% if meta.summary.twr_ytd is none %}—{% else %}{{ "%.2f"|format(meta.summary.twr_ytd * 100.0) }}%{% endif %},
+        XIRR: {% if meta.summary.xirr is none %}—{% else %}{{ "%.2f"|format(meta.summary.xirr * 100.0) }}%{% endif %},
+        warnings: {{ meta.summary.warnings_count }}
+      </div>
+    {% endif %}
+  </div>
+
+  {% if report_name %}
+    <div class="box">
+      <a href="/reports/monthly/files/{{ run_id }}/{{ report_name }}">Open report</a>
+    </div>
+  {% endif %}
+
+  <h2>Artifacts</h2>
+  <div class="box">
+    <table>
+      <tr><th>File</th><th class="muted">Size</th></tr>
+      {% for f in files %}
+        <tr>
+          <td><a class="muted" href="/reports/monthly/files/{{ run_id }}/{{ f.name }}">{{ f.name }}</a></td>
+          <td class="muted">{{ f.bytes }} bytes</td>
+        </tr>
+      {% endfor %}
+    </table>
+  </div>
+
+  {% if meta.summary and meta.summary.warnings_count and meta.summary.warnings_count > 0 %}
+    <div class="box">
+      <div class="muted">Open <code>run_metadata.json</code> for the full warnings list.</div>
+    </div>
+  {% endif %}
+{% endblock %}
+

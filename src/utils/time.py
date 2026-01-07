@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import datetime as dt
 import os
+import re
 from functools import lru_cache
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -15,6 +16,47 @@ def utcnow() -> dt.datetime:
 
 def utcfromtimestamp(ts: float) -> dt.datetime:
     return dt.datetime.fromtimestamp(ts, UTC)
+
+
+def end_of_day_utc(d: dt.date) -> dt.datetime:
+    # Use end-of-day UTC so the local UI date doesn't shift backward (e.g., 00:00Z -> prior day in US timezones).
+    return dt.datetime(d.year, d.month, d.day, 23, 59, 59, tzinfo=UTC)
+
+
+def date_from_filename(name: str) -> dt.date | None:
+    """
+    Best-effort date inference from a filename.
+
+    Supports patterns like:
+      - YYYY-MM-DD, YYYY_MM_DD, YYYY.MM.DD
+      - MM-DD-YYYY, MM_DD_YYYY, MM.DD.YYYY
+      - YYYYMMDD
+    """
+    s = str(name or "").strip()
+    if not s:
+        return None
+
+    patterns: list[tuple[re.Pattern[str], str]] = [
+        (re.compile(r"(?<!\d)(?P<y>20\d{2})[-_.](?P<m>\d{1,2})[-_.](?P<d>\d{1,2})(?!\d)"), "ymd"),
+        (re.compile(r"(?<!\d)(?P<m>\d{1,2})[-_.](?P<d>\d{1,2})[-_.](?P<y>20\d{2})(?!\d)"), "mdy"),
+        (re.compile(r"(?<!\d)(?P<y>20\d{2})(?P<m>\d{2})(?P<d>\d{2})(?!\d)"), "compact"),
+    ]
+
+    best: dt.date | None = None
+    best_pos = -1
+    for pat, _kind in patterns:
+        for m in pat.finditer(s):
+            try:
+                y = int(m.group("y"))
+                mo = int(m.group("m"))
+                da = int(m.group("d"))
+                d = dt.date(y, mo, da)
+            except Exception:
+                continue
+            if m.start() >= best_pos:
+                best_pos = m.start()
+                best = d
+    return best
 
 
 @lru_cache(maxsize=32)

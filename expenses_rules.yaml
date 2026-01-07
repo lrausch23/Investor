@@ -1,0 +1,47 @@
+version: 1
+categories:
+- Housing
+- Utilities
+- Groceries
+- Dining
+- Fuel
+- Travel
+- Insurance
+- Health
+- Subscriptions
+- Shopping
+- Transfers
+- Income
+- Fees
+- Taxes
+- Unknown
+transfer_keywords:
+- transfer
+- zelle
+- venmo
+- paypal
+- cash app
+- ach
+- wire
+income_keywords:
+- payroll
+- salary
+- paycheck
+- interest
+- dividend
+rules:
+- name: Amazon shopping
+  priority: 100
+  category: Shopping
+  match:
+    merchant_exact: Amazon
+- name: Starbucks dining
+  priority: 90
+  category: Dining
+  match:
+    merchant_exact: Starbucks
+- name: Grocery stores (heuristic)
+  priority: 10
+  category: Groceries
+  match:
+    description_regex: \\b(whole foods|trader joe|kroger|safeway)\\b

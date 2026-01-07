@@ -20,6 +20,7 @@ from src.db.models import (
     PositionLot,
     Security,
     SubstituteGroup,
+    TaxLot,
     Transaction,
 )
 
@@ -34,7 +35,7 @@ def holdings_readonly(
 ):
     from src.app.main import templates
     from src.core.dashboard_service import parse_scope
-    from src.core.external_holdings import build_holdings_view
+    from src.core.external_holdings import accounts_with_snapshot_positions, build_holdings_view
 
     scope = parse_scope(request.query_params.get("scope"))
     account_id_raw = (request.query_params.get("account_id") or "").strip()
@@ -42,6 +43,21 @@ def holdings_readonly(
 
     today = dt.date.today()
     view = build_holdings_view(session, scope=scope, account_id=account_id, today=today)
+    hints: list[str] = []
+    if not view.positions:
+        try:
+            if account_id is not None:
+                combined = build_holdings_view(session, scope=scope, account_id=None, today=today)
+                if combined.positions:
+                    hints.append("No positions for the selected portfolio; try 'Combined (all accounts)'.")
+            if scope in {"trust", "personal"}:
+                household = build_holdings_view(session, scope="household", account_id=None, today=today)
+                if household.positions:
+                    hints.append("No positions for this scope; try switching Scope to 'Household'.")
+        except Exception:
+            # Best-effort hints only; never break the holdings page.
+            pass
+    accounts_with_positions = accounts_with_snapshot_positions(session, scope=scope)
 
     # Account selector options (within scope).
     from src.db.models import TaxpayerEntity
@@ -51,7 +67,58 @@ def holdings_readonly(
         q = q.filter(TaxpayerEntity.type == "TRUST")
     elif scope == "personal":
         q = q.filter(TaxpayerEntity.type == "PERSONAL")
-    accounts = q.all()
+    accounts_all = q.all()
+    acct_ids_all = [int(a.id) for a in accounts_all]
+
+    # Hide "unused" portfolios on the Holdings page to avoid confusing empty selections.
+    # Keep any currently-selected account visible even if it's otherwise unused.
+    active_ids: set[int] = set()
+    try:
+        active_ids |= set(int(x) for x in (accounts_with_positions or set()))
+        active_ids |= {
+            int(r[0])
+            for r in session.query(CashBalance.account_id)
+            .filter(CashBalance.account_id.in_(acct_ids_all))
+            .distinct()
+            .all()
+            if r and r[0] is not None
+        }
+        active_ids |= {
+            int(r[0])
+            for r in session.query(Transaction.account_id)
+            .filter(Transaction.account_id.in_(acct_ids_all))
+            .distinct()
+            .all()
+            if r and r[0] is not None
+        }
+        active_ids |= {
+            int(r[0])
+            for r in session.query(PositionLot.account_id)
+            .filter(PositionLot.account_id.in_(acct_ids_all))
+            .distinct()
+            .all()
+            if r and r[0] is not None
+        }
+        active_ids |= {
+            int(r[0])
+            for r in session.query(TaxLot.account_id)
+            .filter(TaxLot.account_id.in_(acct_ids_all))
+            .distinct()
+            .all()
+            if r and r[0] is not None
+        }
+    except Exception:
+        active_ids = set(int(a.id) for a in accounts_all)
+
+    if account_id is not None and active_ids and int(account_id) not in active_ids:
+        # Selected portfolio appears unused; redirect to a sane default.
+        return RedirectResponse(url=f"/holdings?scope={scope}", status_code=303)
+
+    accounts = [
+        a
+        for a in accounts_all
+        if int(a.id) in active_ids or (account_id is not None and int(a.id) == int(account_id))
+    ]
 
     return templates.TemplateResponse(
         "holdings_readonly.html",
@@ -63,7 +130,9 @@ def holdings_readonly(
             "scope_label": view.scope_label,
             "account_id": account_id,
             "accounts": accounts,
+            "accounts_with_positions": accounts_with_positions,
             "view": view,
+            "hints": hints,
             "today": today,
         },
     )

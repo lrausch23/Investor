@@ -1,0 +1,29 @@
+{% extends "layout.html" %}
+{% block content %}
+  <h1>Expense Rules</h1>
+  {% if error %}
+    <div class="banner banner--warn">{{ error }}</div>
+  {% endif %}
+  {% if ok %}
+    <div class="banner banner--ok">{{ ok }}</div>
+  {% endif %}
+
+  <div class="box">
+    <div>Rules path: <code>{{ rules_path }}</code></div>
+    {% if parse_error %}
+      <div class="banner banner--warn">Rules parse error: {{ parse_error }}</div>
+    {% endif %}
+    {% if not rules_exists %}
+      <form method="post" action="/expenses/rules/init" style="margin-top:10px">
+        <button type="submit">Create starter rules</button>
+      </form>
+    {% endif %}
+  </div>
+
+  <form method="post" action="/expenses/rules/save">
+    <textarea name="rules_text" rows="22" style="width:100%">{{ rules_content }}</textarea>
+    <button type="submit">Save</button>
+    <a class="muted" href="/expenses">Back</a>
+  </form>
+{% endblock %}
+

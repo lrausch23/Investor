@@ -92,6 +92,82 @@ def _scope_label(scope: DashboardScope) -> str:
         return "Personal only"
     return "Household"
 
+def accounts_with_snapshot_positions(session: Session, *, scope: str | DashboardScope) -> set[int]:
+    """
+    Returns internal account_ids that currently have at least one position in the latest holdings snapshots
+    for ACTIVE connections within the given scope.
+
+    Used to make the Holdings page portfolio selector less confusing when "placeholder" accounts exist.
+    """
+    sc: DashboardScope = parse_scope(scope if isinstance(scope, str) else scope)
+
+    conn_q = session.query(ExternalConnection).join(TaxpayerEntity, TaxpayerEntity.id == ExternalConnection.taxpayer_entity_id)
+    if sc == "trust":
+        conn_q = conn_q.filter(TaxpayerEntity.type == "TRUST")
+    elif sc == "personal":
+        conn_q = conn_q.filter(TaxpayerEntity.type == "PERSONAL")
+    connections = conn_q.filter(ExternalConnection.status == "ACTIVE").all()
+    if connections:
+        preferred_ids = preferred_active_connection_ids_for_taxpayers(
+            session, taxpayer_ids=[c.taxpayer_entity_id for c in connections]
+        )
+        if preferred_ids:
+            connections = [c for c in connections if int(c.id) in preferred_ids]
+    conn_ids = [int(c.id) for c in connections]
+    if not conn_ids:
+        return set()
+
+    # Pick the latest snapshot per connection by (as_of desc, id desc).
+    # Using max(id) alone breaks when importing historical statement snapshots after live holdings snapshots:
+    # the statement rows would "win" even though their as_of is older.
+    snapshots: list[tuple[ExternalHoldingSnapshot, ExternalConnection]] = []
+    rows = (
+        session.query(ExternalHoldingSnapshot, ExternalConnection)
+        .join(ExternalConnection, ExternalConnection.id == ExternalHoldingSnapshot.connection_id)
+        .filter(ExternalHoldingSnapshot.connection_id.in_(conn_ids))
+        .order_by(ExternalHoldingSnapshot.as_of.desc(), ExternalHoldingSnapshot.id.desc())
+        .all()
+    )
+    seen_conn_ids: set[int] = set()
+    for snap, conn in rows:
+        cid = int(conn.id)
+        if cid in seen_conn_ids:
+            continue
+        seen_conn_ids.add(cid)
+        snapshots.append((snap, conn))
+        if len(seen_conn_ids) >= len(conn_ids):
+            break
+
+    maps = session.query(ExternalAccountMap).filter(ExternalAccountMap.connection_id.in_(conn_ids)).all()
+    map_by_conn_provider: dict[tuple[int, str], int] = {(m.connection_id, m.provider_account_id): m.account_id for m in maps}
+
+    out: set[int] = set()
+    for snap, conn in snapshots:
+        payload = snap.payload_json or {}
+        items = payload.get("items") or []
+        if not isinstance(items, list):
+            continue
+        for it in items:
+            if not isinstance(it, dict):
+                continue
+            provider_acct = str(it.get("provider_account_id") or "").strip()
+            symbol = str(it.get("symbol") or it.get("ticker") or "").strip().upper()
+            if not provider_acct or not symbol:
+                continue
+            # Some adapters store a synthetic "TOTAL" row (is_total=true) to represent statement/account valuation.
+            # This is used for performance reporting and must not be treated as a position row.
+            if bool(it.get("is_total")):
+                acct_id = map_by_conn_provider.get((int(conn.id), provider_acct))
+                if acct_id is not None:
+                    out.add(int(acct_id))
+                continue
+            if symbol.startswith("CASH:"):
+                continue
+            acct_id = map_by_conn_provider.get((int(conn.id), provider_acct))
+            if acct_id is not None:
+                out.add(int(acct_id))
+    return out
+
 
 def build_holdings_view(
     session: Session,
@@ -150,23 +226,53 @@ def build_holdings_view(
 
     snapshots: list[tuple[ExternalHoldingSnapshot, ExternalConnection]] = []
     if conn_ids:
-        # Use max(id) per connection (not max(as_of)) to avoid duplicate rows when multiple snapshots share
-        # the same as_of timestamp (common for offline files where as_of = file mtime).
-        subq = (
-            session.query(
-                ExternalHoldingSnapshot.connection_id.label("cid"),
-                func.max(ExternalHoldingSnapshot.id).label("max_id"),
-            )
-            .filter(ExternalHoldingSnapshot.connection_id.in_(conn_ids))
-            .group_by(ExternalHoldingSnapshot.connection_id)
-            .subquery()
-        )
-        snapshots = (
+        def _has_any_position_items(payload: dict[str, Any]) -> bool:
+            items = payload.get("items") or []
+            if not isinstance(items, list):
+                return False
+            for it in items:
+                if not isinstance(it, dict):
+                    continue
+                if bool(it.get("is_total")):
+                    continue
+                sym = str(it.get("symbol") or it.get("ticker") or "").strip().upper()
+                if not sym:
+                    continue
+                if sym.startswith("CASH:"):
+                    continue
+                return True
+            return False
+
+        # Pick the latest snapshot per connection by (as_of desc, id desc), preferring a snapshot that actually
+        # contains positions-by-ticker. This prevents valuation-only statement snapshots (TOTAL rows) from causing
+        # the Holdings page to appear empty when a slightly older positions snapshot exists.
+        # Using max(id) alone can select an older-dated statement snapshot inserted later, which would make
+        # the Holdings page appear to "go back in time" after uploading baselines for performance.
+        rows = (
             session.query(ExternalHoldingSnapshot, ExternalConnection)
-            .join(subq, (ExternalHoldingSnapshot.connection_id == subq.c.cid) & (ExternalHoldingSnapshot.id == subq.c.max_id))
             .join(ExternalConnection, ExternalConnection.id == ExternalHoldingSnapshot.connection_id)
+            .filter(ExternalHoldingSnapshot.connection_id.in_(conn_ids))
+            .order_by(ExternalHoldingSnapshot.as_of.desc(), ExternalHoldingSnapshot.id.desc())
             .all()
         )
+        chosen_by_conn: dict[int, tuple[ExternalHoldingSnapshot, ExternalConnection]] = {}
+        fallback_by_conn: dict[int, tuple[ExternalHoldingSnapshot, ExternalConnection]] = {}
+        for snap, conn in rows:
+            cid = int(conn.id)
+            if cid in chosen_by_conn:
+                continue
+            if cid not in fallback_by_conn:
+                fallback_by_conn[cid] = (snap, conn)
+            payload = snap.payload_json or {}
+            if _has_any_position_items(payload):
+                chosen_by_conn[cid] = (snap, conn)
+            if len(chosen_by_conn) >= len(conn_ids):
+                break
+
+        for cid in conn_ids:
+            pick = chosen_by_conn.get(int(cid)) or fallback_by_conn.get(int(cid))
+            if pick is not None:
+                snapshots.append(pick)
 
     # Preload external account maps for included connections.
     maps = (
@@ -212,6 +318,10 @@ def build_holdings_view(
             provider_acct = str(it.get("provider_account_id") or "").strip()
             symbol = str(it.get("symbol") or it.get("ticker") or "").strip().upper()
             if not symbol:
+                continue
+            # Synthetic statement/account totals are used for valuation snapshots; do not display as a position
+            # or include it in position aggregation (otherwise totals are double-counted).
+            if bool(it.get("is_total")):
                 continue
             k = (provider_acct, symbol)
             if k in seen_item_keys:

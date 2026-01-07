@@ -1,0 +1,180 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{{ title }}</title>
+    <style>
+      body { font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial; margin: 24px; color: #111; }
+      h1,h2,h3 { margin: 0 0 10px 0; }
+      .muted { color: #555; }
+      .grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+      .box { border: 1px solid #e5e5e5; border-radius: 10px; padding: 12px; background: #fff; }
+      table { width: 100%; border-collapse: collapse; font-size: 13px; }
+      th, td { border-bottom: 1px solid #eee; padding: 6px 8px; text-align: left; vertical-align: top; }
+      th { font-weight: 600; color: #333; }
+      .right { text-align: right; }
+      .warn { background: #fff7e6; border: 1px solid #ffe1a1; padding: 10px; border-radius: 10px; }
+      .kpi { font-size: 20px; font-weight: 700; }
+      .small { font-size: 12px; }
+      code { background: #f5f5f5; padding: 0 4px; border-radius: 4px; }
+    </style>
+  </head>
+  <body>
+    <h1>{{ title }}</h1>
+    <div class="muted">Period: <code>{{ start_date }}</code> → <code>{{ end_date }}</code> (as-of <code>{{ asof }}</code>) • Benchmark: <code>{{ benchmark }}</code></div>
+
+    <h2 style="margin-top:16px">Executive Summary</h2>
+    <div class="grid">
+      <div class="box">
+        <div class="muted small">TWR (Dietz chain-linked)</div>
+        <div class="kpi">{% if twr_ytd is none %}—{% else %}{{ "%.2f"|format(twr_ytd * 100.0) }}%{% endif %}</div>
+      </div>
+      <div class="box">
+        <div class="muted small">MWR (XIRR)</div>
+        <div class="kpi">{% if irr is none %}—{% else %}{{ "%.2f"|format(irr * 100.0) }}%{% endif %}</div>
+      </div>
+      <div class="box">
+        <div class="muted small">{{ benchmark }} (TWR proxy)</div>
+        <div class="kpi">{% if bench_ytd is none %}—{% else %}{{ "%.2f"|format(bench_ytd * 100.0) }}%{% endif %}</div>
+      </div>
+    </div>
+    <div class="grid" style="margin-top:12px">
+      <div class="box">
+        <div class="muted small">Volatility (annualized, monthly)</div>
+        <div class="kpi">{% if risk.vol is none %}—{% else %}{{ "%.0f"|format(risk.vol * 100.0) }}%{% endif %}</div>
+      </div>
+      <div class="box">
+        <div class="muted small">Sharpe (monthly)</div>
+        <div class="kpi">{% if risk.sharpe is none %}—{% else %}{{ "%.2f"|format(risk.sharpe) }}{% endif %}</div>
+      </div>
+      <div class="box">
+        <div class="muted small">Max drawdown (monthly)</div>
+        <div class="kpi">{% if risk.max_drawdown is none %}—{% else %}{{ "%.1f"|format(risk.max_drawdown * 100.0) }}%{% endif %}</div>
+      </div>
+    </div>
+
+    <h2 style="margin-top:16px">Monthly Returns</h2>
+    <div class="box">
+      <div class="muted small">Portfolio monthly returns</div>
+      {{ chart_portfolio | safe }}
+      <div class="muted small" style="margin-top:10px">{{ benchmark }} monthly returns</div>
+      {{ chart_benchmark | safe }}
+    </div>
+
+    <div class="box" style="margin-top:12px">
+      <table>
+        <tr>
+          <th>Month</th>
+          <th class="right">Begin</th>
+          <th class="right">End</th>
+          <th class="right">Net external flow</th>
+          <th class="right">Return</th>
+          <th class="right">{{ benchmark }}</th>
+          <th class="right">Excess</th>
+        </tr>
+        {% for r in monthly %}
+          <tr>
+            <td>{{ r.month_end[:7] }}</td>
+            <td class="right">{{ "%.0f"|format(r.begin_value) }}</td>
+            <td class="right">{{ "%.0f"|format(r.end_value) }}</td>
+            <td class="right">{{ "%.0f"|format(r.net_external_flow_portfolio) }}</td>
+            <td class="right">{% if r.dietz_return is none %}—{% else %}{{ "%.2f"|format(r.dietz_return * 100.0) }}%{% endif %}</td>
+            <td class="right">{% if r.benchmark_return is none %}—{% else %}{{ "%.2f"|format(r.benchmark_return * 100.0) }}%{% endif %}</td>
+            <td class="right">{% if r.excess_return is none %}—{% else %}{{ "%.2f"|format(r.excess_return * 100.0) }}%{% endif %}</td>
+          </tr>
+        {% endfor %}
+      </table>
+    </div>
+
+    <h2 style="margin-top:16px">Position Guidance (as-of {{ asof[:7] }})</h2>
+    <div class="box">
+      <table>
+        <tr>
+          <th>Symbol</th>
+          <th class="right">Weight</th>
+          <th class="right">YTD contrib</th>
+          <th class="right">Last month</th>
+          <th class="right">YTD realized P&amp;L</th>
+          <th class="right">Vol</th>
+          <th class="right">Beta</th>
+          <th>Action</th>
+          <th>Rationale</th>
+        </tr>
+        {% for g in guidance_top %}
+          <tr>
+            <td><b>{{ g.symbol }}</b></td>
+            <td class="right">{{ "%.1f"|format(g.weight * 100.0) }}%</td>
+            <td class="right">{{ "%.2f"|format(g.ytd_price_contribution * 100.0) }}%</td>
+            <td class="right">{{ "%.2f"|format(g.last_month_price_contribution * 100.0) }}%</td>
+            <td class="right">{{ "%.0f"|format(g.ytd_realized_pnl) }}</td>
+            <td class="right">{% if g.vol_annual is none %}—{% else %}{{ "%.0f"|format(g.vol_annual * 100.0) }}%{% endif %}</td>
+            <td class="right">{% if g.beta is none %}—{% else %}{{ "%.2f"|format(g.beta) }}{% endif %}</td>
+            <td>{{ g.action }}</td>
+            <td class="muted">{{ g.rationale }}</td>
+          </tr>
+        {% endfor %}
+      </table>
+      <div class="muted small" style="margin-top:8px">
+        Guidance is a rules-based diagnostic signal derived from this dataset; it is not individualized investment advice.
+      </div>
+    </div>
+
+    <h2 style="margin-top:16px">Realized P&amp;L (FIFO, best-effort)</h2>
+    <div class="grid">
+      <div class="box">
+        <div class="muted small">Top realized winners</div>
+        <table>
+          <tr><th>Symbol</th><th>Date</th><th class="right">P&amp;L</th><th class="right">Carry-in?</th></tr>
+          {% for r in realized_top %}
+            <tr>
+              <td>{{ r.symbol }}</td><td class="muted">{{ r.sell_date }}</td>
+              <td class="right">{{ "%.0f"|format(r.pnl) }}</td>
+              <td class="right">{% if r.carry_in_basis_unknown %}yes{% else %}no{% endif %}</td>
+            </tr>
+          {% endfor %}
+        </table>
+      </div>
+      <div class="box">
+        <div class="muted small">Top realized losers</div>
+        <table>
+          <tr><th>Symbol</th><th>Date</th><th class="right">P&amp;L</th><th class="right">Carry-in?</th></tr>
+          {% for r in realized_bottom %}
+            <tr>
+              <td>{{ r.symbol }}</td><td class="muted">{{ r.sell_date }}</td>
+              <td class="right">{{ "%.0f"|format(r.pnl) }}</td>
+              <td class="right">{% if r.carry_in_basis_unknown %}yes{% else %}no{% endif %}</td>
+            </tr>
+          {% endfor %}
+        </table>
+      </div>
+    </div>
+
+    {% if realized_basis_unknown and realized_basis_unknown|length > 0 %}
+      <div class="box" style="margin-top:12px">
+        <div class="muted small">Basis-unknown sells (proceeds only)</div>
+        <table>
+          <tr><th>Symbol</th><th>Date</th><th class="right">Qty</th><th class="right">Proceeds</th></tr>
+          {% for r in realized_basis_unknown %}
+            <tr>
+              <td>{{ r.symbol }}</td><td class="muted">{{ r.sell_date }}</td>
+              <td class="right">{{ "%.6g"|format(r.qty) }}</td>
+              <td class="right">{{ "%.0f"|format(r.proceeds) }}</td>
+            </tr>
+          {% endfor %}
+        </table>
+      </div>
+    {% endif %}
+
+    {% if warnings and warnings|length > 0 %}
+      <h2 style="margin-top:16px">Warnings / Data Sufficiency</h2>
+      <div class="warn">
+        <ul>
+          {% for w in warnings %}
+            <li>{{ w }}</li>
+          {% endfor %}
+        </ul>
+      </div>
+    {% endif %}
+  </body>
+</html>

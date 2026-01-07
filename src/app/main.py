@@ -11,9 +11,11 @@ from src.app.routes.audit import router as audit_router
 from src.app.routes.dashboard import router as dashboard_router
 from src.app.routes.holdings import router as holdings_router
 from src.app.routes.imports import router as imports_router
+from src.app.routes.expenses import router as expenses_router
 from src.app.routes.planner import router as planner_router
 from src.app.routes.plans import router as plans_router
 from src.app.routes.policy import router as policy_router
+from src.app.routes.reports import router as reports_router
 from src.app.routes.setup import router as setup_router
 from src.app.routes.tax import router as tax_router
 from src.app.routes.taxlots import router as taxlots_router
@@ -54,9 +56,11 @@ def create_app() -> FastAPI:
     app.include_router(policy_router)
     app.include_router(holdings_router)
     app.include_router(imports_router)
+    app.include_router(expenses_router)
     app.include_router(planner_router)
     app.include_router(plans_router)
     app.include_router(audit_router)
+    app.include_router(reports_router)
     app.include_router(tax_router)
     app.include_router(taxlots_router)
     app.include_router(sync_router)

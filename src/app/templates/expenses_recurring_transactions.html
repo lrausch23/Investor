@@ -1,0 +1,60 @@
+{% extends "layout.html" %}
+{% block content %}
+  <h1>{{ title }}</h1>
+  <div class="muted">
+    <a href="/expenses/recurring?year={{ year }}&min_months={{ min_months }}{% if category %}&category={{ category|urlencode }}{% endif %}{% if cadence %}&cadence={{ cadence }}{% endif %}">Back to recurring report</a>
+  </div>
+
+  <div class="box">
+    <div class="muted">Summary (selected filters)</div>
+    <div>
+      Merchants: <strong>{{ merchant_count }}</strong> •
+      Transactions: <strong>{{ txn_count }}</strong> •
+      Spend: <strong>{{ spend_total|usd }}</strong>
+    </div>
+    <div class="muted">
+      Export:
+      <a href="/expenses/recurring/transactions.csv?year={{ year }}&min_months={{ min_months }}{% if category %}&category={{ category|urlencode }}{% endif %}{% if cadence %}&cadence={{ cadence }}{% endif %}">CSV</a> •
+      <a href="/expenses/recurring/transactions.tsv?year={{ year }}&min_months={{ min_months }}{% if category %}&category={{ category|urlencode }}{% endif %}{% if cadence %}&cadence={{ cadence }}{% endif %}">TSV (Sheets)</a> •
+      <a href="https://sheets.new" target="_blank" rel="noopener">Open Google Sheets</a>
+      <span class="muted">(then File → Import → Upload the downloaded CSV/TSV)</span>
+    </div>
+  </div>
+
+  {% if txns %}
+    <div class="table-scroll table-scroll--resizable">
+      <table>
+        <thead>
+          <tr>
+            <th class="col-date">Posted</th>
+            <th>Account</th>
+            <th>Cardholder</th>
+            <th>Merchant</th>
+            <th>Description</th>
+            <th>Category</th>
+            <th class="nowrap num">Amount</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for t in txns %}
+            <tr>
+              <td class="nowrap">{{ t.posted_date }}</td>
+              <td class="nowrap">
+                {{ t.institution }} {% if t.account_last4_masked %}****{{ t.account_last4_masked }}{% elif t.expense_account and t.expense_account.last4_masked %}****{{ t.expense_account.last4_masked }}{% endif %}
+              </td>
+              <td class="nowrap">{{ t.cardholder_name or "" }}</td>
+              <td class="nowrap">
+                <a href="/expenses/merchant?name={{ t.merchant_norm|urlencode }}&year={{ year }}&return_to={{ request.url|urlencode }}">{{ t.merchant_norm }}</a>
+              </td>
+              <td>{{ t.description_norm }}</td>
+              <td class="nowrap">{{ t.category_user or t.category_system or "Unknown" }}</td>
+              <td class="nowrap num">{{ t.amount|usd }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% else %}
+    <div class="muted">No matching transactions found.</div>
+  {% endif %}
+{% endblock %}

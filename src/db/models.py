@@ -238,6 +238,101 @@ class TaxAssumptionsSet(Base):
     json_definition: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
 
 
+# --- Expense analysis (local-first) ---
+
+
+class ExpenseAccount(Base):
+    __tablename__ = "expense_accounts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    institution: Mapped[str] = mapped_column(String(100), nullable=False)
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    last4_masked: Mapped[Optional[str]] = mapped_column(String(8))
+    type: Mapped[str] = mapped_column(String(50), nullable=False, default="UNKNOWN")  # CREDIT|BANK|UNKNOWN
+    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=utcnow, nullable=False)
+
+
+class ExpenseImportBatch(Base):
+    __tablename__ = "expense_import_batches"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    source: Mapped[str] = mapped_column(String(50), nullable=False, default="CSV")
+    imported_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=utcnow, nullable=False)
+    file_name: Mapped[str] = mapped_column(String(260), nullable=False)
+    file_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    row_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    duplicates_skipped: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+
+
+class ExpenseTransaction(Base):
+    __tablename__ = "expense_transactions"
+    __table_args__ = (
+        UniqueConstraint("txn_id"),
+        Index("ix_expense_txns_posted_date", "posted_date"),
+        Index("ix_expense_txns_merchant", "merchant_norm"),
+        Index("ix_expense_txns_account_date", "expense_account_id", "posted_date"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    txn_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    expense_account_id: Mapped[int] = mapped_column(ForeignKey("expense_accounts.id"), nullable=False)
+    institution: Mapped[str] = mapped_column(String(100), nullable=False)
+    account_name: Mapped[str] = mapped_column(String(200), nullable=False)
+    posted_date: Mapped[dt.date] = mapped_column(Date, nullable=False)
+    transaction_date: Mapped[Optional[dt.date]] = mapped_column(Date)
+    description_raw: Mapped[str] = mapped_column(Text, nullable=False)
+    description_norm: Mapped[str] = mapped_column(Text, nullable=False)
+    merchant_norm: Mapped[str] = mapped_column(String(200), nullable=False)
+    amount: Mapped[float] = mapped_column(Numeric(20, 2), nullable=False)  # debit negative, credit positive
+    currency: Mapped[str] = mapped_column(String(8), nullable=False, default="USD")
+    account_last4_masked: Mapped[Optional[str]] = mapped_column(String(8))
+    cardholder_name: Mapped[Optional[str]] = mapped_column(String(200))
+    category_hint: Mapped[Optional[str]] = mapped_column(String(100))
+    category_user: Mapped[Optional[str]] = mapped_column(String(100))
+    category_system: Mapped[Optional[str]] = mapped_column(String(100))
+    tags_json: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    notes: Mapped[Optional[str]] = mapped_column(Text)
+    import_batch_id: Mapped[int] = mapped_column(ForeignKey("expense_import_batches.id"), nullable=False)
+    original_row_json: Mapped[Optional[dict[str, Any]]] = mapped_column(JSON)
+    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=utcnow, nullable=False)
+
+    expense_account: Mapped["ExpenseAccount"] = relationship()
+    import_batch: Mapped["ExpenseImportBatch"] = relationship()
+
+
+class ExpenseRule(Base):
+    __tablename__ = "expense_rules"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(200), nullable=False, unique=True)
+    priority: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    json_definition: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=utcnow, nullable=False)
+
+
+class ExpenseCategory(Base):
+    __tablename__ = "expense_categories"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(100), nullable=False, unique=True)
+    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=utcnow, nullable=False)
+
+
+class ExpenseMerchantSetting(Base):
+    __tablename__ = "expense_merchant_settings"
+    __table_args__ = (UniqueConstraint("merchant_key"), Index("ix_expense_merchant_settings_key", "merchant_key"))
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    merchant_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    merchant_display: Mapped[str] = mapped_column(String(200), nullable=False)
+    recurring_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    cadence: Mapped[str] = mapped_column(String(20), nullable=False, default="UNKNOWN")  # WEEKLY|MONTHLY|QUARTERLY|SEMIANNUAL|ANNUAL|UNKNOWN
+    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=utcnow, nullable=False)
+    updated_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=utcnow, nullable=False)
+
+
 class ExternalConnection(Base):
     __tablename__ = "external_connections"
 

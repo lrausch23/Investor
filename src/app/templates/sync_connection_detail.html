@@ -5,6 +5,9 @@
   {% if not secret_key_ok %}
     <div class="banner banner--warn">APP_SECRET_KEY is not set: saving credentials to DB is disabled.</div>
   {% endif %}
+  {% if error_msg %}
+    <div class="banner banner--warn">{{ error_msg }}</div>
+  {% endif %}
   {% if test_ok is not none and test_msg %}
     {% if test_ok == "1" %}
       <div class="banner banner--ok">Test Connection: OK — {{ test_msg }}</div>
@@ -28,7 +31,17 @@
       This connection uses <b>Chase (Offline CSV)</b>. Drop Chase IRA CSV exports into the data directory below or upload files here.
     </div>
   {% endif %}
-  {% if (conn.provider|upper == "IB") and ((conn.connector or "")|upper == "IB_FLEX_WEB") %}
+  {% if is_rj_offline %}
+    <div class="banner banner--ok">
+      This connection uses <b>Raymond James (Offline files)</b>. Drop RJ exports into the data directory below or upload files here (CSV for activity/positions, PDF statements for holdings totals).
+    </div>
+  {% endif %}
+  {% if ((conn.connector or "")|upper == "CHASE_YODLEE") %}
+    <div class="banner banner--warn">
+      This connection uses <b>Chase (Yodlee)</b>. It requires network access (<code>NETWORK_ENABLED=1</code>) and a Yodlee host allowlisted in <code>ALLOWED_OUTBOUND_HOSTS</code>.
+    </div>
+  {% endif %}
+  {% if ((conn.connector or "")|upper == "IB_FLEX_WEB") %}
     <div class="banner banner--warn">
       This connection uses <b>IB Flex (Web Service)</b>. It requires network access (<code>NETWORK_ENABLED=1</code>) and IB Flex IP allowlisting.
       <span class="muted"><a href="#" class="muted">IP allowlist help (link)</a></span>
@@ -51,11 +64,18 @@
     <tr><td>Withdrawals / distributions (YTD)</td><td>{{ withdrawals_ytd|usd }} <span class="muted">({{ withdrawals_count_ytd }} txn(s))</span></td></tr>
     {% if is_offline_files %}
       <tr><td>Credentials</td><td class="muted">Not used for offline file connectors.</td></tr>
-      <tr><td>Data directory</td><td class="muted">{{ data_dir }}</td></tr>
+      <tr><td>Data directory</td><td class="muted">{{ data_dir }} <a class="muted" href="#offline_files">(edit)</a></td></tr>
     {% else %}
-      <tr><td>{{ cred_token_key }}</td><td>{{ token_masked }}</td></tr>
-      <tr><td>{{ cred_qid_key }}</td><td>{{ query_id_display }}</td></tr>
-      {% if (conn.provider|upper == "IB") and ((conn.connector or "")|upper == "IB_FLEX_WEB") %}
+      {% if is_chase_yodlee %}
+        <tr><td>YODLEE_ACCESS_TOKEN</td><td>{{ token_masked }}</td></tr>
+        <tr><td>YODLEE_REFRESH_TOKEN</td><td>{{ query_id_masked }}</td></tr>
+        <tr><td>Yodlee base URL</td><td class="muted">{{ (conn.metadata_json or {}).get("yodlee_base_url") or "env YODLEE_BASE_URL" }}</td></tr>
+        <tr><td>Yodlee API version</td><td class="muted">{{ (conn.metadata_json or {}).get("yodlee_api_version") or "env YODLEE_API_VERSION" }}</td></tr>
+      {% else %}
+        <tr><td>{{ cred_token_key }}</td><td>{{ token_masked }}</td></tr>
+        <tr><td>{{ cred_qid_key }}</td><td>{{ query_id_display }}</td></tr>
+      {% endif %}
+      {% if ((conn.connector or "")|upper == "IB_FLEX_WEB") %}
         <tr><td>Extra Flex Queries</td><td class="muted">{{ extra_queries_str or "—" }}</td></tr>
       {% endif %}
     {% endif %}
@@ -64,7 +84,7 @@
     <p><a href="/sync/connections/{{ conn.id }}/auth">Edit credentials</a> <span class="muted">(stored encrypted)</span></p>
   {% endif %}
 
-  {% if (conn.provider|upper == "IB") and ((conn.connector or "")|upper == "IB_FLEX_WEB") %}
+  {% if ((conn.connector or "")|upper == "IB_FLEX_WEB") %}
     <div class="box">
       <b>Flex Web Queries</b>
       <div class="muted" style="margin-top:6px">
@@ -79,10 +99,51 @@
         <button type="submit">Save</button>
       </form>
     </div>
+
+    <h2 id="baseline_files">Baseline Statement Files (optional)</h2>
+    <div class="box">
+      <div class="muted">
+        Upload IB statement exports (e.g., <b>MTM Summary</b>) to seed baseline holdings valuation points for performance reporting
+        when Flex queries cannot backfill historical snapshots.
+      </div>
+      <form method="post" action="/sync/connections/{{ conn.id }}/settings" style="margin-top:10px">
+        <label>Data directory (local path)
+          <input name="data_dir" value="{{ data_dir }}" size="70"/>
+        </label>
+        <input type="hidden" name="extra_query_ids" value="{{ extra_queries_str }}"/>
+        <label>Audit note <input name="note" size="40"/></label>
+        <button type="submit">Save</button>
+      </form>
+      <form method="post" action="/sync/connections/{{ conn.id }}/upload" enctype="multipart/form-data" style="margin-top:10px">
+        <label>Upload statement file <input type="file" name="upload"/></label>
+        <label>Audit note <input name="note" size="40"/></label>
+        <button type="submit">Upload</button>
+      </form>
+      <div class="muted" style="margin-top:10px">
+        Parsed file types: <code>.csv</code>, <code>.tsv</code>, <code>.txt</code>, <code>.xml</code>.
+      </div>
+      {% if files_on_disk and files_on_disk|length > 0 %}
+        <div class="muted" style="margin-top:10px">Files on disk ({{ files_on_disk|length }} shown):</div>
+        <table>
+          <tr><th>Name</th><th>Supported</th><th>Bytes</th><th>Modified</th><th>Path</th></tr>
+          {% for f in files_on_disk[:50] %}
+            <tr>
+              <td>{{ f.name }}</td>
+              <td class="muted">{{ f.supported_label or ("Yes" if f.supported else "No") }}</td>
+              <td class="muted">{{ f.bytes }}</td>
+              <td class="muted">{{ f.mtime }}</td>
+              <td class="muted">{{ f.path }}</td>
+            </tr>
+          {% endfor %}
+        </table>
+      {% else %}
+        <div class="muted" style="margin-top:10px">No files found in the data directory.</div>
+      {% endif %}
+    </div>
   {% endif %}
 
   {% if is_offline_files %}
-    <h2>Offline Files</h2>
+    <h2 id="offline_files">Offline Files</h2>
     <div class="box">
       <form method="post" action="/sync/connections/{{ conn.id }}/settings">
         <label>Data directory (local path)
@@ -97,13 +158,19 @@
         <label>Audit note <input name="note" size="40"/></label>
         <button type="submit">Upload</button>
       </form>
+      <div class="muted" style="margin-top:10px">
+        Parsed file types:
+        <code>.csv</code>, <code>.tsv</code>, <code>.txt</code>, <code>.xml</code>{% if is_rj_offline %}, <code>.pdf</code>{% endif %}.
+        (Excel <code>.xlsx</code> is not parsed.)
+      </div>
       {% if files_on_disk and files_on_disk|length > 0 %}
         <div class="muted" style="margin-top:10px">Files on disk ({{ files_on_disk|length }} shown):</div>
         <table>
-          <tr><th>Name</th><th>Bytes</th><th>Modified</th><th>Path</th></tr>
+          <tr><th>Name</th><th>Supported</th><th>Bytes</th><th>Modified</th><th>Path</th></tr>
           {% for f in files_on_disk[:50] %}
             <tr>
               <td>{{ f.name }}</td>
+              <td class="muted">{{ f.supported_label or ("Yes" if f.supported else "No") }}</td>
               <td class="muted">{{ f.bytes }}</td>
               <td class="muted">{{ f.mtime }}</td>
               <td class="muted">{{ f.path }}</td>
@@ -111,7 +178,7 @@
           {% endfor %}
         </table>
       {% else %}
-        <div class="muted" style="margin-top:10px">No `.csv`/`.xml` files found in the data directory.</div>
+        <div class="muted" style="margin-top:10px">No files found in the data directory.</div>
       {% endif %}
       {% if ingested_files and ingested_files|length > 0 %}
         <div class="muted" style="margin-top:10px">Recently ingested files (tracked for incremental sync):</div>
@@ -156,18 +223,16 @@
         <span>Store raw payload snapshots</span><br/>
         <input type="checkbox" name="store_payloads" id="payloads_{{ conn.id }}"/>
       </label>
-      {% if is_offline_files %}
-        <label>
-          <span>Reprocess files</span><br/>
-          <input type="checkbox" name="reprocess_files"/>
-        </label>
-      {% endif %}
+      <label>
+        <span>Reprocess payloads/files</span><br/>
+        <input type="checkbox" name="reprocess_files"/>
+      </label>
     </div>
     <div id="full_fields_{{ conn.id }}" style="display:none" class="box">
       <b>FULL range</b>
       <div class="grid3">
-        <label>Start date<br/><input name="start_date" value="{{ ten_years_ago }}"/></label>
-        <label>End date<br/><input name="end_date" value="{{ today }}"/></label>
+        <label>Start date<br/><input name="start_date" value="{{ ten_years_ago }}" placeholder="YYYY-MM-DD (or MM/DD/YYYY)"/></label>
+        <label>End date<br/><input name="end_date" value="{{ today }}" placeholder="YYYY-MM-DD (or MM/DD/YYYY)"/></label>
       </div>
     </div>
     <div id="inc_fields_{{ conn.id }}" class="box">
@@ -248,12 +313,36 @@
         parse_fails={{ last_run.coverage_json.get("parse_fail_count", 0) }},
         pages={{ last_run.coverage_json.get("pages_fetched", 0) }}
         {% if last_run.coverage_json.get("file_count") is not none %}, files_ingested={{ last_run.coverage_json.get("file_count", 0) }}{% endif %}
+        {% if last_run.coverage_json.get("file_total") is not none %}, files_found={{ last_run.coverage_json.get("file_total", 0) }}{% endif %}
+        {% if last_run.coverage_json.get("file_selected") is not none %}, files_selected={{ last_run.coverage_json.get("file_selected", 0) }}{% endif %}
+        {% if last_run.coverage_json.get("file_unsupported_total") is not none %}, unsupported={{ last_run.coverage_json.get("file_unsupported_total", 0) }}{% endif %}
       </div>
       {% if last_run.coverage_json.get("txn_type_counts") %}
         <div class="muted">Types: {{ last_run.coverage_json.get("txn_type_counts") }}</div>
       {% endif %}
       {% if last_run.coverage_json.get("holdings_items_imported") is not none %}
         <div class="muted">Holdings items imported: {{ last_run.coverage_json.get("holdings_items_imported", 0) }}</div>
+      {% endif %}
+      {% if last_run.coverage_json.get("holdings_snapshots_imported") is not none %}
+        <div class="muted">Holdings snapshots imported: {{ last_run.coverage_json.get("holdings_snapshots_imported", 0) }}</div>
+      {% endif %}
+      {% if last_run.coverage_json.get("holdings_asof_min") or last_run.coverage_json.get("holdings_asof_max") %}
+        <div class="muted">Holdings as-of range: {{ last_run.coverage_json.get("holdings_asof_min") or "—" }} → {{ last_run.coverage_json.get("holdings_asof_max") or "—" }}</div>
+      {% endif %}
+      {% if last_run.coverage_json.get("holdings_snapshot_debug") %}
+        <div class="muted" style="margin-top:8px">Holdings valuation points (this run):</div>
+        <table>
+          <tr><th>As-of</th><th>Source</th><th>Statement period</th><th>Total value</th><th>Items</th></tr>
+          {% for h in last_run.coverage_json.get("holdings_snapshot_debug")[:30] %}
+            <tr>
+              <td class="muted">{{ h.get("as_of")|local_dt }}</td>
+              <td class="muted">{{ h.get("source_file") or "—" }}</td>
+              <td class="muted">{{ h.get("statement_period_start") or "—" }} → {{ h.get("statement_period_end") or "—" }}</td>
+              <td class="muted">{{ h.get("statement_total_value")|usd if h.get("statement_total_value") is not none else "—" }}</td>
+              <td class="muted">{{ h.get("items") or 0 }}</td>
+            </tr>
+          {% endfor %}
+        </table>
       {% endif %}
       {% if last_run.coverage_json.get("cash_balances_imported") is not none %}
         <div class="muted">Cash balances imported (USD): {{ last_run.coverage_json.get("cash_balances_imported", 0) }}</div>
@@ -307,6 +396,12 @@
   {% if latest_holdings %}
     <div class="box">
       <div class="muted">As-of: {{ latest_holdings.as_of|local_dt }} — Items: {{ holdings_items|length }}</div>
+      {% if latest_holdings.payload_json and (latest_holdings.payload_json.get("statement_period_start") or latest_holdings.payload_json.get("statement_period_end")) %}
+        <div class="muted">Statement period: {{ latest_holdings.payload_json.get("statement_period_start") or "—" }} → {{ latest_holdings.payload_json.get("statement_period_end") or "—" }}</div>
+      {% endif %}
+      {% if latest_holdings.payload_json and latest_holdings.payload_json.get("statement_total_value") is not none %}
+        <div class="muted">Statement total value: {{ latest_holdings.payload_json.get("statement_total_value")|usd }}</div>
+      {% endif %}
       {% if holdings_items and holdings_items|length > 0 %}
         <table>
           <tr><th>Provider account</th><th>Symbol</th><th>Qty</th><th>Market value</th></tr>
