@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import datetime as dt
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Optional
 
 from sqlalchemy import or_
@@ -33,7 +34,10 @@ class HoldingPosition:
     taxpayer_type: Optional[str]
     symbol: str
     qty: Optional[float]
+    latest_price: Optional[float]
+    latest_price_as_of: Optional[dt.date]
     market_value: Optional[float]
+    market_value_snapshot: Optional[float]
     cost_basis_total: Optional[float]
     pnl_amount: Optional[float]
     pnl_pct: Optional[float]
@@ -91,6 +95,78 @@ def _scope_label(scope: DashboardScope) -> str:
     if scope == "personal":
         return "Personal only"
     return "Household"
+
+
+def _latest_price_from_csv(*, path: Path, symbol: str, as_of: dt.date) -> tuple[dt.date, float] | None:
+    try:
+        from portfolio_report.prices import load_price_csv
+    except Exception:
+        return None
+    try:
+        series = load_price_csv(path, symbol)
+    except Exception:
+        return None
+    for d, px in reversed(series.points or []):
+        if d <= as_of and px and float(px) > 0:
+            return d, float(px)
+    return None
+
+
+def _latest_prices_for_symbols(
+    *,
+    prices_dir: Path,
+    symbols: list[str],
+    as_of: dt.date,
+    base_currency: str = "USD",
+) -> dict[str, tuple[dt.date, float]]:
+    out: dict[str, tuple[dt.date, float]] = {}
+    prices_dir = Path(prices_dir)
+    yfinance_dir = prices_dir / "yfinance"
+    try:
+        from market_data.symbols import normalize_ticker, sanitize_ticker
+    except Exception:
+        normalize_ticker = None  # type: ignore[assignment]
+        sanitize_ticker = None  # type: ignore[assignment]
+
+    for raw in symbols:
+        sym = (raw or "").strip().upper()
+        if not sym or sym in out:
+            continue
+
+        candidates: list[Path] = []
+        p = prices_dir / f"{sym}.csv"
+        if p.exists():
+            candidates.append(p)
+
+        provider_ticker = None
+        if normalize_ticker is not None:
+            try:
+                ns = normalize_ticker(sym, base_currency=base_currency)  # type: ignore[misc]
+                provider_ticker = getattr(ns, "provider_ticker", None)
+            except Exception:
+                provider_ticker = None
+        if provider_ticker:
+            p2 = prices_dir / f"{str(provider_ticker).upper()}.csv"
+            if p2.exists() and p2 not in candidates:
+                candidates.append(p2)
+
+        if sanitize_ticker is not None:
+            y1 = yfinance_dir / f"{sanitize_ticker(sym)}.csv"  # type: ignore[misc]
+            if y1.exists() and y1 not in candidates:
+                candidates.append(y1)
+            if provider_ticker:
+                y2 = yfinance_dir / f"{sanitize_ticker(str(provider_ticker))}.csv"  # type: ignore[misc]
+                if y2.exists() and y2 not in candidates:
+                    candidates.append(y2)
+
+        for cp in candidates:
+            hit = _latest_price_from_csv(path=cp, symbol=sym, as_of=as_of)
+            if hit is not None:
+                out[sym] = hit
+                break
+
+    return out
+
 
 def accounts_with_snapshot_positions(session: Session, *, scope: str | DashboardScope) -> set[int]:
     """
@@ -175,9 +251,11 @@ def build_holdings_view(
     scope: str | DashboardScope,
     account_id: int | None = None,
     today: dt.date | None = None,
+    prices_dir: Path | None = None,
 ) -> HoldingsView:
     sc: DashboardScope = parse_scope(scope if isinstance(scope, str) else scope)
     today_d = today or dt.date.today()
+    prices_root = Path(prices_dir) if prices_dir is not None else None
 
     # Accounts included in scope.
     acct_q = session.query(Account, TaxpayerEntity).join(TaxpayerEntity, TaxpayerEntity.id == Account.taxpayer_entity_id)
@@ -373,7 +451,10 @@ def build_holdings_view(
                     taxpayer_type=taxpayer_type,
                     symbol=symbol,
                     qty=qty,
+                    latest_price=None,
+                    latest_price_as_of=None,
                     market_value=mv,
+                    market_value_snapshot=mv,
                     cost_basis_total=cb,
                     pnl_amount=None,
                     pnl_pct=None,
@@ -545,6 +626,13 @@ def build_holdings_view(
                 cost_missing_symbols.add(key)
 
     positions: list[HoldingPosition] = []
+    # Load latest cached prices (offline) when requested. If no cache exists for a symbol, we fall back to the snapshot
+    # valuation and derive a unit price from snapshot MV/qty when possible.
+    symbols = sorted({str(agg[k].get("symbol") or "").upper() for k in agg.keys()})
+    latest_px_by_symbol = (
+        _latest_prices_for_symbols(prices_dir=prices_root, symbols=symbols, as_of=today_d) if prices_root is not None else {}
+    )
+
     for key in sorted(agg.keys(), key=lambda k: (str(agg[k].get("account_name") or ""), str(agg[k].get("symbol") or ""))):
         r = agg[key]
         acct_id = r.get("account_id")
@@ -555,7 +643,33 @@ def build_holdings_view(
         # If no lots basis, fall back to broker snapshot basis only when all contributing rows had it.
         if basis is None and key not in cost_missing_symbols:
             basis = r.get("cost_basis_total")
-        mv = r.get("market_value")
+        mv_snapshot = r.get("market_value")
+        qty = r.get("qty")
+
+        latest_price = None
+        latest_price_as_of = None
+        px_hit = latest_px_by_symbol.get(sym)
+        if px_hit is not None:
+            latest_price_as_of, latest_price = px_hit
+        elif qty is not None and mv_snapshot is not None:
+            try:
+                q = float(qty)
+                if abs(q) > 1e-12:
+                    latest_price = float(mv_snapshot) / q
+                    latest_price_as_of = (r.get("as_of") or max_as_of).date() if (r.get("as_of") or max_as_of) else None
+            except Exception:
+                latest_price = None
+                latest_price_as_of = None
+
+        mv = None
+        if qty is not None and latest_price is not None:
+            try:
+                mv = float(qty) * float(latest_price)
+            except Exception:
+                mv = None
+        if mv is None:
+            mv = mv_snapshot
+
         pnl_amt: Optional[float] = None
         pnl_pct: Optional[float] = None
         if mv is not None and basis is not None:
@@ -589,8 +703,11 @@ def build_holdings_view(
                 account_name=r.get("account_name") or ("Unknown" if acct_id is None else str(acct_id)),
                 taxpayer_type=r.get("taxpayer_type"),
                 symbol=r["symbol"],
-                qty=r.get("qty"),
-                market_value=r.get("market_value"),
+                qty=qty,
+                latest_price=latest_price,
+                latest_price_as_of=latest_price_as_of,
+                market_value=mv,
+                market_value_snapshot=mv_snapshot,
                 cost_basis_total=basis,
                 pnl_amount=pnl_amt,
                 pnl_pct=pnl_pct,

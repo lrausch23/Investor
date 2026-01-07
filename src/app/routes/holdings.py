@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import RedirectResponse
@@ -42,7 +43,7 @@ def holdings_readonly(
     account_id = int(account_id_raw) if account_id_raw.isdigit() else None
 
     today = dt.date.today()
-    view = build_holdings_view(session, scope=scope, account_id=account_id, today=today)
+    view = build_holdings_view(session, scope=scope, account_id=account_id, today=today, prices_dir=Path("./data/prices"))
     hints: list[str] = []
     if not view.positions:
         try:

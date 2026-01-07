@@ -1,7 +1,10 @@
 {% extends "layout.html" %}
 {% block content %}
   <h1>Holdings (Read-only)</h1>
-  <p class="muted">Shows latest synced positions (from external holdings snapshots) + latest imported cash balance (USD). For editing reference data, use Securities/Mappings/Lots pages.</p>
+  <p class="muted">
+    Shows latest synced positions (from external holdings snapshots) + latest imported cash balance (USD).
+    If you have local prices under <code>data/prices/</code>, the page uses the latest available cached price per symbol to value positions.
+  </p>
 
   {% if view.warnings and view.warnings|length > 0 %}
     <div class="banner banner--warn">Warnings: {{ view.warnings }}</div>
@@ -67,6 +70,7 @@
         <th>Account</th>
         <th>Symbol</th>
         <th>Qty</th>
+        <th>Latest price</th>
         <th>Market value</th>
         <th>Initial cost</th>
         <th>P&amp;L</th>
@@ -79,8 +83,11 @@
         <tr>
           <td class="muted nowrap">{{ p.account_name }}</td>
           <td>{{ p.symbol }}</td>
-          <td class="muted">{{ p.qty if p.qty is not none else "" }}</td>
-          <td>{{ (p.market_value or 0.0)|usd }}</td>
+          <td class="muted num">{{ p.qty if p.qty is not none else "" }}</td>
+          <td class="muted num">
+            {% if p.latest_price is none %}—{% else %}{{ (p.latest_price or 0.0)|usd }}{% endif %}
+          </td>
+          <td class="num">{{ (p.market_value or 0.0)|usd }}</td>
           <td class="muted">
             {% if p.cost_basis_total is none %}—{% else %}{{ (p.cost_basis_total or 0.0)|usd }}{% endif %}
           </td>
@@ -100,6 +107,7 @@
       {% endfor %}
       <tr>
         <td><b>TOTAL</b></td>
+        <td></td>
         <td></td>
         <td></td>
         <td><b>{{ view.total_market_value|usd }}</b></td>
