@@ -100,11 +100,11 @@ def test_chase_offline_full_import_holdings_cash_and_idempotency(session, tmp_pa
     assert r1.status in {"SUCCESS", "PARTIAL"}
     assert session.query(Transaction).filter(Transaction.account_id == acct.id).count() == 7
 
-    # Holdings view shows IRA positions with tax status N/A and no wash-safe exit date.
+    # Holdings view shows IRA positions with tax status N/A and a conservative wash-safe exit date.
     view = build_holdings_view(session, scope="personal", account_id=acct.id, today=dt.date(2025, 12, 21))
     vti = next(p for p in view.positions if p.symbol == "VTI")
     assert vti.tax_status == "N/A"
-    assert vti.wash_safe_exit_date is None
+    assert vti.wash_safe_exit_date == dt.date(2025, 12, 21)
 
 
 def test_chase_offline_holdings_fallback_from_transactions_when_no_positions_file(session, tmp_path: Path):
@@ -355,6 +355,103 @@ def test_chase_positions_tsv_with_commas_in_values_imports_holdings_and_cash(ses
     assert float(pltr.qty or 0.0) == 900.0
     assert abs(float(pltr.market_value or 0.0) - 174582.0) < 0.01
     assert abs(float(pltr.cost_basis_total or 0.0) - 157932.5) < 0.01
+
+
+def test_chase_positions_fixed_income_and_cash_asset_class_does_not_mark_bond_etf_as_cash(session, tmp_path: Path):
+    personal = TaxpayerEntity(name="Personal", type="PERSONAL")
+    session.add(personal)
+    session.flush()
+
+    data_dir = tmp_path / "chase_pos_cash_mixed_asset_class"
+    data_dir.mkdir(parents=True, exist_ok=True)
+
+    # Positions export: tab-delimited with a fixed-income ETF that should NOT be treated as cash.
+    (data_dir / "positions.csv").write_text(
+        "\n".join(
+            [
+                "\t".join(
+                    [
+                        "Asset Class",
+                        "Asset Strategy",
+                        "Asset Strategy Detail",
+                        "Description",
+                        "Ticker",
+                        "Quantity",
+                        "Value",
+                        "Pricing Date",
+                        "As of",
+                    ]
+                ),
+                "\t".join(
+                    [
+                        "Fixed Income & Cash",
+                        "US Fixed Income",
+                        "",
+                        "ISHARES TRUST ISHARES 0 3 MONTH TREASURY BOND ETF",
+                        "SGOV",
+                        "800",
+                        "80,352.00",
+                        "01/07/2026 04:00:16",
+                        "01/07/2026",
+                    ]
+                ),
+                "\t".join(
+                    [
+                        "Fixed Income & Cash",
+                        "Cash & Short Term",
+                        "",
+                        "JPMORGAN IRA DEPOSIT SWEEP JPMORGAN CHASE BANK NA",
+                        "QCERQ",
+                        "12,261.68",
+                        "12,261.68",
+                        "01/06/2026 11:59:59",
+                        "01/07/2026",
+                    ]
+                ),
+            ]
+        ),
+        encoding="utf-8",
+    )
+    # Minimal activity file so sync has something to page through.
+    (data_dir / "activity.csv").write_text(
+        "\n".join(
+            [
+                "Date,Type,Symbol,Quantity,Amount,Description",
+                "2026-01-06,BUY,SGOV,800,($80352.00),Buy SGOV",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    conn = ExternalConnection(
+        name="Chase IRA (Offline Mixed Asset Class)",
+        provider="CHASE",
+        broker="CHASE",
+        connector="CHASE_OFFLINE",
+        taxpayer_entity_id=personal.id,
+        status="ACTIVE",
+        metadata_json={"data_dir": str(data_dir)},
+    )
+    session.add(conn)
+    session.commit()
+
+    r0 = run_sync(
+        session,
+        connection_id=conn.id,
+        mode="FULL",
+        start_date=dt.date(2026, 1, 1),
+        end_date=dt.date(2026, 1, 7),
+        actor="test",
+    )
+    assert r0.status == "SUCCESS"
+
+    acct = session.query(Account).filter(Account.name == "Chase IRA").one()
+    cb = session.query(CashBalance).filter(CashBalance.account_id == acct.id).order_by(CashBalance.id.desc()).first()
+    assert cb is not None
+    assert abs(float(cb.amount) - 12261.68) < 0.01
+
+    view = build_holdings_view(session, scope="personal", account_id=acct.id, today=dt.date(2026, 1, 7))
+    assert any(p.symbol == "SGOV" for p in view.positions)
 
 
 def test_chase_sweep_rows_not_counted_as_contributions(session, tmp_path: Path):

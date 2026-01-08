@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
@@ -13,6 +14,7 @@ from src.core.dashboard_service import DashboardScope, parse_scope
 from src.core.connection_preference import preferred_active_connection_ids_for_taxpayers
 from src.db.models import (
     Account,
+    BullionHolding,
     CashBalance,
     ExternalAccountMap,
     ExternalConnection,
@@ -36,6 +38,7 @@ class HoldingPosition:
     qty: Optional[float]
     latest_price: Optional[float]
     latest_price_as_of: Optional[dt.date]
+    latest_price_fetched_at: Optional[dt.datetime]
     market_value: Optional[float]
     market_value_snapshot: Optional[float]
     cost_basis_total: Optional[float]
@@ -112,14 +115,42 @@ def _latest_price_from_csv(*, path: Path, symbol: str, as_of: dt.date) -> tuple[
     return None
 
 
+def _read_price_fetched_at(csv_path: Path) -> dt.datetime | None:
+    """
+    Best-effort 'when was this price file last refreshed' timestamp.
+
+    - Prefers a JSON sidecar `{TICKER}.json` (used by the yfinance cache).
+    - Falls back to file mtime (UTC).
+    """
+    try:
+        meta_p = csv_path.with_suffix(".json")
+        if meta_p.exists():
+            meta = json.loads(meta_p.read_text(encoding="utf-8"))
+            qt = str((meta or {}).get("quote_time") or "").strip()
+            if qt:
+                try:
+                    return dt.datetime.fromisoformat(qt.replace("Z", "+00:00"))
+                except Exception:
+                    pass
+            fetched = str((meta or {}).get("fetched_at") or "").strip()
+            if fetched:
+                return dt.datetime.fromisoformat(fetched.replace("Z", "+00:00"))
+    except Exception:
+        pass
+    try:
+        return dt.datetime.fromtimestamp(csv_path.stat().st_mtime, tz=dt.timezone.utc)
+    except Exception:
+        return None
+
+
 def _latest_prices_for_symbols(
     *,
     prices_dir: Path,
     symbols: list[str],
     as_of: dt.date,
     base_currency: str = "USD",
-) -> dict[str, tuple[dt.date, float]]:
-    out: dict[str, tuple[dt.date, float]] = {}
+) -> dict[str, tuple[dt.date, float, dt.datetime | None]]:
+    out: dict[str, tuple[dt.date, float, dt.datetime | None]] = {}
     prices_dir = Path(prices_dir)
     yfinance_dir = prices_dir / "yfinance"
     try:
@@ -162,7 +193,8 @@ def _latest_prices_for_symbols(
         for cp in candidates:
             hit = _latest_price_from_csv(path=cp, symbol=sym, as_of=as_of)
             if hit is not None:
-                out[sym] = hit
+                d, px = hit
+                out[sym] = (d, px, _read_price_fetched_at(cp))
                 break
 
     return out
@@ -280,10 +312,11 @@ def build_holdings_view(
         wash_taxpayer_ids = {tp.id for _a, tp in accounts if tp.type == "PERSONAL"}
     else:
         wash_taxpayer_ids = {tp.id for _a, tp in accounts}
-    # Wash-sale reminder logic applies only to taxable accounts (exclude IRA).
-    wash_account_ids = [
-        a.id for a, _tp in accounts if a.taxpayer_entity_id in wash_taxpayer_ids and (a.account_type or "").upper() == "TAXABLE"
-    ]
+    # Wash-sale reminder logic:
+    # - A loss sale in a taxable account can be washed by buys in any account under the same taxpayer entity,
+    #   including IRA accounts (which can make the loss permanently non-deductible).
+    # - For safety, we consider BUY activity across all accounts in-scope for the taxpayer entity.
+    wash_account_ids = [a.id for a, _tp in accounts if a.taxpayer_entity_id in wash_taxpayer_ids]
 
     # Latest holdings snapshot per connection (within scope).
     conn_q = session.query(ExternalConnection).join(TaxpayerEntity, TaxpayerEntity.id == ExternalConnection.taxpayer_entity_id)
@@ -299,11 +332,30 @@ def build_holdings_view(
         )
         if preferred_ids:
             connections = [c for c in connections if int(c.id) in preferred_ids]
-    conn_by_id = {c.id: c for c in connections}
-    conn_ids = list(conn_by_id.keys())
+    conn_by_id = {int(c.id): c for c in connections}
+    conn_ids = list(conn_by_id.keys())  # for cashflows/transactions filtering
+    holdings_conn_ids = list(conn_by_id.keys())  # for holdings snapshots (may be narrowed below)
 
     snapshots: list[tuple[ExternalHoldingSnapshot, ExternalConnection]] = []
-    if conn_ids:
+    # Preload external account maps for included connections.
+    maps = (
+        session.query(ExternalAccountMap)
+        .filter(
+            ExternalAccountMap.connection_id.in_(holdings_conn_ids),
+            ExternalAccountMap.account_id.in_(included_account_ids),
+        )
+        .all()
+        if holdings_conn_ids and included_account_ids
+        else []
+    )
+    # For portfolio-scoped views, ignore connections that have no mapped accounts in-scope.
+    if holdings_conn_ids and included_account_ids:
+        mapped_conn_ids = {int(m.connection_id) for m in maps if m.connection_id is not None}
+        holdings_conn_ids = [int(cid) for cid in holdings_conn_ids if int(cid) in mapped_conn_ids]
+
+    map_by_conn_provider: dict[tuple[int, str], int] = {(int(m.connection_id), m.provider_account_id): int(m.account_id) for m in maps}
+
+    if holdings_conn_ids:
         def _has_any_position_items(payload: dict[str, Any]) -> bool:
             items = payload.get("items") or []
             if not isinstance(items, list):
@@ -329,7 +381,7 @@ def build_holdings_view(
         rows = (
             session.query(ExternalHoldingSnapshot, ExternalConnection)
             .join(ExternalConnection, ExternalConnection.id == ExternalHoldingSnapshot.connection_id)
-            .filter(ExternalHoldingSnapshot.connection_id.in_(conn_ids))
+            .filter(ExternalHoldingSnapshot.connection_id.in_(holdings_conn_ids))
             .order_by(ExternalHoldingSnapshot.as_of.desc(), ExternalHoldingSnapshot.id.desc())
             .all()
         )
@@ -344,23 +396,13 @@ def build_holdings_view(
             payload = snap.payload_json or {}
             if _has_any_position_items(payload):
                 chosen_by_conn[cid] = (snap, conn)
-            if len(chosen_by_conn) >= len(conn_ids):
+            if len(chosen_by_conn) >= len(holdings_conn_ids):
                 break
 
-        for cid in conn_ids:
+        for cid in holdings_conn_ids:
             pick = chosen_by_conn.get(int(cid)) or fallback_by_conn.get(int(cid))
             if pick is not None:
                 snapshots.append(pick)
-
-    # Preload external account maps for included connections.
-    maps = (
-        session.query(ExternalAccountMap)
-        .filter(ExternalAccountMap.connection_id.in_(conn_ids))
-        .all()
-        if conn_ids
-        else []
-    )
-    map_by_conn_provider: dict[tuple[int, str], int] = {(m.connection_id, m.provider_account_id): m.account_id for m in maps}
 
     warnings: list[str] = []
     seen_sources_by_account: dict[int, set[str]] = {}
@@ -371,16 +413,7 @@ def build_holdings_view(
     max_as_of: Optional[dt.datetime] = None
 
     for snap, conn in snapshots:
-        data_sources.append(
-            {
-                "connection_id": conn.id,
-                "connection_name": conn.name,
-                "provider": conn.provider,
-                "broker": conn.broker,
-                "connector": conn.connector,
-                "as_of": snap.as_of,
-            }
-        )
+        source_used = False
         payload = snap.payload_json or {}
         items = payload.get("items") or []
         if not isinstance(items, list):
@@ -397,6 +430,10 @@ def build_holdings_view(
             symbol = str(it.get("symbol") or it.get("ticker") or "").strip().upper()
             if not symbol:
                 continue
+            acct_id = map_by_conn_provider.get((int(conn.id), provider_acct))
+            if acct_id is None or int(acct_id) not in included_account_ids:
+                continue
+            source_used = True
             # Synthetic statement/account totals are used for valuation snapshots; do not display as a position
             # or include it in position aggregation (otherwise totals are double-counted).
             if bool(it.get("is_total")):
@@ -407,15 +444,12 @@ def build_holdings_view(
             seen_item_keys.add(k)
             # Cash is surfaced via CashBalance; use snapshot cash only as fallback.
             if symbol.startswith("CASH:"):
-                acct_id = map_by_conn_provider.get((conn.id, provider_acct))
-                if acct_id is not None:
-                    try:
-                        cash_from_snapshot_by_account[acct_id] = float(cash_from_snapshot_by_account.get(acct_id) or 0.0) + float(it.get("market_value") or it.get("qty") or 0.0)
-                    except Exception:
-                        pass
+                try:
+                    cash_from_snapshot_by_account[int(acct_id)] = float(cash_from_snapshot_by_account.get(int(acct_id)) or 0.0) + float(it.get("market_value") or it.get("qty") or 0.0)
+                except Exception:
+                    pass
                 continue
 
-            acct_id = map_by_conn_provider.get((conn.id, provider_acct))
             acct_name = provider_acct or "Unmapped"
             taxpayer_type = None
             if acct_id is not None and acct_id in acct_by_id:
@@ -453,6 +487,7 @@ def build_holdings_view(
                     qty=qty,
                     latest_price=None,
                     latest_price_as_of=None,
+                    latest_price_fetched_at=None,
                     market_value=mv,
                     market_value_snapshot=mv,
                     cost_basis_total=cb,
@@ -464,8 +499,80 @@ def build_holdings_view(
                     as_of=snap.as_of,
                 )
             )
-        if max_as_of is None or (snap.as_of and snap.as_of > max_as_of):
-            max_as_of = snap.as_of
+        if source_used:
+            data_sources.append(
+                {
+                    "connection_id": conn.id,
+                    "connection_name": conn.name,
+                    "provider": conn.provider,
+                    "broker": conn.broker,
+                    "connector": conn.connector,
+                    "as_of": snap.as_of,
+                }
+            )
+            if max_as_of is None or (snap.as_of and snap.as_of > max_as_of):
+                max_as_of = snap.as_of
+
+    # Manual physical holdings (bullion): included in Holdings view and valued using the user-entered unit price.
+    try:
+        bh_rows = session.query(BullionHolding).filter(BullionHolding.account_id.in_(included_account_ids)).all()
+    except Exception:
+        bh_rows = []
+    for bh in bh_rows:
+        aid = int(getattr(bh, "account_id", 0) or 0)
+        if aid not in acct_by_id:
+            continue
+        acct_name = acct_by_id[aid][0].name
+        taxpayer_type = acct_by_id[aid][1].type
+        metal = str(getattr(bh, "metal", "") or "").strip().upper()
+        if metal not in {"GOLD", "SILVER"}:
+            continue
+        try:
+            qty = float(getattr(bh, "quantity", 0.0) or 0.0)
+        except Exception:
+            qty = 0.0
+        try:
+            px = float(getattr(bh, "unit_price", 0.0) or 0.0)
+        except Exception:
+            px = 0.0
+        try:
+            mv = float(qty) * float(px)
+        except Exception:
+            mv = None
+        try:
+            cost_basis = getattr(bh, "cost_basis_total", None)
+            cb_total = float(cost_basis) if cost_basis is not None else None
+        except Exception:
+            cb_total = None
+        try:
+            d = getattr(bh, "as_of_date", None)
+            as_of_dt = dt.datetime.combine(d, dt.time.min, tzinfo=dt.timezone.utc) if d is not None else None
+        except Exception:
+            as_of_dt = None
+
+        raw_positions.append(
+            HoldingPosition(
+                account_id=aid,
+                account_name=acct_name,
+                taxpayer_type=taxpayer_type,
+                symbol=f"BULLION:{metal}",
+                qty=qty,
+                latest_price=px,
+                latest_price_as_of=d if d is not None else None,
+                latest_price_fetched_at=as_of_dt,
+                market_value=mv,
+                market_value_snapshot=mv,
+                cost_basis_total=cb_total,
+                pnl_amount=None,
+                pnl_pct=None,
+                tax_status=None,
+                entered_date=None,
+                wash_safe_exit_date=None,
+                as_of=as_of_dt,
+            )
+        )
+        if as_of_dt is not None and (max_as_of is None or as_of_dt > max_as_of):
+            max_as_of = as_of_dt
 
     # If multiple connections contribute holdings for the same internal account, warn (likely duplicate feeds).
     for acct_id, sources in seen_sources_by_account.items():
@@ -482,7 +589,8 @@ def build_holdings_view(
     lot_basis_by_key: dict[tuple[int, str], float] = {}
     lot_status_by_key: dict[tuple[int, str], str] = {}  # ST|LT|MIXED
     if included_account_ids:
-        # Prefer reconstructed TaxLot lots if present.
+        # Prefer reconstructed TaxLot lots when available, but fall back to PositionLots for any symbols/accounts
+        # that do not have reconstructed lots (or have reconstructed lots missing basis).
         taxlot_rows = (
             session.query(TaxLot, Security)
             .join(Security, Security.id == TaxLot.security_id)
@@ -493,37 +601,42 @@ def build_holdings_view(
             )
             .all()
         )
+        keys_with_taxlots: set[tuple[int, str]] = set()
         if taxlot_rows:
-            per_key_dates: dict[tuple[int, str], list[dt.date]] = {}
+            per_key_dates_tax: dict[tuple[int, str], list[dt.date]] = {}
             for lot, sec in taxlot_rows:
                 t = str(sec.ticker or "").upper()
                 if not t:
                     continue
                 k = (int(lot.account_id), t)
-                per_key_dates.setdefault(k, []).append(lot.acquired_date)
+                keys_with_taxlots.add(k)
+                per_key_dates_tax.setdefault(k, []).append(lot.acquired_date)
                 if lot.basis_open is not None:
                     lot_basis_by_key[k] = float(lot_basis_by_key.get(k) or 0.0) + float(lot.basis_open)
-            for k, dates in per_key_dates.items():
+            for k, dates in per_key_dates_tax.items():
                 entered_by_key[k] = min(dates)
                 has_st = any((today_d - d).days < 365 for d in dates)
                 has_lt = any((today_d - d).days >= 365 for d in dates)
                 lot_status_by_key[k] = "MIXED" if (has_st and has_lt) else ("ST" if has_st else "LT")
-        else:
-            lot_rows = (
-                session.query(PositionLot)
-                .filter(PositionLot.account_id.in_(included_account_ids))
-            )
-            per_key_dates: dict[tuple[int, str], list[dt.date]] = {}
-            for lot in lot_rows:
-                t = str(lot.ticker or "").upper()
-                if not t:
-                    continue
-                k = (int(lot.account_id), t)
-                per_key_dates.setdefault(k, []).append(lot.acquisition_date)
-                basis = float(lot.adjusted_basis_total) if lot.adjusted_basis_total is not None else float(lot.basis_total)
-                lot_basis_by_key[k] = float(lot_basis_by_key.get(k) or 0.0) + basis
-            for k, dates in per_key_dates.items():
+
+        # PositionLots fallback for keys not covered by reconstructed TaxLots (or missing TaxLot basis).
+        lot_rows = session.query(PositionLot).filter(PositionLot.account_id.in_(included_account_ids))
+        per_key_dates_pos: dict[tuple[int, str], list[dt.date]] = {}
+        for lot in lot_rows:
+            t = str(lot.ticker or "").upper()
+            if not t:
+                continue
+            k = (int(lot.account_id), t)
+            allow = (k not in keys_with_taxlots) or (k in keys_with_taxlots and k not in lot_basis_by_key)
+            if not allow:
+                continue
+            per_key_dates_pos.setdefault(k, []).append(lot.acquisition_date)
+            basis = float(lot.adjusted_basis_total) if lot.adjusted_basis_total is not None else float(lot.basis_total)
+            lot_basis_by_key[k] = float(lot_basis_by_key.get(k) or 0.0) + basis
+        for k, dates in per_key_dates_pos.items():
+            if k not in entered_by_key:
                 entered_by_key[k] = min(dates)
+            if k not in lot_status_by_key:
                 has_st = any((today_d - d).days < 365 for d in dates)
                 has_lt = any((today_d - d).days >= 365 for d in dates)
                 lot_status_by_key[k] = "MIXED" if (has_st and has_lt) else ("ST" if has_st else "LT")
@@ -648,18 +761,21 @@ def build_holdings_view(
 
         latest_price = None
         latest_price_as_of = None
+        latest_price_fetched_at = None
         px_hit = latest_px_by_symbol.get(sym)
         if px_hit is not None:
-            latest_price_as_of, latest_price = px_hit
+            latest_price_as_of, latest_price, latest_price_fetched_at = px_hit
         elif qty is not None and mv_snapshot is not None:
             try:
                 q = float(qty)
                 if abs(q) > 1e-12:
                     latest_price = float(mv_snapshot) / q
                     latest_price_as_of = (r.get("as_of") or max_as_of).date() if (r.get("as_of") or max_as_of) else None
+                    latest_price_fetched_at = (r.get("as_of") or max_as_of)
             except Exception:
                 latest_price = None
                 latest_price_as_of = None
+                latest_price_fetched_at = None
 
         mv = None
         if qty is not None and latest_price is not None:
@@ -696,7 +812,7 @@ def build_holdings_view(
                 if ed is not None:
                     tax_status = "LT" if (today_d - ed).days >= 365 else "ST"
 
-        wash_exit = None if ira_only else _wash_safe_date_for_symbol(sym)
+        wash_exit = _wash_safe_date_for_symbol(sym)
         positions.append(
             HoldingPosition(
                 account_id=acct_id,
@@ -706,6 +822,7 @@ def build_holdings_view(
                 qty=qty,
                 latest_price=latest_price,
                 latest_price_as_of=latest_price_as_of,
+                latest_price_fetched_at=latest_price_fetched_at,
                 market_value=mv,
                 market_value_snapshot=mv_snapshot,
                 cost_basis_total=basis,

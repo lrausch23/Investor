@@ -1,0 +1,155 @@
+{# Primary content: holdings table with column visibility controls #}
+<div class="holdings-table ui-card" id="holdingsTableRoot" data-col-account="0" data-col-price="0" data-col-initial-cost="0" data-col-tax="0" data-col-entered="0" data-col-wash="0">
+  <div class="table-toolbar">
+    <div class="ui-section-title">Holdings</div>
+    <details class="dropdown" id="holdingsColumnsMenu">
+      <summary class="btn btn--secondary" aria-haspopup="menu">Columns</summary>
+      <div class="dropdown__menu" role="menu" aria-label="Toggle table columns">
+        <div class="ui-muted" style="margin-bottom:6px">Primary columns are always shown.</div>
+        <label><input type="checkbox" data-col="account"> Account</label>
+        <label><input type="checkbox" data-col="price"> Price</label>
+        <label><input type="checkbox" data-col="initial_cost"> Initial cost</label>
+        <label><input type="checkbox" data-col="tax"> Tax</label>
+        <label><input type="checkbox" data-col="entered"> Entered</label>
+        <label><input type="checkbox" data-col="wash"> Wash-safe exit</label>
+      </div>
+    </details>
+  </div>
+
+  {% if (view.as_of is none) and (view.total_value|float == 0.0) %}
+    <p class="muted" style="margin-top:8px">No synced holdings found yet. Run Sync and ensure a `positions*` export is present (and that it contains position rows).</p>
+  {% else %}
+    {% if not view.positions or view.positions|length == 0 %}
+      <p class="muted" style="margin-top:8px">No positions for the current filters. Try “Combined (all accounts)” or an account marked “has holdings”.</p>
+    {% endif %}
+
+	    <div class="table-wrap" role="region" aria-label="Holdings table">
+	      <table>
+	        <thead>
+	          <tr>
+	            <th class="col-account">Account</th>
+	            <th>Symbol</th>
+	            <th class="num">Qty</th>
+	            <th class="col-price num">Price</th>
+	            <th class="num">Market value</th>
+	            <th class="col-initial-cost num">Initial cost</th>
+	            <th class="num">P&amp;L</th>
+	            <th class="num">P&amp;L %</th>
+	            <th class="col-tax">Tax</th>
+	            <th class="col-entered">Entered</th>
+	            <th class="col-wash">Wash-safe exit (loss)</th>
+	          </tr>
+	        </thead>
+	        <tbody>
+
+        {% for p in view.positions %}
+          {% set is_bullion = (p.symbol and p.symbol.startswith("BULLION:")) %}
+          {% set sym_main = (p.symbol.replace("BULLION:", "")|title ~ " (Bullion)") if is_bullion else p.symbol %}
+          {% set show_sub = (account_id is none) %}
+          {% set is_gain_neg = (p.pnl_amount is not none) and ((p.pnl_amount|float) < 0) %}
+          {% set is_gain_pos = (p.pnl_amount is not none) and ((p.pnl_amount|float) > 0) %}
+	          {% set is_wash_safe = (p.wash_safe_exit_date is not none) and (p.wash_safe_exit_date <= today) %}
+
+	          {% set drill_id = "holding-drilldown-" ~ loop.index0 %}
+	          <tr data-holding-row="1">
+	            <td class="ui-muted col-account account-cell">
+	              <div class="account-cell__inner" title="{{ p.account_name }}{% if p.taxpayer_type %} ({{ p.taxpayer_type|title }}){% endif %}">
+	                {{ p.account_name }}
+	                {% if p.taxpayer_type %}<span class="ui-muted">({{ p.taxpayer_type|title }})</span>{% endif %}
+	              </div>
+	            </td>
+            <td>
+              <div class="symbol-cell">
+                <div class="symbol-main-row">
+                  {% if p.account_id is none %}
+                    <span class="holdings-row-toggle__placeholder" aria-hidden="true"></span>
+                  {% else %}
+                    <button
+                      class="holdings-row-toggle"
+                      type="button"
+                      aria-expanded="false"
+                      aria-controls="{{ drill_id }}"
+                      data-holding-toggle="1"
+                      data-drilldown-id="{{ drill_id }}"
+                      data-scope="{{ scope }}"
+                      data-account-id="{{ p.account_id }}"
+                      data-symbol="{{ p.symbol }}"
+                      aria-label="Show lots and tax estimate for {{ sym_main }}"
+                      title="Show lots &amp; sell-today estimate"
+                    >
+                      <span class="holdings-row-toggle__icon" aria-hidden="true">▸</span>
+                    </button>
+                  {% endif %}
+                  <div class="symbol-main">{{ sym_main }}</div>
+                </div>
+                {% if show_sub %}
+                  <div class="symbol-sub ui-muted">
+                    {% if is_bullion %}Physical · {% endif %}
+                    {{ p.account_name }}{% if p.taxpayer_type %} · {{ p.taxpayer_type|title }}{% endif %}
+                  </div>
+                {% endif %}
+              </div>
+            </td>
+            <td class="ui-muted num">{{ p.qty if p.qty is not none else "" }}</td>
+            <td class="ui-muted num col-price">
+              {% if p.latest_price is none %}—{% else %}{{ (p.latest_price or 0.0)|usd }}{% endif %}
+            </td>
+            <td class="num">{{ (p.market_value or 0.0)|usd }}</td>
+            <td class="ui-muted num col-initial-cost">
+              {% if p.cost_basis_total is none %}—{% else %}{{ (p.cost_basis_total or 0.0)|usd }}{% endif %}
+            </td>
+            <td class="num">
+              {% if p.pnl_amount is none %}
+                <span class="ui-muted">—</span>
+              {% else %}
+                <span class="{% if is_gain_neg %}gain-neg{% elif is_gain_pos %}gain-pos{% endif %}">{{ (p.pnl_amount or 0.0)|usd }}</span>
+              {% endif %}
+            </td>
+            <td class="num">
+              {% if p.pnl_pct is none %}
+                <span class="ui-muted">—</span>
+              {% else %}
+                <span class="{% if is_gain_neg %}gain-neg{% elif is_gain_pos %}gain-pos{% endif %}">{{ "%.2f"|format((p.pnl_pct or 0.0) * 100.0) }}%</span>
+              {% endif %}
+            </td>
+            <td class="ui-muted col-tax">{{ p.tax_status or "—" }}</td>
+            <td class="ui-muted col-entered">{{ p.entered_date or "—" }}</td>
+            <td class="col-wash">
+              {% if p.wash_safe_exit_date is none %}
+                <span class="ui-muted">—</span>
+              {% else %}
+                <div class="wash-cell">
+                  {% if is_wash_safe %}
+                    <span class="ui-badge ui-badge--outline ui-badge--safe" title="Safe to sell at a loss today (based on last 30 days of buys)">Safe</span>
+                  {% else %}
+                    <span class="ui-badge ui-badge--outline ui-badge--risk" title="Selling at a loss before this date may trigger a wash sale">Risk</span>
+                  {% endif %}
+                  <div class="ui-muted wash-date" title="Earliest wash-safe exit date">Sellable: {{ p.wash_safe_exit_date }}</div>
+                </div>
+              {% endif %}
+            </td>
+          </tr>
+        {% endfor %}
+
+	        <tr class="is-total-row">
+	          <td class="col-account"><b>TOTAL</b></td>
+	          <td><b>TOTAL</b></td>
+	          <td></td>
+          <td class="col-price"></td>
+          <td class="num"><b>{{ view.total_market_value|usd }}</b></td>
+          <td class="ui-muted num col-initial-cost"><b>{% if view.total_initial_cost is none %}—{% else %}{{ view.total_initial_cost|usd }}{% endif %}</b></td>
+          <td class="ui-muted num"><b>{% if view.total_pnl_amount is none %}—{% else %}{{ view.total_pnl_amount|usd }}{% endif %}</b></td>
+          <td class="ui-muted num"><b>{% if view.avg_pnl_pct is none %}—{% else %}{{ "%.2f"|format(view.avg_pnl_pct * 100.0) }}%{% endif %}</b></td>
+	          <td class="col-tax"></td>
+	          <td class="col-entered"></td>
+	          <td class="col-wash"></td>
+	        </tr>
+	        </tbody>
+	      </table>
+	    </div>
+
+    {% if view.totals_missing_cost_count and view.totals_missing_cost_count > 0 %}
+      <div class="ui-muted" style="margin-top:8px">Totals exclude {{ view.totals_missing_cost_count }} position(s) with unknown initial cost.</div>
+    {% endif %}
+  {% endif %}
+</div>

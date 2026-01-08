@@ -97,6 +97,9 @@ def normalize_ticker(ticker: str, *, base_currency: str = "USD") -> NormalizedSy
         return NormalizedSymbol(original=ticker, provider_ticker=None, kind="invalid", note="Empty ticker.")
 
     t = raw.strip().upper()
+    # Internal-only synthetic tickers (not priceable by providers).
+    if t.startswith("BULLION:"):
+        return NormalizedSymbol(original=ticker, provider_ticker=None, kind="invalid", note="Manual bullion holding (not provider-priceable).")
     if t in _INVALID_TICKERS:
         return NormalizedSymbol(original=ticker, provider_ticker=None, kind="invalid", note=f"{t} is not a priceable symbol.")
 

@@ -121,7 +121,48 @@ def _derive_holdings_snapshot_from_transactions(
             a = 0.0
         return abs(q) if a < 0 else -abs(q)
 
+    def _dedupe_key(tx: Transaction) -> tuple[str, str, str, float, float, str]:
+        """
+        Best-effort de-dupe for derived snapshots.
+
+        RJ imports can legitimately contain the same economic event twice when classification rules change
+        (e.g., SELL vs OTHER), which would otherwise double-count cash.
+        """
+        d = tx.date.isoformat() if getattr(tx, "date", None) is not None else ""
+        sym = str(tx.ticker or "UNKNOWN").strip().upper() or "UNKNOWN"
+        try:
+            amt = float(tx.amount or 0.0)
+        except Exception:
+            amt = 0.0
+        direction = "IN" if amt > 0 else ("OUT" if amt < 0 else "ZERO")
+        try:
+            q = float(tx.qty) if tx.qty is not None else 0.0
+        except Exception:
+            q = 0.0
+        q_abs = round(abs(q), 6)
+        a_abs = round(abs(amt), 2)
+        links = getattr(tx, "lot_links_json", None) or {}
+        desc = str(links.get("description") or links.get("raw_description") or "").strip().upper()
+        desc = " ".join(desc.split())
+        # Keep key stable but not too specific (avoid file row ids etc).
+        if len(desc) > 80:
+            desc = desc[:80]
+        return (d, sym, direction, q_abs, a_abs, desc)
+
+    seen_keys: set[tuple[str, str, str, float, float, str]] = set()
+    txns_dedup: list[Transaction] = []
     for tx in txns:
+        try:
+            k = _dedupe_key(tx)
+        except Exception:
+            txns_dedup.append(tx)
+            continue
+        if k in seen_keys:
+            continue
+        seen_keys.add(k)
+        txns_dedup.append(tx)
+
+    for tx in txns_dedup:
         try:
             cash += float(tx.amount or 0.0)
         except Exception:

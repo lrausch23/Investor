@@ -724,6 +724,8 @@ class ChaseOfflineAdapter(BrokerAdapter):
                     continue
 
                 asset_class = str(row.get("asset_class") or "").strip().upper()
+                asset_strategy = str(row.get("asset_strategy") or "").strip().upper()
+                asset_strategy_detail = str(row.get("asset_strategy_detail") or "").strip().upper()
                 desc_u = str(row.get("description") or "").strip().upper()
                 is_cash_like = False
                 # Chase positions export often represents cash as:
@@ -733,9 +735,15 @@ class ChaseOfflineAdapter(BrokerAdapter):
                     is_cash_like = True
                 if "DEPOSIT SWEEP" in desc_u or "SWEEP" in desc_u:
                     is_cash_like = True
-                if asset_class and "CASH" in asset_class:
+                # Asset class labels like "Fixed Income & Cash" include non-cash instruments (e.g. SGOV).
+                # Prefer strategy/detail signals that are explicitly cash-like.
+                if asset_class == "CASH":
                     is_cash_like = True
-                if asset_class.startswith("FIXED INCOME") and ("CASH" in asset_class or "SHORT TERM" in str(row.get("asset_strategy") or "").upper()):
+                if "CASH" in asset_strategy or "SWEEP" in asset_strategy or "MONEY MARKET" in asset_strategy:
+                    is_cash_like = True
+                if "CASH" in asset_strategy_detail or "SWEEP" in asset_strategy_detail or "MONEY MARKET" in asset_strategy_detail:
+                    is_cash_like = True
+                if "BANK DEPOSIT PROGRAM" in desc_u or "DEPOSIT PROGRAM" in desc_u:
                     is_cash_like = True
 
                 if mv is None:

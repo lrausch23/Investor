@@ -1,0 +1,20 @@
+<details class="details-panel ui-disclosure" style="margin-top:12px">
+  <summary>How this is calculated</summary>
+  <div class="ui-muted" style="margin-top:8px">
+    <p>
+      This page shows the latest synced holdings snapshot for each connected account (plus any manual holdings), and the latest imported cash balance (USD).
+    </p>
+    <p>
+      Basis/tax status: reconstructed lots if present (preferred), else imported lots, else broker snapshot basis (if available).
+      Cash uses <code>CashBalance</code> (USD) if imported, else snapshot cash as fallback.
+    </p>
+    <p>
+      Gain value = (End − Begin) + Withdrawals + Dividends + Interest − Contributions.
+      Calendar-year return requires a holdings snapshot near Jan 1.
+    </p>
+    <p>
+      “Wash-safe exit (loss)” is the earliest date you can sell at a loss without triggering a wash sale based on executed BUYs in the last 30 days within the applicable taxpayer scope.
+      Assumes you do not buy substantially identical securities in the following 30 days; the Planner performs the definitive check.
+    </p>
+  </div>
+</details>

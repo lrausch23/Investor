@@ -28,6 +28,8 @@ def test_normalize_ticker():
     assert normalize_ticker("AMD").provider_ticker == "AMD"
     # Crypto shorthand should map to Yahoo crypto pair.
     assert normalize_ticker("ETH").provider_ticker == "ETH-USD"
+    # Manual physical holdings should never be sent to a market-data provider.
+    assert normalize_ticker("BULLION:GOLD").kind == "invalid"
 
 
 def test_cache_save_load_roundtrip(tmp_path):

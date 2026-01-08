@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import os
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, Form, Request
-from fastapi.responses import RedirectResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from sqlalchemy.orm import Session
 
 from src.app.auth import auth_banner_message, require_actor
@@ -14,6 +15,7 @@ from src.app.utils import jsonable
 from src.db.audit import log_change
 from src.db.models import (
     Account,
+    BullionHolding,
     BucketAssignment,
     BucketPolicy,
     CashBalance,
@@ -26,6 +28,194 @@ from src.db.models import (
 )
 
 router = APIRouter(prefix="/holdings", tags=["holdings"])
+
+@router.get("/drilldown.json")
+def holdings_drilldown_json(
+    request: Request,
+    session: Session = Depends(db_session),
+    _actor: str = Depends(require_actor),
+):
+    """
+    Lazy-load lots + position detail for a single holding row (UI drill-down).
+
+    UI-only: must not change valuation logic; reuses `build_holdings_view` for position-level values.
+    """
+    from src.core.dashboard_service import parse_scope
+    from src.core.external_holdings import build_holdings_view
+    from src.utils.money import format_usd
+
+    scope = parse_scope(request.query_params.get("scope"))
+    account_id_raw = (request.query_params.get("account_id") or "").strip()
+    symbol_raw = (request.query_params.get("symbol") or "").strip()
+
+    if not account_id_raw.isdigit():
+        return JSONResponse({"error": "Missing/invalid account_id"}, status_code=400)
+    account_id = int(account_id_raw)
+    symbol = symbol_raw.upper()
+    if not symbol:
+        return JSONResponse({"error": "Missing symbol"}, status_code=400)
+
+    today = dt.date.today()
+    view = build_holdings_view(session, scope=scope, account_id=account_id, today=today, prices_dir=Path("./data/prices"))
+    pos = next((p for p in (view.positions or []) if int(p.account_id or 0) == int(account_id) and str(p.symbol or "").upper() == symbol), None)
+    if pos is None:
+        return JSONResponse({"error": "Holding not found for this account/symbol"}, status_code=404)
+
+    px = float(pos.latest_price) if pos.latest_price is not None else None
+
+    def _f(x: float | None) -> float | None:
+        return None if x is None else float(x)
+
+    lots_limit = 200
+    lots_truncated = False
+    lots_source = "none"
+    lots: list[dict[str, object]] = []
+
+    # Prefer reconstructed TaxLot lots (planning-grade) when available.
+    tax_rows = (
+        session.query(TaxLot, Security)
+        .join(Security, Security.id == TaxLot.security_id)
+        .filter(
+            TaxLot.account_id == account_id,
+            TaxLot.source == "RECONSTRUCTED",
+            TaxLot.quantity_open > 0,
+            Security.ticker == symbol,
+        )
+        .order_by(TaxLot.acquired_date.asc(), TaxLot.id.asc())
+        .limit(lots_limit + 1)
+        .all()
+    )
+    if tax_rows:
+        lots_source = "tax_lots"
+        if len(tax_rows) > lots_limit:
+            lots_truncated = True
+            tax_rows = tax_rows[:lots_limit]
+        for lot, _sec in tax_rows:
+            qty = float(lot.quantity_open or 0.0)
+            basis = float(lot.basis_open) if lot.basis_open is not None else None
+            acquired = lot.acquired_date
+            days_held = (today - acquired).days
+            term = "LT" if days_held >= 365 else "ST"
+            current_value = (qty * px) if (px is not None) else None
+            gain = (current_value - basis) if (current_value is not None and basis is not None) else None
+            gain_pct = (gain / basis) if (gain is not None and basis and abs(basis) > 1e-9) else None
+            lots.append(
+                {
+                    "lot_id": int(lot.id),
+                    "acquired_date": acquired,
+                    "qty": qty,
+                    "cost_basis": basis,
+                    "current_value": current_value,
+                    "gain": gain,
+                    "gain_pct": gain_pct,
+                    "days_held": int(days_held),
+                    "term": term,
+                }
+            )
+
+    # Fallback: manual PositionLots (used for offline accounts / bullion cost basis).
+    if not lots:
+        pos_rows = (
+            session.query(PositionLot)
+            .filter(PositionLot.account_id == account_id, PositionLot.ticker == symbol)
+            .order_by(PositionLot.acquisition_date.asc(), PositionLot.id.asc())
+            .limit(lots_limit + 1)
+            .all()
+        )
+        if pos_rows:
+            lots_source = "position_lots"
+            if len(pos_rows) > lots_limit:
+                lots_truncated = True
+                pos_rows = pos_rows[:lots_limit]
+            for lot in pos_rows:
+                qty = float(lot.qty or 0.0)
+                basis = float(lot.adjusted_basis_total) if lot.adjusted_basis_total is not None else float(lot.basis_total or 0.0)
+                acquired = lot.acquisition_date
+                days_held = (today - acquired).days
+                term = "LT" if days_held >= 365 else "ST"
+                current_value = (qty * px) if (px is not None) else None
+                gain = (current_value - basis) if (current_value is not None) else None
+                gain_pct = (gain / basis) if (gain is not None and basis and abs(basis) > 1e-9) else None
+                lots.append(
+                    {
+                        "lot_id": int(lot.id),
+                        "acquired_date": acquired,
+                        "qty": qty,
+                        "cost_basis": basis,
+                        "current_value": current_value,
+                        "gain": gain,
+                        "gain_pct": gain_pct,
+                        "days_held": int(days_held),
+                        "term": term,
+                    }
+                )
+
+    st_gain = 0.0
+    lt_gain = 0.0
+    st_qty = 0.0
+    lt_qty = 0.0
+    missing_basis_lots = 0
+    for r in lots:
+        term = str(r.get("term") or "")
+        qty = float(r.get("qty") or 0.0)
+        if term == "LT":
+            lt_qty += qty
+        elif term == "ST":
+            st_qty += qty
+        gain = r.get("gain")
+        if gain is None:
+            cb = r.get("cost_basis")
+            if cb is None:
+                missing_basis_lots += 1
+            continue
+        g = float(gain)
+        if term == "LT":
+            lt_gain += g
+        elif term == "ST":
+            st_gain += g
+
+    wash_exit = pos.wash_safe_exit_date
+    is_wash_safe = bool(wash_exit is not None and wash_exit <= today)
+
+    out = {
+        "scope": scope,
+        "account_id": account_id,
+        "symbol": symbol,
+        "today": today,
+        "position": {
+            "account_name": pos.account_name,
+            "taxpayer_type": pos.taxpayer_type,
+            "as_of": pos.as_of,
+            "qty": _f(pos.qty),
+            "price": px,
+            "market_value": _f(pos.market_value),
+            "cost_basis_total": _f(pos.cost_basis_total),
+            "pnl_amount": _f(pos.pnl_amount),
+            "pnl_pct": _f(pos.pnl_pct),
+            "formatted": {
+                "price": ("—" if px is None else format_usd(px)),
+                "market_value": format_usd(pos.market_value or 0.0),
+                "cost_basis_total": ("—" if pos.cost_basis_total is None else format_usd(pos.cost_basis_total or 0.0)),
+                "pnl_amount": ("—" if pos.pnl_amount is None else format_usd(pos.pnl_amount or 0.0)),
+                "pnl_pct": ("—" if pos.pnl_pct is None else f"{(float(pos.pnl_pct) * 100.0):.2f}%"),
+            },
+        },
+        "lots_source": lots_source,
+        "lots_truncated": lots_truncated,
+        "lots": lots,
+        "lots_summary": {
+            "st_qty": st_qty,
+            "lt_qty": lt_qty,
+            "st_gain": st_gain,
+            "lt_gain": lt_gain,
+            "missing_basis_lots": missing_basis_lots,
+        },
+        "wash": {
+            "wash_safe_exit_date": wash_exit,
+            "status": ("SAFE" if is_wash_safe else ("RISK" if wash_exit is not None else "—")),
+        },
+    }
+    return JSONResponse(content=jsonable(out))
 
 
 @router.get("")
@@ -41,9 +231,23 @@ def holdings_readonly(
     scope = parse_scope(request.query_params.get("scope"))
     account_id_raw = (request.query_params.get("account_id") or "").strip()
     account_id = int(account_id_raw) if account_id_raw.isdigit() else None
+    ok = (request.query_params.get("ok") or "").strip()
+    error = (request.query_params.get("error") or "").strip()
+
+    # IMPORTANT: `static_version` is normally set once at app startup. During development, that can cause
+    # browsers to keep serving a cached `app.css` even after UI changes, making new components (e.g., KPI cards)
+    # appear as plain stacked text. For the Holdings page, override `static_version` per-request so CSS/JS
+    # updates are visible without a server restart.
+    static_version: str = "0"
+    try:
+        css_path = Path(__file__).resolve().parents[1] / "static" / "app.css"
+        static_version = str(int(css_path.stat().st_mtime))
+    except Exception:
+        static_version = "0"
 
     today = dt.date.today()
     view = build_holdings_view(session, scope=scope, account_id=account_id, today=today, prices_dir=Path("./data/prices"))
+    auth_banner_detail = auth_banner_message()
     hints: list[str] = []
     if not view.positions:
         try:
@@ -59,6 +263,16 @@ def holdings_readonly(
             # Best-effort hints only; never break the holdings page.
             pass
     accounts_with_positions = accounts_with_snapshot_positions(session, scope=scope)
+    # Manual holdings (lots + bullion) should count as "has holdings" in the selector too.
+    try:
+        accounts_with_positions |= {
+            int(r[0]) for r in session.query(PositionLot.account_id).distinct().all() if r and r[0] is not None
+        }
+        accounts_with_positions |= {
+            int(r[0]) for r in session.query(BullionHolding.account_id).distinct().all() if r and r[0] is not None
+        }
+    except Exception:
+        pass
 
     # Account selector options (within scope).
     from src.db.models import TaxpayerEntity
@@ -102,6 +316,14 @@ def holdings_readonly(
         }
         active_ids |= {
             int(r[0])
+            for r in session.query(BullionHolding.account_id)
+            .filter(BullionHolding.account_id.in_(acct_ids_all))
+            .distinct()
+            .all()
+            if r and r[0] is not None
+        }
+        active_ids |= {
+            int(r[0])
             for r in session.query(TaxLot.account_id)
             .filter(TaxLot.account_id.in_(acct_ids_all))
             .distinct()
@@ -126,7 +348,12 @@ def holdings_readonly(
         {
             "request": request,
             "actor": actor,
-            "auth_banner": auth_banner_message(),
+            # Holdings page shows auth warning inline (non-intrusive) vs global banner.
+            "auth_banner": None,
+            "auth_banner_detail": auth_banner_detail,
+            "static_version": static_version,
+            "ok": ok,
+            "error": error,
             "scope": scope,
             "scope_label": view.scope_label,
             "account_id": account_id,
@@ -137,6 +364,135 @@ def holdings_readonly(
             "today": today,
         },
     )
+
+
+@router.post("/prices/refresh")
+def holdings_refresh_prices(
+    request: Request,
+    session: Session = Depends(db_session),
+    actor: str = Depends(require_actor),
+    scope: str = Form(default="household"),
+    account_id: str = Form(default=""),
+    provider: str = Form(default="yahoo"),
+):
+    """
+    Refresh local price cache for symbols currently displayed on the Holdings page.
+    Uses Yahoo Finance chart API or Finnhub (behind NETWORK_ENABLED + outbound allowlist gates).
+    """
+    from src.core.benchmarks import download_yahoo_price_history_csv
+    from src.core.dashboard_service import parse_scope
+    from src.core.external_holdings import build_holdings_view
+    from src.core.prices_finnhub import download_finnhub_quote_csv, download_finnhub_price_history_csv
+    from market_data.symbols import normalize_ticker
+
+    sc = parse_scope(scope)
+    acct_id = int(account_id) if str(account_id).strip().isdigit() else None
+    today = dt.date.today()
+    provider_norm = (provider or "yahoo").strip().lower()
+    finnhub_key = (os.environ.get("FINNHUB_API_KEY") or "").strip()
+
+    # Build holdings WITHOUT price override to avoid confusing the refresh list.
+    view = build_holdings_view(session, scope=sc, account_id=acct_id, today=today, prices_dir=None)
+    symbols = sorted({str(p.symbol or "").strip().upper() for p in (view.positions or []) if str(p.symbol or "").strip()})
+    # Avoid synthetic/invalid symbols (CASH, TOTAL, etc.).
+    priceable: list[tuple[str, str]] = []
+    for sym in symbols:
+        ns = normalize_ticker(sym, base_currency="USD")
+        if ns.kind in {"invalid", "synthetic_cash"}:
+            continue
+        provider = ns.provider_ticker or sym
+        priceable.append((sym, provider))
+
+    # Refresh the last ~30 days; enough to capture the latest trading day.
+    start = today - dt.timedelta(days=45)
+    prices_dir = Path("./data/prices")
+    fetched_at = dt.datetime.now(dt.timezone.utc).isoformat()
+
+    updated = 0
+    failed: list[tuple[str, str]] = []
+    def _safe_err(msg: str) -> str:
+        s = (msg or "").strip()
+        if not s:
+            return ""
+        # Never leak API keys if they somehow appear in an exception string.
+        if finnhub_key:
+            s = s.replace(finnhub_key, "***")
+        # Keep URLs out of UI messages; show only the tail.
+        s = s.replace("https://", "").replace("http://", "")
+        return (s[:220] + "…") if len(s) > 220 else s
+
+    for sym, provider_ticker in priceable:
+        try:
+            dest = prices_dir / f"{sym}.csv"
+            if provider_norm == "finnhub":
+                if not finnhub_key:
+                    raise RuntimeError("Missing FINNHUB_API_KEY")
+                # Prefer quote (near-real-time) for holdings valuation; deterministic once cached.
+                try:
+                    quote_dt, quote_px = download_finnhub_quote_csv(symbol=provider_ticker, dest_path=dest, api_key=finnhub_key)
+                    meta = {
+                        "provider": "finnhub_quote",
+                        "provider_ticker": provider_ticker,
+                        "original_ticker": sym,
+                        "quote_time": quote_dt.isoformat(),
+                        "quote_price": float(quote_px),
+                        "fetched_at": fetched_at,
+                    }
+                except Exception:
+                    # Fallback: candles (daily close history).
+                    res = download_finnhub_price_history_csv(
+                        symbol=provider_ticker,
+                        start_date=start,
+                        end_date=today,
+                        dest_path=dest,
+                        api_key=finnhub_key,
+                    )
+                    meta = {
+                        "provider": "finnhub_candles",
+                        "provider_ticker": provider_ticker,
+                        "original_ticker": sym,
+                        "first_date": str(res.start_date),
+                        "last_date": str(res.end_date),
+                        "fetched_at": fetched_at,
+                    }
+            else:
+                res = download_yahoo_price_history_csv(
+                    symbol=provider_ticker,
+                    start_date=start,
+                    end_date=today,
+                    dest_path=dest,
+                )
+                meta = {"provider": "yahoo_chart", "provider_ticker": provider_ticker, "original_ticker": sym, "first_date": str(res.start_date), "last_date": str(res.end_date), "fetched_at": fetched_at}
+
+            try:
+                dest.with_suffix(".json").write_text(json.dumps(meta, indent=2, sort_keys=True), encoding="utf-8")
+            except Exception:
+                pass
+            updated += 1
+        except Exception as e:
+            msg = _safe_err(str(e))
+            if msg:
+                failed.append((sym, f"{type(e).__name__}: {msg}"))
+            else:
+                failed.append((sym, type(e).__name__))
+
+    base = f"/holdings?scope={sc}" + (f"&account_id={acct_id}" if acct_id is not None else "")
+    if failed and updated:
+        sample = "; ".join([f"{s}: {m}" for s, m in failed[:4]])
+        suffix = "…" if len(failed) > 4 else ""
+        msg = f"Updated {updated} price file(s); failed {len(failed)}: {sample}{suffix}"
+        return RedirectResponse(url=f"{base}&ok={msg}", status_code=303)
+    if failed and not updated:
+        if provider_norm == "finnhub":
+            sample = "; ".join([f"{s}: {m}" for s, m in failed[:4]])
+            suffix = "…" if len(failed) > 4 else ""
+            msg = f"Price refresh failed for {len(failed)} symbol(s): {sample}{suffix}"
+        else:
+            sample = "; ".join([f"{s}: {m}" for s, m in failed[:4]])
+            suffix = "…" if len(failed) > 4 else ""
+            msg = f"Price refresh failed for {len(failed)} symbol(s): {sample}{suffix}"
+        return RedirectResponse(url=f"{base}&error={msg}", status_code=303)
+    return RedirectResponse(url=f"{base}&ok=Updated {updated} price file(s).", status_code=303)
 
 
 @router.get("/securities")
@@ -394,6 +750,233 @@ def income_create(
     )
     session.commit()
     return RedirectResponse(url="/holdings/income", status_code=303)
+
+
+@router.get("/bullion")
+def bullion_list(
+    request: Request,
+    session: Session = Depends(db_session),
+    actor: str = Depends(require_actor),
+):
+    from src.app.main import templates
+    from src.core.dashboard_service import parse_scope
+    from src.db.models import TaxpayerEntity
+
+    scope = parse_scope(request.query_params.get("scope"))
+    account_id_raw = (request.query_params.get("account_id") or "").strip()
+    account_id = int(account_id_raw) if account_id_raw.isdigit() else None
+    ok = (request.query_params.get("ok") or "").strip()
+    error = (request.query_params.get("error") or "").strip()
+
+    # Only MANUAL accounts are eligible for bullion tracking.
+    q = (
+        session.query(Account)
+        .join(TaxpayerEntity, TaxpayerEntity.id == Account.taxpayer_entity_id)
+        .filter(Account.broker == "MANUAL")
+    )
+    if scope == "trust":
+        q = q.filter(TaxpayerEntity.type == "TRUST")
+    elif scope == "personal":
+        q = q.filter(TaxpayerEntity.type == "PERSONAL")
+    accounts = q.order_by(Account.name).all()
+    acct_ids = [int(a.id) for a in accounts]
+
+    if account_id is not None and account_id not in acct_ids:
+        account_id = None
+
+    holdings_q = session.query(BullionHolding)
+    if acct_ids:
+        holdings_q = holdings_q.filter(BullionHolding.account_id.in_(acct_ids))
+    else:
+        holdings_q = holdings_q.filter(BullionHolding.id == -1)
+    if account_id is not None:
+        holdings_q = holdings_q.filter(BullionHolding.account_id == int(account_id))
+    holdings = holdings_q.order_by(BullionHolding.account_id.asc(), BullionHolding.metal.asc()).all()
+
+    return templates.TemplateResponse(
+        "bullion.html",
+        {
+            "request": request,
+            "actor": actor,
+            "auth_banner": auth_banner_message(),
+            "ok": ok,
+            "error": error,
+            "scope": scope,
+            "account_id": account_id,
+            "accounts": accounts,
+            "account_name_by_id": {int(a.id): a.name for a in accounts},
+            "holdings": holdings,
+            "today": dt.date.today().isoformat(),
+        },
+    )
+
+
+@router.post("/bullion")
+def bullion_upsert(
+    session: Session = Depends(db_session),
+    actor: str = Depends(require_actor),
+    scope: str = Form(default="household"),
+    account_id: int = Form(...),
+    metal: str = Form(...),
+    quantity: float = Form(...),
+    unit: str = Form(default="oz"),
+    unit_price: float = Form(...),
+    cost_basis_total: str = Form(default=""),
+    currency: str = Form(default="USD"),
+    as_of_date: str = Form(...),
+    note: str = Form(default=""),
+):
+    metal_u = (metal or "").strip().upper()
+    if metal_u not in {"GOLD", "SILVER"}:
+        return RedirectResponse(url="/holdings/bullion?error=Invalid+metal", status_code=303)
+    acct = session.query(Account).filter(Account.id == int(account_id)).one_or_none()
+    if acct is None:
+        return RedirectResponse(url="/holdings/bullion?error=Account+not+found", status_code=303)
+    if (acct.broker or "").upper() != "MANUAL":
+        return RedirectResponse(url="/holdings/bullion?error=Bullion+requires+a+MANUAL+account", status_code=303)
+
+    d = dt.date.fromisoformat(as_of_date)
+    unit_u = (unit or "").strip() or "oz"
+    ccy_u = (currency or "USD").strip().upper() or "USD"
+    if ccy_u != "USD":
+        return RedirectResponse(url="/holdings/bullion?error=Only+USD+is+supported+for+now", status_code=303)
+
+    cost_basis = None
+    if str(cost_basis_total or "").strip():
+        try:
+            cost_basis = float(str(cost_basis_total).strip().replace(",", "").replace("$", ""))
+        except Exception:
+            return RedirectResponse(url="/holdings/bullion?error=Invalid+cost+basis", status_code=303)
+
+    existing = (
+        session.query(BullionHolding)
+        .filter(BullionHolding.account_id == int(account_id), BullionHolding.metal == metal_u)
+        .one_or_none()
+    )
+    if existing is None:
+        bh = BullionHolding(
+            account_id=int(account_id),
+            metal=metal_u,
+            quantity=float(quantity),
+            unit=unit_u,
+            unit_price=float(unit_price),
+            cost_basis_total=cost_basis,
+            currency=ccy_u,
+            as_of_date=d,
+            notes=note.strip() or None,
+        )
+        session.add(bh)
+        session.flush()
+        log_change(
+            session,
+            actor=actor,
+            action="CREATE",
+            entity="BullionHolding",
+            entity_id=str(bh.id),
+            old=None,
+            new=jsonable(
+                {
+                    "account_id": bh.account_id,
+                    "metal": bh.metal,
+                    "quantity": float(bh.quantity),
+                    "unit": bh.unit,
+                    "unit_price": float(bh.unit_price),
+                    "cost_basis_total": float(bh.cost_basis_total) if bh.cost_basis_total is not None else None,
+                    "currency": bh.currency,
+                    "as_of_date": bh.as_of_date.isoformat(),
+                }
+            ),
+            note=note or "Create bullion holding",
+        )
+        session.commit()
+        return RedirectResponse(url=f"/holdings/bullion?scope={scope}&account_id={account_id}&ok=Saved", status_code=303)
+
+    old = jsonable(
+        {
+            "account_id": existing.account_id,
+            "metal": existing.metal,
+            "quantity": float(existing.quantity),
+            "unit": existing.unit,
+            "unit_price": float(existing.unit_price),
+            "cost_basis_total": float(existing.cost_basis_total) if existing.cost_basis_total is not None else None,
+            "currency": existing.currency,
+            "as_of_date": existing.as_of_date.isoformat(),
+        }
+    )
+    existing.quantity = float(quantity)
+    existing.unit = unit_u
+    existing.unit_price = float(unit_price)
+    existing.cost_basis_total = cost_basis
+    existing.currency = ccy_u
+    existing.as_of_date = d
+    existing.notes = note.strip() or None
+    existing.updated_at = dt.datetime.now(dt.timezone.utc)
+    session.flush()
+    new = jsonable(
+        {
+            "account_id": existing.account_id,
+            "metal": existing.metal,
+            "quantity": float(existing.quantity),
+            "unit": existing.unit,
+            "unit_price": float(existing.unit_price),
+            "cost_basis_total": float(existing.cost_basis_total) if existing.cost_basis_total is not None else None,
+            "currency": existing.currency,
+            "as_of_date": existing.as_of_date.isoformat(),
+        }
+    )
+    log_change(
+        session,
+        actor=actor,
+        action="UPDATE",
+        entity="BullionHolding",
+        entity_id=str(existing.id),
+        old=old,
+        new=new,
+        note=note or "Update bullion holding",
+    )
+    session.commit()
+    return RedirectResponse(url=f"/holdings/bullion?scope={scope}&account_id={account_id}&ok=Saved", status_code=303)
+
+
+@router.post("/bullion/{bullion_id}/delete")
+def bullion_delete(
+    bullion_id: int,
+    session: Session = Depends(db_session),
+    actor: str = Depends(require_actor),
+    scope: str = Form(default="household"),
+    account_id: str = Form(default=""),
+    note: str = Form(default=""),
+):
+    bh = session.query(BullionHolding).filter(BullionHolding.id == int(bullion_id)).one_or_none()
+    if bh is None:
+        return RedirectResponse(url="/holdings/bullion?error=Not+found", status_code=303)
+    old = jsonable(
+        {
+            "account_id": bh.account_id,
+            "metal": bh.metal,
+            "quantity": float(bh.quantity),
+            "unit": bh.unit,
+            "unit_price": float(bh.unit_price),
+            "cost_basis_total": float(bh.cost_basis_total) if bh.cost_basis_total is not None else None,
+            "currency": bh.currency,
+            "as_of_date": bh.as_of_date.isoformat(),
+        }
+    )
+    session.delete(bh)
+    session.flush()
+    log_change(
+        session,
+        actor=actor,
+        action="DELETE",
+        entity="BullionHolding",
+        entity_id=str(bullion_id),
+        old=old,
+        new=None,
+        note=note or "Delete bullion holding",
+    )
+    session.commit()
+    acct_q = f"&account_id={account_id}" if str(account_id).strip().isdigit() else ""
+    return RedirectResponse(url=f"/holdings/bullion?scope={scope}{acct_q}&ok=Deleted", status_code=303)
 
 
 @router.get("/transactions")

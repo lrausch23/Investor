@@ -129,3 +129,8 @@ def ensure_sqlite_schema(engine: Engine) -> None:
             _add_column(engine, "expense_transactions", "account_last4_masked VARCHAR(8)")
         if "cardholder_name" not in cols:
             _add_column(engine, "expense_transactions", "cardholder_name VARCHAR(200)")
+
+    if "bullion_holdings" in existing_tables:
+        cols = _table_columns(engine, "bullion_holdings")
+        if "cost_basis_total" not in cols:
+            _add_column(engine, "bullion_holdings", "cost_basis_total NUMERIC(20,2)")

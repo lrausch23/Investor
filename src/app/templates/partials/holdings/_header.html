@@ -1,0 +1,49 @@
+<div class="holdings-header">
+  <div class="page-title">
+    <div class="page-title__left">
+      <h1>Holdings</h1>
+      <span class="ui-badge ui-badge--neutral">Read-only snapshot</span>
+    </div>
+    {% if auth_banner_detail %}
+      <details class="inline-alert" role="note">
+        <summary>
+          <span class="inline-alert__icon" aria-hidden="true">&#9888;</span>
+          <span>Running locally. Authentication disabled.</span>
+          <span class="inline-alert__link">Learn more</span>
+        </summary>
+        <div class="muted" style="margin-top:6px">{{ auth_banner_detail }}</div>
+      </details>
+    {% endif %}
+  </div>
+
+  <div class="ui-muted selection-line">
+    <b>Scope:</b> {{ view.scope_label }}
+    <span class="ui-muted">·</span>
+    <b>Portfolio:</b> {{ view.account_name }}
+    <span class="ui-muted">·</span>
+    <b>As of:</b> {{ view.as_of|local_dt if view.as_of else "—" }}
+  </div>
+
+  {% if ok %}
+    <div class="alert alert--ok" role="status">{{ ok }}</div>
+  {% endif %}
+  {% if error %}
+    <div class="alert alert--warn" role="alert">{{ error }}</div>
+  {% endif %}
+  {% if view.warnings and view.warnings|length > 0 %}
+    <details class="alert alert--warn">
+      <summary>Warnings ({{ view.warnings|length }})</summary>
+      <ul class="muted" style="margin:8px 0 0 18px">
+        {% for w in view.warnings %}
+          <li>{{ w }}</li>
+        {% endfor %}
+      </ul>
+    </details>
+  {% endif %}
+  {% if hints and hints|length > 0 %}
+    <details class="alert alert--warn">
+      <summary>Hints ({{ hints|length }})</summary>
+      <div class="muted" style="margin-top:6px">{{ hints|join(" ") }}</div>
+    </details>
+  {% endif %}
+</div>

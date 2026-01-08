@@ -1,0 +1,121 @@
+{% extends "layout.html" %}
+{% block content %}
+  <h1>Bullion (Manual)</h1>
+  <p class="muted">
+    Track physical Gold/Silver holdings with manually-entered quantity and price. Create a <b>MANUAL</b> account under Setup first.
+  </p>
+
+  {% if error %}
+    <div class="banner banner--warn">{{ error }}</div>
+  {% endif %}
+  {% if ok %}
+    <div class="banner banner--ok">{{ ok }}</div>
+  {% endif %}
+
+  <div class="box">
+    <form method="get" action="/holdings/bullion">
+      <div class="grid3">
+        <label>Scope<br/>
+          <select name="scope">
+            <option value="household" {% if scope == "household" %}selected{% endif %}>Household</option>
+            <option value="trust" {% if scope == "trust" %}selected{% endif %}>Trust only</option>
+            <option value="personal" {% if scope == "personal" %}selected{% endif %}>Personal only</option>
+          </select>
+        </label>
+        <label>Portfolio (MANUAL)<br/>
+          <select name="account_id">
+            <option value="" {% if not account_id %}selected{% endif %}>(all manual accounts)</option>
+            {% for a in accounts %}
+              <option value="{{ a.id }}" {% if account_id == a.id %}selected{% endif %}>{{ a.name }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label>&nbsp;<br/><button type="submit">View</button></label>
+      </div>
+    </form>
+  </div>
+
+  {% if accounts|length == 0 %}
+    <div class="banner banner--warn">
+      No MANUAL accounts found in this scope. Create one under <a href="/setup">Setup</a> (Broker=MANUAL, Type=OTHER).
+    </div>
+  {% else %}
+    <form method="post" action="/holdings/bullion" class="box">
+      <input type="hidden" name="scope" value="{{ scope }}"/>
+      <div class="grid3">
+        <label>Account<br/>
+          <select name="account_id" required>
+            {% for a in accounts %}
+              <option value="{{ a.id }}" {% if account_id == a.id %}selected{% endif %}>{{ a.name }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label>Metal<br/>
+          <select name="metal">
+            <option value="GOLD">GOLD</option>
+            <option value="SILVER">SILVER</option>
+          </select>
+        </label>
+        <label>As-of date<br/><input name="as_of_date" value="{{ today }}" required/></label>
+      </div>
+      <div class="grid3" style="margin-top:8px">
+        <label>Quantity<br/><input name="quantity" required/></label>
+        <label>Unit<br/><input name="unit" value="oz"/></label>
+        <label>Unit price (USD)<br/><input name="unit_price" required/></label>
+      </div>
+      <div class="grid3" style="margin-top:8px">
+        <label>Cost basis total (USD, optional)<br/><input name="cost_basis_total"/></label>
+        <label>Currency<br/><input name="currency" value="USD" readonly/></label>
+        <label>&nbsp;</label>
+      </div>
+      <label class="muted">Audit note <input name="note" size="60"/></label>
+      <button type="submit">Save</button>
+    </form>
+  {% endif %}
+
+  <h2>Current holdings</h2>
+  <table>
+    <tr>
+      <th>ID</th>
+      <th>Account</th>
+      <th>Metal</th>
+      <th class="num">Qty</th>
+      <th>Unit</th>
+      <th class="num">Unit price</th>
+      <th class="num">Market value</th>
+      <th class="num">Cost basis</th>
+      <th class="num">P&amp;L</th>
+      <th>As-of</th>
+      <th>Actions</th>
+    </tr>
+    {% for h in holdings %}
+      <tr>
+        <td>{{ h.id }}</td>
+        <td>{{ account_name_by_id.get(h.account_id, h.account_id) }}</td>
+        <td>{{ h.metal }}</td>
+        <td class="num">{{ "%.6f"|format(h.quantity|float) }}</td>
+        <td>{{ h.unit }}</td>
+        <td class="num">{{ (h.unit_price|float)|usd }}</td>
+        {% set mv = (h.quantity|float) * (h.unit_price|float) %}
+        <td class="num">{{ mv|usd }}</td>
+        <td class="num">{% if h.cost_basis_total is none %}—{% else %}{{ (h.cost_basis_total|float)|usd }}{% endif %}</td>
+        <td class="num">
+          {% if h.cost_basis_total is none %}
+            —
+          {% else %}
+            {{ (mv - (h.cost_basis_total|float))|usd }}
+          {% endif %}
+        </td>
+        <td>{{ h.as_of_date }}</td>
+        <td>
+          <form method="post" action="/holdings/bullion/{{ h.id }}/delete" style="display:inline" onsubmit="return confirm('Delete bullion row id={{ h.id }}?');">
+            <input type="hidden" name="scope" value="{{ scope }}"/>
+            <input type="hidden" name="account_id" value="{{ account_id or '' }}"/>
+            <input type="hidden" name="note" value="Delete bullion holding"/>
+            <button type="submit">Delete</button>
+          </form>
+        </td>
+      </tr>
+    {% endfor %}
+  </table>
+{% endblock %}

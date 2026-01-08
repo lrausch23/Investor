@@ -1,0 +1,49 @@
+{% from "partials/ui/components.html" import kpi_card %}
+
+{# Portfolio summary KPIs (no business logic changes; computed from already-rendered view fields) #}
+{% set ns = namespace(total_cost=None, total_gain=None, total_return=None) %}
+{% if view.total_initial_cost is not none %}
+  {% set ns.total_cost = (view.total_initial_cost|float) + (view.cash_total|float) %}
+  {% set ns.total_gain = (view.total_value|float) - (ns.total_cost|float) %}
+  {% if (ns.total_cost|float) != 0.0 %}
+    {% set ns.total_return = (ns.total_gain|float) / (ns.total_cost|float) %}
+  {% endif %}
+{% endif %}
+
+<div class="holdings-summary">
+  <div class="ui-kpi-grid">
+    {{ kpi_card("Total Value", (view.total_value|usd), "Positions + cash", "neutral", testid="kpi-total-value") }}
+
+    {% set total_cost_label = "Cost basis + cash" %}
+    {% if view.totals_missing_cost_count and view.totals_missing_cost_count > 0 %}
+      {% set total_cost_label = "Partial (" ~ (view.totals_missing_cost_count|string) ~ " missing)" %}
+    {% endif %}
+    {{ kpi_card("Total Cost", ("—" if ns.total_cost is none else ((ns.total_cost|float)|usd)), total_cost_label, "neutral", testid="kpi-total-cost") }}
+
+    {% set gain_tone = "neutral" %}
+    {% if ns.total_gain is not none %}
+      {% set gain_tone = "positive" if (ns.total_gain|float) >= 0 else "negative" %}
+    {% endif %}
+    {{ kpi_card("Total Gain", ("—" if ns.total_gain is none else ((ns.total_gain|float)|usd)), "Value − cost", gain_tone, testid="kpi-total-gain") }}
+
+    {% set ret_tone = "neutral" %}
+    {% if ns.total_return is not none %}
+      {% set ret_tone = "positive" if (ns.total_return|float) >= 0 else "negative" %}
+    {% endif %}
+    {% set ret_value = "—" if ns.total_return is none else ("%.2f"|format((ns.total_return|float) * 100.0) ~ "%") %}
+    {{ kpi_card("Total Return", ret_value, "Gain ÷ cost", ret_tone, testid="kpi-total-return") }}
+  </div>
+
+  {% if view.data_sources and view.data_sources|length > 0 %}
+    <details class="details-panel">
+      <summary>Data sources</summary>
+      <div class="muted" style="margin-top:6px">
+        {% for s in view.data_sources %}
+          <span>{{ s.connection_name }} <span class="muted">({{ (s.connector or s.provider) }})</span>{% if s.as_of %} @ {{ s.as_of|local_dt }}{% endif %}</span>{% if not loop.last %}; {% endif %}
+        {% endfor %}
+      </div>
+    </details>
+  {% else %}
+    <div class="muted" style="margin-top:8px">Data sources: none yet (run Sync to capture holdings snapshots).</div>
+  {% endif %}
+</div>

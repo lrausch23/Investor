@@ -10,6 +10,9 @@ from src.db.models import (
     ExternalConnection,
     ExternalHoldingSnapshot,
     ExternalTransactionMap,
+    PositionLot,
+    Security,
+    TaxLot,
     Transaction,
     TaxpayerEntity,
 )
@@ -273,6 +276,64 @@ def test_holdings_view_prefers_web_connection_when_both_active(session):
     assert all((s.get("connector") or "").upper() != "IB_FLEX_OFFLINE" for s in (view.data_sources or []))
 
 
+def test_holdings_view_filters_data_sources_to_selected_account(session):
+    trust = TaxpayerEntity(name="Trust", type="TRUST")
+    session.add(trust)
+    session.flush()
+    a_rj = Account(name="RJ Taxable", broker="RJ", account_type="TAXABLE", taxpayer_entity_id=trust.id)
+    a_ib = Account(name="IB Taxable", broker="IB", account_type="TAXABLE", taxpayer_entity_id=trust.id)
+    session.add_all([a_rj, a_ib])
+    session.flush()
+
+    c_ib = ExternalConnection(
+        name="IB Flex Web",
+        provider="IB",
+        broker="IB",
+        connector="IB_FLEX_WEB",
+        taxpayer_entity_id=trust.id,
+        status="ACTIVE",
+        metadata_json={},
+    )
+    c_rj = ExternalConnection(
+        name="RJ (Offline)",
+        provider="RJ",
+        broker="RJ",
+        connector="RJ_OFFLINE",
+        taxpayer_entity_id=trust.id,
+        status="ACTIVE",
+        metadata_json={},
+    )
+    session.add_all([c_ib, c_rj])
+    session.flush()
+
+    session.add_all(
+        [
+            ExternalAccountMap(connection_id=c_ib.id, provider_account_id="IBFLEX:U1", account_id=a_ib.id),
+            ExternalAccountMap(connection_id=c_rj.id, provider_account_id="RJ:TAXABLE", account_id=a_rj.id),
+        ]
+    )
+    session.add_all(
+        [
+            ExternalHoldingSnapshot(
+                connection_id=c_ib.id,
+                as_of=dt.datetime(2026, 1, 6, 0, 0, tzinfo=dt.timezone.utc),
+                payload_json={"items": [{"provider_account_id": "IBFLEX:U1", "symbol": "TSM", "qty": 1, "market_value": 100.0}]},
+            ),
+            ExternalHoldingSnapshot(
+                connection_id=c_rj.id,
+                as_of=dt.datetime(2026, 1, 7, 0, 0, tzinfo=dt.timezone.utc),
+                payload_json={"items": [{"provider_account_id": "RJ:TAXABLE", "symbol": "SGOV", "qty": 1, "market_value": 99.0}]},
+            ),
+        ]
+    )
+    session.commit()
+
+    view = build_holdings_view(session, scope="trust", account_id=int(a_rj.id), today=dt.date(2026, 1, 8))
+    assert {p.symbol for p in view.positions} == {"SGOV"}
+    assert len(view.data_sources or []) == 1
+    assert (view.data_sources or [])[0].get("connector") == "RJ_OFFLINE"
+
+
 def test_holdings_view_dedupes_cashflows_across_connections_by_provider_txn(session):
     trust = TaxpayerEntity(name="Trust", type="TRUST")
     session.add(trust)
@@ -335,6 +396,71 @@ def test_holdings_view_dedupes_cashflows_across_connections_by_provider_txn(sess
     assert view.ytd_withdrawals == 20000.0
     assert view.ytd_withdrawal_count == 1
     assert len(view.ytd_transfers) == 1
+
+
+def test_holdings_view_combined_uses_position_lots_when_other_accounts_have_taxlots(session):
+    """
+    Regression: when one account has reconstructed TaxLots, the combined view must still show basis/P&L for
+    another account that only has PositionLots (e.g., RJ), rather than blanking its Initial cost.
+    """
+    trust = TaxpayerEntity(name="Trust", type="TRUST")
+    session.add(trust)
+    session.flush()
+    a_rj = Account(name="RJ Taxable", broker="RJ", account_type="TAXABLE", taxpayer_entity_id=trust.id)
+    a_ib = Account(name="IB Taxable", broker="IB", account_type="TAXABLE", taxpayer_entity_id=trust.id)
+    session.add_all([a_rj, a_ib])
+    session.flush()
+
+    # RJ has PositionLots only.
+    session.add(
+        PositionLot(
+            account_id=a_rj.id,
+            ticker="MU",
+            qty=10.0,
+            basis_total=1000.0,
+            adjusted_basis_total=1000.0,
+            acquisition_date=dt.date(2025, 1, 2),
+        )
+    )
+    # IB has reconstructed TaxLots (preferred).
+    sec = Security(ticker="AVGO", name="Broadcom", asset_class="EQUITY", metadata_json={})
+    session.add(sec)
+    session.flush()
+    session.add(
+        TaxLot(
+            taxpayer_id=trust.id,
+            account_id=a_ib.id,
+            security_id=sec.id,
+            source="RECONSTRUCTED",
+            acquired_date=dt.date(2025, 1, 2),
+            quantity_open=1.0,
+            basis_open=200.0,
+        )
+    )
+
+    # Minimal snapshots for both accounts so they show up as holdings rows.
+    c_ib = ExternalConnection(name="IB Flex", provider="IB", broker="IB", connector="IB_FLEX_WEB", taxpayer_entity_id=trust.id, status="ACTIVE", metadata_json={})
+    c_rj = ExternalConnection(name="RJ (Offline)", provider="RJ", broker="RJ", connector="RJ_OFFLINE", taxpayer_entity_id=trust.id, status="ACTIVE", metadata_json={})
+    session.add_all([c_ib, c_rj])
+    session.flush()
+    session.add_all(
+        [
+            ExternalAccountMap(connection_id=c_ib.id, provider_account_id="IBFLEX:U1", account_id=a_ib.id),
+            ExternalAccountMap(connection_id=c_rj.id, provider_account_id="RJ:TAXABLE", account_id=a_rj.id),
+        ]
+    )
+    session.add_all(
+        [
+            ExternalHoldingSnapshot(connection_id=c_ib.id, as_of=dt.datetime(2026, 1, 7, 0, 0, tzinfo=dt.timezone.utc), payload_json={"items": [{"provider_account_id": "IBFLEX:U1", "symbol": "AVGO", "qty": 1.0, "market_value": 250.0}]}),
+            ExternalHoldingSnapshot(connection_id=c_rj.id, as_of=dt.datetime(2026, 1, 7, 0, 0, tzinfo=dt.timezone.utc), payload_json={"items": [{"provider_account_id": "RJ:TAXABLE", "symbol": "MU", "qty": 10.0, "market_value": 1100.0}]}),
+        ]
+    )
+    session.commit()
+
+    view = build_holdings_view(session, scope="trust", account_id=None, today=dt.date(2026, 1, 7))
+    mu = next(p for p in view.positions if p.symbol == "MU")
+    assert float(mu.cost_basis_total or 0.0) == 1000.0
+    assert mu.pnl_amount is not None
 
 
 def test_holdings_view_wash_safe_exit_uses_recent_buys_and_substitute_group(session):

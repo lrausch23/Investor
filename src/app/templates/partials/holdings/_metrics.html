@@ -1,0 +1,92 @@
+{# Grouped metrics with progressive disclosure; all values preserved #}
+<div class="holdings-metrics">
+  <details class="accordion" open>
+    <summary>Performance</summary>
+    <table class="kv">
+      <tr><td>Available liquidity</td><td class="num">{{ view.cash_total|usd }}</td></tr>
+      <tr><td>End value (positions + cash)</td><td class="num"><b>{{ view.total_value|usd }}</b></td></tr>
+      <tr><td>{{ view.gain_begin_label }}</td><td class="num">{% if view.gain_begin_value is none %}—{% else %}{{ view.gain_begin_value|usd }}{% endif %}</td></tr>
+      <tr>
+        <td>Calendar-year return (simple)</td>
+        <td class="num">{% if view.ytd_return_pct is none %}—{% else %}{{ "%.2f"|format(view.ytd_return_pct * 100.0) }}%{% endif %}</td>
+      </tr>
+      <tr><td>Calendar-year gain value (simple)</td><td class="num">{% if view.ytd_gain_value is none %}—{% else %}{{ view.ytd_gain_value|usd }}{% endif %}</td></tr>
+      {% if view.ytd_start_asof %}
+        <tr><td>Baseline as-of</td><td class="num">{{ view.ytd_start_asof|local_dt }}</td></tr>
+      {% endif %}
+    </table>
+
+    {% if view.ytd_start_value is none %}
+      <div class="ui-muted" style="margin-top:6px">
+        To compute calendar-year return/gain, upload a holdings/positions snapshot dated near Jan 1 (within ~14 days) so the app has a begin value.
+      </div>
+    {% endif %}
+  </details>
+
+  <details class="accordion">
+    <summary>Cashflows</summary>
+    <table class="kv">
+      <tr><td>Contributions</td><td class="num">{{ view.ytd_contributions|usd }} <span class="muted">({{ view.ytd_deposit_count }} deposit(s))</span></td></tr>
+      <tr><td>Withdrawals</td><td class="num">{{ view.ytd_withdrawals|usd }} <span class="muted">({{ view.ytd_withdrawal_count }} withdrawal(s))</span></td></tr>
+      <tr><td>Dividends received</td><td class="num">{{ view.ytd_dividends_received|usd }}</td></tr>
+      <tr><td>Interest (net)</td><td class="num">{{ view.ytd_interest_net|usd }}</td></tr>
+      <tr><td>Withholding tax</td><td class="num">{{ view.ytd_withholding|usd }}</td></tr>
+      <tr><td>Fees/commissions (cash)</td><td class="num">{{ view.ytd_fees|usd }}</td></tr>
+      <tr><td>Net cashflow</td><td class="num">{{ view.ytd_net_cashflow|usd }}</td></tr>
+    </table>
+
+    {% if view.ytd_transfers and view.ytd_transfers|length > 0 %}
+      <details class="details-panel" style="margin-top:10px">
+        <summary>Deposits / Withdrawals (YTD)</summary>
+        <div class="table-scroll">
+          <table>
+            <tr><th class="col-date nowrap">Date</th><th>Account</th><th>Source</th><th class="num">Amount</th><th>Description</th></tr>
+            {% for r in view.ytd_transfers %}
+              <tr>
+                <td class="muted col-date nowrap">{{ r.date }}</td>
+                <td class="muted">{{ r.account }}</td>
+                <td class="muted">{{ r.source or "—" }}</td>
+                <td class="num">{{ r.amount|usd }}</td>
+                <td class="muted">{{ r.description or "—" }}</td>
+              </tr>
+            {% endfor %}
+          </table>
+        </div>
+      </details>
+    {% endif %}
+
+    {% if view.recent_cashflows and view.recent_cashflows|length > 0 %}
+      <details class="details-panel" style="margin-top:10px">
+        <summary>Cashflows (non BUY/SELL, YTD) <span class="muted">({{ view.recent_cashflows|length }} rows)</span></summary>
+        <div class="table-scroll">
+          <table>
+            <tr><th class="col-date nowrap">Date</th><th>Account</th><th>Source</th><th>Type</th><th>Symbol</th><th class="num">Amount</th><th>Description</th></tr>
+            {% for r in view.recent_cashflows %}
+              <tr>
+                <td class="muted col-date nowrap">{{ r.date }}</td>
+                <td class="muted">{{ r.account }}</td>
+                <td class="muted">{{ r.source or "—" }}</td>
+                <td class="muted">{{ r.type }}</td>
+                <td class="muted">{{ r.symbol or "—" }}</td>
+                <td class="num">{{ r.amount|usd }}</td>
+                <td class="muted">{{ r.description or "—" }}</td>
+              </tr>
+            {% endfor %}
+          </table>
+        </div>
+      </details>
+    {% endif %}
+  </details>
+
+  <details class="accordion">
+    <summary>Tax &amp; Planning</summary>
+    <table class="kv">
+      <tr><td>P&amp;L (planning)</td><td class="num">{{ view.pnl_planning_value|usd }}</td></tr>
+      <tr><td>Return on cost (planning)</td><td class="num">{% if view.pnl_return_on_cost is none %}—{% else %}{{ "%.2f"|format(view.pnl_return_on_cost * 100.0) }}%{% endif %}</td></tr>
+      <tr><td>Withholding tax</td><td class="num">{{ view.ytd_withholding|usd }}</td></tr>
+    </table>
+    <div class="ui-muted" style="margin-top:6px">
+      Wash-safe exit is a conservative reminder based on executed BUYs in the last 30 days; the Planner performs the definitive check.
+    </div>
+  </details>
+</div>

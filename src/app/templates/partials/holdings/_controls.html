@@ -1,0 +1,68 @@
+{# Secondary area: filters + pricing controls + technical details via progressive disclosure #}
+<div class="ui-card">
+  <div class="ui-section-title">Filters</div>
+  <form method="get" action="/holdings" id="holdingsFilterForm" class="form-compact">
+    <label>Scope
+      <select name="scope">
+        <option value="household" {% if scope == "household" %}selected{% endif %}>Household</option>
+        <option value="trust" {% if scope == "trust" %}selected{% endif %}>Trust only</option>
+        <option value="personal" {% if scope == "personal" %}selected{% endif %}>Personal only</option>
+      </select>
+    </label>
+    <label>Portfolio
+      <select name="account_id">
+        <option value="" {% if not account_id %}selected{% endif %}>Combined (all accounts)</option>
+        {% for a in accounts %}
+          <option value="{{ a.id }}" {% if account_id == a.id %}selected{% endif %}>
+            {{ a.name }}
+            {% if accounts_with_positions and (a.id in accounts_with_positions) %}
+              (has holdings)
+            {% else %}
+              (no holdings)
+            {% endif %}
+          </option>
+        {% endfor %}
+      </select>
+    </label>
+    <button type="submit" class="btn btn--primary">Apply</button>
+    <div class="ui-muted">Tip: selections auto-apply when changed.</div>
+  </form>
+</div>
+
+<div class="ui-card" style="margin-top:12px">
+  {% set ns = namespace(last_px=None) %}
+  {% for p in view.positions %}
+    {% if p.latest_price_fetched_at and (ns.last_px is none or p.latest_price_fetched_at > ns.last_px) %}
+      {% set ns.last_px = p.latest_price_fetched_at %}
+    {% endif %}
+  {% endfor %}
+
+  <div class="ui-section-title">Pricing</div>
+  <div class="ui-muted">
+    Prices:
+    <b>Yahoo Finance</b>
+    <span class="ui-muted">·</span>
+    Last updated:
+    <b>{{ ns.last_px|local_dt if ns.last_px else "—" }}</b>
+  </div>
+
+  <form method="post" action="/holdings/prices/refresh" class="form-compact" style="margin-top:10px">
+    <input type="hidden" name="scope" value="{{ scope }}"/>
+    <input type="hidden" name="account_id" value="{{ account_id or '' }}"/>
+    <label class="muted">Provider
+      <select name="provider">
+        <option value="yahoo">Yahoo Finance (chart API)</option>
+        <option value="finnhub">Finnhub (API key)</option>
+      </select>
+    </label>
+    <button type="submit" class="btn">Refresh</button>
+  </form>
+
+  <details class="details-panel" style="margin-top:8px">
+    <summary>Pricing details</summary>
+    <div class="ui-muted" style="margin-top:6px">
+      Uses local cache under <code>data/prices/</code> (first) and falls back to <code>data/prices/yfinance/</code> if present.
+      If a price is stale, refresh it (requires network enabled + allowlist). Finnhub requires <code>FINNHUB_API_KEY</code>.
+    </div>
+  </details>
+</div>

@@ -1,0 +1,16 @@
+{# Reusable UI components (macros) #}
+
+{% macro kpi_card(label, value, subtext=None, tone="neutral", value_align="left", id=None, testid=None) -%}
+  <div
+    class="ui-card ui-kpi ui-tone-{{ tone }}{% if value_align == 'right' %} ui-kpi--align-right{% endif %}"
+    {% if id %}id="{{ id }}"{% endif %}
+    {% if testid %}data-testid="{{ testid }}"{% endif %}
+  >
+    <div class="ui-card__label">{{ label }}</div>
+    <div class="ui-card__value ui-tabular-nums">{{ value }}</div>
+    {% if subtext %}
+      <div class="ui-card__subtext ui-muted">{{ subtext }}</div>
+    {% endif %}
+  </div>
+{%- endmacro %}
+

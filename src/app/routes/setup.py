@@ -15,6 +15,7 @@ from src.core.defaults import ensure_default_setup
 from src.db.audit import log_change
 from src.db.models import (
     Account,
+    BullionHolding,
     BucketPolicy,
     CashBalance,
     CorporateActionEvent,
@@ -72,6 +73,7 @@ def setup_home(
     map_counts = _counts(ExternalAccountMap, "external_account_maps")
     taxlot_counts = _counts(TaxLot, "tax_lots")
     corp_counts = _counts(CorporateActionEvent, "corporate_actions")
+    bullion_counts = _counts(BullionHolding, "bullion_holdings")
 
     usage_by_account_id: dict[int, int] = {}
     delete_blocked_by_account_id: dict[int, bool] = {}
@@ -84,7 +86,7 @@ def setup_home(
         # Block deletion only for real data dependencies (mappings can be safely removed).
         delete_blocked_by_account_id[aid_i] = any(
             int(deps.get(k) or 0) > 0
-            for k in ("transactions", "lots", "cash_balances", "income_events", "tax_lots", "corporate_actions")
+            for k in ("transactions", "lots", "cash_balances", "income_events", "tax_lots", "corporate_actions", "bullion_holdings")
         )
 
     from src.app.main import templates

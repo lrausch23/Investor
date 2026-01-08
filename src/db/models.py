@@ -131,6 +131,36 @@ class CashBalance(Base):
     account: Mapped["Account"] = relationship(back_populates="cash_balances")
 
 
+class BullionHolding(Base):
+    """
+    Manual holdings for physical bullion.
+
+    Stored as a single "current" row per (account, metal). Edits overwrite values; changes are still
+    captured in the AuditLog.
+    """
+
+    __tablename__ = "bullion_holdings"
+    __table_args__ = (
+        UniqueConstraint("account_id", "metal"),
+        Index("ix_bullion_holdings_account", "account_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"), nullable=False)
+    metal: Mapped[str] = mapped_column(String(16), nullable=False)  # GOLD|SILVER
+    quantity: Mapped[float] = mapped_column(Numeric(20, 6), nullable=False)
+    unit: Mapped[str] = mapped_column(String(16), nullable=False, default="oz")
+    unit_price: Mapped[float] = mapped_column(Numeric(20, 2), nullable=False)  # USD per unit
+    cost_basis_total: Mapped[Optional[float]] = mapped_column(Numeric(20, 2))  # optional: total USD cost
+    currency: Mapped[str] = mapped_column(String(8), nullable=False, default="USD")
+    as_of_date: Mapped[dt.date] = mapped_column(Date, nullable=False)
+    notes: Mapped[Optional[str]] = mapped_column(Text)
+    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=utcnow, nullable=False)
+    updated_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=utcnow, nullable=False)
+
+    account: Mapped["Account"] = relationship()
+
+
 class IncomeEvent(Base):
     __tablename__ = "income_events"
 

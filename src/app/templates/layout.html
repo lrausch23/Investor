@@ -14,6 +14,7 @@
         <a href="/policy">Policy</a>
         <a href="/holdings">Holdings</a>
         <a href="/holdings/cash">Cash</a>
+        <a href="/holdings/bullion">Bullion</a>
         <a href="/holdings/transactions">Transactions</a>
         <a href="/holdings/lots">Lots</a>
         <a href="/taxlots/gains?source=auto">Tax Lots</a>
@@ -31,11 +32,58 @@
       </div>
       <div class="topbar__right">Actor: {{ actor }}</div>
     </header>
-    {% if auth_banner %}
-      <div class="banner banner--warn">{{ auth_banner }}</div>
-    {% endif %}
-    <main class="container">
-      {% block content %}{% endblock %}
-    </main>
+    <div class="app-content">
+      {% if auth_banner %}
+        <div class="banner banner--warn">{{ auth_banner }}</div>
+      {% endif %}
+      <main class="container">
+        {% block content %}{% endblock %}
+      </main>
+    </div>
+    <script>
+      (() => {
+        const topbar = document.querySelector(".topbar");
+        if (!topbar) return;
+        let ticking = false;
+        const setTopbarHeightVar = () => {
+          try {
+            const h = Math.ceil(topbar.getBoundingClientRect().height || 0);
+            if (h > 0) document.documentElement.style.setProperty("--top-nav-height", `${h}px`);
+          } catch {
+            // ignore
+          }
+        };
+        const apply = () => {
+          ticking = false;
+          topbar.classList.toggle("is-scrolled", (window.scrollY || 0) > 0);
+        };
+        const onScroll = () => {
+          if (ticking) return;
+          ticking = true;
+          window.requestAnimationFrame(apply);
+        };
+        setTopbarHeightVar();
+        apply();
+        window.addEventListener("scroll", onScroll, { passive: true });
+        window.addEventListener("resize", setTopbarHeightVar, { passive: true });
+
+        // Keep offsets correct if the nav height changes due to wrapping, font load, or responsive reflow.
+        try {
+          if ("ResizeObserver" in window) {
+            const ro = new ResizeObserver(() => setTopbarHeightVar());
+            ro.observe(topbar);
+          }
+        } catch {
+          // ignore
+        }
+        try {
+          if (document.fonts && document.fonts.ready) {
+            document.fonts.ready.then(() => setTopbarHeightVar()).catch(() => {});
+          }
+        } catch {
+          // ignore
+        }
+      })();
+    </script>
   </body>
 </html>
