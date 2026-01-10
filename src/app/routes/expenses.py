@@ -33,6 +33,7 @@ from src.investor.expenses.reports import (
     opportunities,
     merchants_by_spend,
 )
+from src.utils.time import ensure_utc, utcfromtimestamp, utcnow
 
 
 router = APIRouter(prefix="/expenses", tags=["expenses"])
@@ -135,6 +136,8 @@ def expenses_home(
     actor: str = Depends(require_actor),
 ):
     cfg, cfg_path = load_expenses_config()
+    error = request.query_params.get("error")
+    ok = request.query_params.get("ok")
     accounts = session.query(ExpenseAccount).order_by(ExpenseAccount.institution.asc(), ExpenseAccount.name.asc()).all()
     batches = session.query(ExpenseImportBatch).order_by(ExpenseImportBatch.imported_at.desc()).limit(25).all()
     txn_count = int(session.query(func.count(ExpenseTransaction.id)).scalar() or 0)
@@ -143,21 +146,82 @@ def expenses_home(
 
     rp = Path(cfg.categorization.rules_path)
     rules_exists = rp.exists()
+    rules_mtime = utcfromtimestamp(rp.stat().st_mtime) if rules_exists else None
+
+    now_utc = utcnow()
+
+    def _relative_time(ts: dt.datetime | None) -> str:
+        if ts is None:
+            return "—"
+        try:
+            delta = now_utc - ensure_utc(ts)
+        except Exception:
+            return "—"
+        seconds = max(0, int(delta.total_seconds()))
+        if seconds < 60:
+            return "just now"
+        if seconds < 3600:
+            return f"{seconds // 60}m ago"
+        if seconds < 86400:
+            return f"{seconds // 3600}h ago"
+        days = seconds // 86400
+        if days < 7:
+            return f"{days}d ago"
+        try:
+            m = ensure_utc(ts).strftime("%b")
+            return f"{m} {int(ensure_utc(ts).day)}"
+        except Exception:
+            return ensure_utc(ts).date().isoformat()
+
+    last_batch = batches[0] if batches else None
+    last_import_rel = _relative_time(last_batch.imported_at if last_batch else None)
+    last_import_rows = int(getattr(last_batch, "row_count", 0) or 0) if last_batch else 0
+    last_import_dupes = int(getattr(last_batch, "duplicates_skipped", 0) or 0) if last_batch else 0
+
+    batch_rel_by_id: dict[int, str] = {}
+    for b in batches:
+        try:
+            batch_rel_by_id[int(b.id)] = _relative_time(b.imported_at)
+        except Exception:
+            continue
+
+    # Avoid global banner on this page; show compact inline alert instead.
+    auth_banner_detail = auth_banner_message()
+
+    # Bust CSS/JS cache for this page during development.
+    static_version: str = "0"
+    try:
+        static_dir = Path(__file__).resolve().parents[1] / "static"
+        css_mtime = int((static_dir / "app.css").stat().st_mtime)
+        js_mtime = int((static_dir / "expenses_home.js").stat().st_mtime) if (static_dir / "expenses_home.js").exists() else 0
+        static_version = str(max(css_mtime, js_mtime))
+    except Exception:
+        static_version = "0"
 
     return templates.TemplateResponse(
         "expenses_home.html",
         {
             "request": request,
             "actor": actor,
-            "auth_banner": auth_banner_message(),
+            "auth_banner": None,
+            "auth_banner_detail": auth_banner_detail,
+            "static_version": static_version,
+            "error": error,
+            "ok": ok,
             "cfg_path": cfg_path,
             "enabled_formats": cfg.provider_formats,
             "accounts": accounts,
             "batches": batches,
+            "batch_rel_by_id": batch_rel_by_id,
             "txn_count": txn_count,
             "rj_accounts": rj_accounts,
+            "rules_name": rp.name,
             "rules_path": str(rp),
             "rules_exists": rules_exists,
+            "rules_mtime": rules_mtime,
+            "last_import_rel": last_import_rel,
+            "last_import_rows": last_import_rows,
+            "last_import_dupes": last_import_dupes,
             "today": dt.date.today().isoformat(),
         },
     )

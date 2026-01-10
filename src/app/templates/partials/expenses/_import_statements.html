@@ -1,0 +1,97 @@
+<section class="ui-card" aria-label="Import statements">
+  <div class="ui-section-title">Import statements</div>
+  <div class="ui-muted" style="margin-top:4px">
+    Upload CSV/TSV statements from credit cards and bank accounts. Auto-detects known formats when possible.
+  </div>
+
+  <form
+    method="post"
+    action="/expenses/import-batch"
+    enctype="multipart/form-data"
+    style="margin-top:10px"
+    data-expenses-import-form
+  >
+    <div class="report-filters-grid" style="align-items:start">
+      <label>
+        Institution
+        <input name="institution" value="Chase" placeholder="Chase, AMEX, Apple Card…" />
+        <div class="ui-muted" style="margin-top:2px">Used for account labeling and reports.</div>
+      </label>
+
+      <label>
+        Account label
+        <input name="account" placeholder="Chase Freedom (optional)" />
+        <div class="ui-muted" style="margin-top:2px">If blank, inferred from the file when possible.</div>
+      </label>
+
+      <label>
+        Type
+        <select name="account_type">
+          <option value="CREDIT">CREDIT</option>
+          <option value="BANK">BANK</option>
+          <option value="UNKNOWN">UNKNOWN</option>
+        </select>
+      </label>
+
+      <label>
+        Last4 (optional)
+        <input name="account_last4" inputmode="numeric" pattern="[0-9]{0,8}" placeholder="1234" />
+        <div class="ui-muted" style="margin-top:2px">Stored masked (e.g., ****1234).</div>
+      </label>
+
+      <label>
+        Card member (optional)
+        <input name="cardholder_name" placeholder="Laszlo Rausch" />
+        <div class="ui-muted" style="margin-top:2px">Shown on transaction views if present.</div>
+      </label>
+
+      <label>
+        Format
+        <select name="format">
+          <option value="">(auto-detect)</option>
+          {% for f in enabled_formats %}
+            <option value="{{ f }}">{{ f }}</option>
+          {% endfor %}
+        </select>
+        <div class="ui-muted" style="margin-top:2px">Use override if auto-detect is ambiguous.</div>
+      </label>
+
+      <label>
+        Files
+        <input id="expenses-files" type="file" name="files" multiple accept=".csv,.tsv" />
+        <div class="ui-muted" style="margin-top:2px">Multi-select supported.</div>
+      </label>
+
+      <label>
+        Folder
+        <input id="expenses-folder" type="file" name="dir_files" multiple webkitdirectory directory />
+        <div class="ui-muted" style="margin-top:2px">Uploads all CSV/TSV files in a directory.</div>
+      </label>
+    </div>
+
+    <div id="expenses-upload-hint" class="ui-muted" style="margin-top:8px">
+      Choose files or a folder. For unknown formats, the importer will tell you what needs mapping.
+    </div>
+
+    <details class="accordion" style="margin-top:10px">
+      <summary>Advanced options</summary>
+      <div style="margin-top:8px; display:grid; gap:8px">
+        <label style="display:flex; gap:8px; align-items:center">
+          <input type="checkbox" name="fuzzy_dedupe" checked />
+          <span>Fuzzy dedupe (date±1 + amount + merchant)</span>
+        </label>
+        <label style="display:flex; gap:8px; align-items:center">
+          <input type="checkbox" name="store_original_rows" />
+          <span>Store redacted original row JSON (off by default)</span>
+        </label>
+      </div>
+    </details>
+
+    <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-top:10px">
+      <button class="btn btn--primary" type="submit">Import</button>
+      <button class="btn btn--secondary" type="reset">Reset</button>
+      <span class="ui-muted">Creates an import batch and auto-categorizes using your rules.</span>
+    </div>
+  </form>
+</section>
+

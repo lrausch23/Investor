@@ -1,0 +1,22 @@
+{% from "partials/ui/components.html" import kpi_card %}
+
+<div class="ui-kpi-grid" aria-label="Expenses summary">
+  {{ kpi_card("Transactions stored", "{:,}".format(txn_count), subtext="Canonical transactions", tone="neutral") }}
+  {{ kpi_card("Accounts configured", "{:,}".format(accounts|length), subtext="Credit cards + bank accounts", tone="neutral") }}
+
+  {% if rules_exists %}
+    {% set rules_sub = ("Modified " ~ (rules_mtime|local_dt)) if rules_mtime else "Configured" %}
+    {{ kpi_card("Rules loaded", (rules_name or "—"), subtext=rules_sub, tone="neutral") }}
+  {% else %}
+    {{ kpi_card("Rules loaded", "Missing", subtext="Create starter rules to reduce Unknowns", tone="warning") }}
+  {% endif %}
+
+  {% if batches and batches|length > 0 %}
+    {% set last_title = batches[0].imported_at|local_dt %}
+    {% set last_sub = "{:,} rows · {:,} dupes skipped".format(last_import_rows, last_import_dupes) %}
+    {{ kpi_card("Last import", last_import_rel, subtext=last_sub, tone="neutral", value_title=last_title) }}
+  {% else %}
+    {{ kpi_card("Last import", "—", subtext="No imports yet", tone="neutral") }}
+  {% endif %}
+</div>
+

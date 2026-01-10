@@ -1,0 +1,28 @@
+<section class="ui-card" aria-label="Import RJ cash outs">
+  <div class="ui-section-title">Import RJ cash outs</div>
+  <div class="ui-muted" style="margin-top:4px">
+    Creates/updates an expense account from Raymond James cash-out transfers (Kolozsi Trust).
+  </div>
+
+  <form method="post" action="/expenses/import-rj-cash-outs" style="margin-top:10px; display:grid; gap:10px">
+    <label>
+      RJ account
+      <select name="rj_account_id">
+        <option value="">(auto)</option>
+        {% for a in rj_accounts %}
+          <option value="{{ a.id }}">{{ a.name }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>
+      Expense account name
+      <input name="expense_account_name" value="Kolozsi Trust" />
+    </label>
+    <label>
+      Year (optional)
+      <input name="year" inputmode="numeric" placeholder="2025" />
+    </label>
+    <button class="btn btn--secondary" type="submit">Import RJ Cash Outs</button>
+  </form>
+</section>
+

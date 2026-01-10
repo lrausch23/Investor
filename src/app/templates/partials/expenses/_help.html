@@ -1,0 +1,40 @@
+<section class="ui-card" aria-label="Help" style="margin-top:14px">
+  <div class="ui-section-title">Help</div>
+
+  <details class="ui-disclosure" style="margin-top:8px">
+    <summary>Recommended workflow</summary>
+    <div class="ui-muted" style="margin-top:6px">
+      1) Import statements (files or folder). 2) Add/adjust rules. 3) Re-run categorization if needed. 4) Review Reports/Recurring.
+    </div>
+  </details>
+
+  <details class="ui-disclosure" style="margin-top:10px">
+    <summary>Supported formats</summary>
+    <div class="ui-muted" style="margin-top:6px">
+      Enabled formats: <b>{{ enabled_formats|join(", ") if enabled_formats else "—" }}</b>.
+      If detection is ambiguous, select a format override during import.
+    </div>
+  </details>
+
+  <details class="ui-disclosure" style="margin-top:10px">
+    <summary>Privacy &amp; redaction</summary>
+    <div class="ui-muted" style="margin-top:6px">
+      Account numbers are stored masked (last4 only). Avoid storing original rows unless you explicitly enable “Store redacted original row JSON”.
+    </div>
+  </details>
+
+  <details class="ui-disclosure" style="margin-top:10px">
+    <summary>How dedupe works</summary>
+    <div class="ui-muted" style="margin-top:6px">
+      Exact dedupe uses a stable transaction hash. “Fuzzy dedupe” also checks date ±1 day, amount, and merchant to avoid double imports across overlapping statements.
+    </div>
+  </details>
+
+  <div class="ui-muted" style="margin-top:10px">
+    Rules file: <b>{{ rules_name or "—" }}</b>{% if rules_mtime %} <span class="ui-muted">· modified {{ rules_mtime|local_dt }}</span>{% endif %}
+  </div>
+  <div class="ui-muted" style="margin-top:4px">
+    Config: <span class="ui-muted">{{ cfg_path }}</span>
+  </div>
+</section>
+

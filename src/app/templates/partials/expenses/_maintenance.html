@@ -1,0 +1,61 @@
+<details class="accordion" style="margin-top:14px">
+  <summary>Maintenance</summary>
+  <div class="ui-muted" style="margin-top:6px">
+    Utilities for categorization and merchant normalization. These do not re-import statements.
+  </div>
+
+  <div style="display:grid; gap:14px; margin-top:12px">
+    <section>
+      <div class="ui-section-title">Categorization</div>
+      <div class="ui-muted" style="margin-top:2px">Apply your rules to transactions (deterministic).</div>
+      <form method="post" action="/expenses/categorize" style="margin-top:8px">
+        <label style="display:flex; gap:8px; align-items:center; margin-bottom:8px">
+          <input type="checkbox" name="rebuild" />
+          <span>Rebuild system categories (system only)</span>
+        </label>
+        <button class="btn btn--secondary" type="submit">Categorize</button>
+      </form>
+    </section>
+
+    <section>
+      <div class="ui-section-title">Normalization</div>
+      <div class="ui-muted" style="margin-top:2px">Reduce vendor duplicates and improve grouping in reports.</div>
+      <div style="display:flex; gap:10px; flex-wrap:wrap; margin-top:8px">
+        <form method="post" action="/expenses/normalize-monthly-installments" style="margin:0">
+          <button class="btn btn--secondary" type="submit">Normalize Monthly Installments → Apple</button>
+        </form>
+        <form method="post" action="/expenses/normalize-bank-merchants" style="margin:0">
+          <button class="btn btn--secondary" type="submit">Normalize Bank Merchants</button>
+        </form>
+        <form method="post" action="/expenses/normalize-card-merchants" style="margin:0">
+          <button class="btn btn--secondary" type="submit">Normalize Card Merchants</button>
+        </form>
+      </div>
+    </section>
+
+    <section>
+      <div class="ui-section-title">Links</div>
+      <div class="ui-muted" style="margin-top:2px">
+        <a href="/expenses/reports?year={{ today[:4] }}">Reports</a>
+        <span class="ui-muted">·</span>
+        <a href="/expenses/recurring?year={{ today[:4] }}">Recurring</a>
+        <span class="ui-muted">·</span>
+        <a href="/expenses/transactions">Transactions</a>
+        <span class="ui-muted">·</span>
+        <a href="/expenses/rules">Rules</a>
+      </div>
+      <div style="margin-top:10px">
+        <button
+          class="btn btn--secondary"
+          type="button"
+          data-expenses-confirm-nav
+          data-expenses-confirm-nav-href="/expenses/purge"
+          data-expenses-confirm-nav-text="Open purge tools? This can delete expense data."
+        >
+          Purge…
+        </button>
+      </div>
+    </section>
+  </div>
+</details>
+

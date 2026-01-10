@@ -1,0 +1,51 @@
+<div class="holdings-header">
+  <div class="page-title">
+    <div class="page-title__left">
+      <h1>Expenses</h1>
+      <span class="ui-badge ui-badge--neutral">Statements</span>
+    </div>
+    {% if auth_banner_detail %}
+      <details class="inline-alert" role="note">
+        <summary>
+          <span class="inline-alert__icon" aria-hidden="true">&#9888;</span>
+          <span>Running locally. Authentication disabled.</span>
+          <span class="inline-alert__link">Learn more</span>
+        </summary>
+        <div class="muted" style="margin-top:6px">{{ auth_banner_detail }}</div>
+      </details>
+    {% endif %}
+  </div>
+
+  <div class="ui-muted selection-line">
+    <a class="ui-muted" href="/expenses/reports?year={{ today[:4] }}">Reports</a>
+    <span class="ui-muted">·</span>
+    <a class="ui-muted" href="/expenses/recurring?year={{ today[:4] }}">Recurring</a>
+    <span class="ui-muted">·</span>
+    <a class="ui-muted" href="/expenses/transactions">Transactions</a>
+    <span class="ui-muted">·</span>
+    <a class="ui-muted" href="/expenses/rules">Rules</a>
+  </div>
+
+  {% if ok %}
+    <div class="alert alert--ok" role="status">{{ ok }}</div>
+  {% endif %}
+  {% if error %}
+    <div class="alert alert--warn" role="alert">{{ error }}</div>
+  {% endif %}
+
+  {% if not rules_exists %}
+    <details class="alert alert--warn">
+      <summary>Rules file missing</summary>
+      <div class="muted" style="margin-top:6px">
+        Create starter rules at <a href="/expenses/rules">/expenses/rules</a> to reduce “Unknown” categories.
+      </div>
+      <div style="margin-top:10px; display:flex; gap:10px; flex-wrap:wrap">
+        <form method="post" action="/expenses/rules/init" style="margin:0">
+          <button class="btn btn--secondary" type="submit">Create starter rules</button>
+        </form>
+        <a class="btn btn--secondary" href="/expenses/rules">Open rules</a>
+      </div>
+    </details>
+  {% endif %}
+</div>
+

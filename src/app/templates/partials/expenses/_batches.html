@@ -1,0 +1,50 @@
+<section class="ui-card" aria-label="Recent import batches" style="margin-top:14px">
+  <div class="table-toolbar">
+    <div>
+      <div class="ui-section-title">Recent import batches</div>
+      <div class="ui-muted" style="margin-top:2px">Latest 25 imports (dedupe and format shown).</div>
+    </div>
+    <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap">
+      <label class="ui-muted" style="display:flex; gap:8px; align-items:center">
+        <span>Filter</span>
+        <input id="expenses-batch-filter" type="search" placeholder="File name or format…" style="min-width:220px" />
+      </label>
+    </div>
+  </div>
+
+  {% if batches and batches|length > 0 %}
+    <div class="table-wrap" role="region" aria-label="Import batches table">
+      <table>
+        <thead>
+          <tr>
+            <th>Imported</th>
+            <th>Source/File</th>
+            <th>Format</th>
+            <th class="num">Rows</th>
+            <th class="num">Dupes skipped</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for b in batches %}
+            {% set fmt = (b.metadata_json or {}).get("format","") %}
+            {% set rel = batch_rel_by_id.get(b.id, "—") %}
+            <tr class="expenses-batch-row" data-search="{{ (b.source ~ ' ' ~ b.file_name ~ ' ' ~ fmt)|lower }}">
+              <td class="nowrap"><span title="{{ b.imported_at|local_dt }}">{{ rel }}</span></td>
+              <td class="nowrap">
+                <span class="ui-muted">{{ b.source }}</span>
+                <span class="ui-muted">·</span>
+                <span>{{ b.file_name }}</span>
+              </td>
+              <td>{{ fmt }}</td>
+              <td class="num">{{ "{:,}".format(b.row_count) }}</td>
+              <td class="num">{{ "{:,}".format(b.duplicates_skipped) }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% else %}
+    <div class="ui-muted" style="margin-top:8px">No import batches yet.</div>
+  {% endif %}
+</section>
+

@@ -1,0 +1,31 @@
+<section class="ui-card" aria-label="Expense accounts" style="margin-top:14px">
+  <div class="ui-section-title">Accounts</div>
+  {% if accounts and accounts|length > 0 %}
+    <div class="ui-muted" style="margin-top:2px">{{ accounts|length }} configured</div>
+    <div style="margin-top:8px">
+      <table style="margin:0">
+        <thead>
+          <tr>
+            <th>Institution</th>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Last4</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for a in accounts %}
+            <tr>
+              <td>{{ a.institution }}</td>
+              <td><a href="/expenses/transactions?account_id={{ a.id }}">{{ a.name }}</a></td>
+              <td class="ui-muted">{{ a.type }}</td>
+              <td class="ui-muted">{{ a.last4_masked or "" }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% else %}
+    <div class="ui-muted" style="margin-top:8px">No expense accounts yet. Import a statement to create one.</div>
+  {% endif %}
+</section>
+
