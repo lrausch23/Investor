@@ -1,0 +1,19 @@
+{% from "partials/ui/components.html" import kpi_card %}
+
+{% set coverage_tone = "positive" if coverage_u == "COMPLETE" else "warning" %}
+
+<div class="holdings-summary">
+  <div class="ui-kpi-grid" role="group" aria-label="Connection KPIs">
+    {{ kpi_card("Coverage", coverage_u, subtext="Complete means last run succeeded with no parse failures", tone=coverage_tone) }}
+    {{ kpi_card("Last success", last_success_rel, subtext=(conn.last_successful_sync_at|local_dt if conn.last_successful_sync_at else "—"), tone="neutral", value_title=(conn.last_successful_sync_at|local_dt if conn.last_successful_sync_at else None)) }}
+    {{ kpi_card("Last full", last_full_rel, subtext=(conn.last_full_sync_at|local_dt if conn.last_full_sync_at else "—"), tone="neutral", value_title=(conn.last_full_sync_at|local_dt if conn.last_full_sync_at else None)) }}
+    {% set run_sub = ("Mode: " ~ last_run_mode) %}
+    {% if last_run and last_run.started_at %}
+      {% set run_sub = run_sub ~ (" · " ~ (last_run.started_at|local_dt)) %}
+    {% endif %}
+    {% if last_run_duration_s is not none %}
+      {% set run_sub = run_sub ~ (" · " ~ (last_run_duration_s|string) ~ "s") %}
+    {% endif %}
+    {{ kpi_card("Latest run", last_run_status, subtext=run_sub, tone=last_run_tone) }}
+  </div>
+</div>

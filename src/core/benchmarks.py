@@ -30,6 +30,9 @@ def download_yahoo_price_history_csv(
     start_date: dt.date,
     end_date: dt.date,
     dest_path: Path,
+    timeout_s: float = 30.0,
+    max_retries: int = 6,
+    backoff_s: float = 2.0,
 ) -> YahooDownloadResult:
     """
     Download daily price history from Yahoo Finance (chart API) and store a normalized CSV.
@@ -67,9 +70,9 @@ def download_yahoo_price_history_csv(
             "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
             "Accept": "application/json,text/plain,*/*",
         },
-        timeout_s=30.0,
-        max_retries=6,
-        backoff_s=2.0,
+        timeout_s=float(timeout_s),
+        max_retries=int(max_retries),
+        backoff_s=float(backoff_s),
     )
     if int(resp.status_code) != 200:
         raise ProviderError(f"Yahoo Finance request failed: status={resp.status_code}")

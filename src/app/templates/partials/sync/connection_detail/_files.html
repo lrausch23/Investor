@@ -1,0 +1,102 @@
+{% if is_offline_files or is_ib_flex_web %}
+  <details class="ui-disclosure" style="margin-top:12px" {% if files_count and files_count > 0 %}{% else %}{% endif %}>
+    <summary>
+      Statement files
+      <span class="ui-muted" style="font-weight:400">
+        — Files: {{ files_count }}
+        {% if last_upload_at %} · Last upload: {{ last_upload_at|local_dt }}{% endif %}
+      </span>
+    </summary>
+
+    <div class="ui-muted" style="margin-top:10px">
+      {% if is_ib_flex_web %}
+        Upload IB statement exports (e.g., <b>MTM Summary</b>) to seed baseline holdings valuation points for performance reporting when Flex cannot backfill historical snapshots.
+      {% else %}
+        Upload statement exports here, or drop them into the data directory and run sync.
+      {% endif %}
+    </div>
+
+    <div class="sync-files-grid" style="margin-top:12px">
+      <div class="ui-card">
+        <div class="ui-section-title">Directory</div>
+        <form method="post" action="/sync/connections/{{ conn.id }}/settings" class="form-compact">
+          <label>
+            <span>Data directory (local path)</span>
+            <input name="data_dir" value="{{ data_dir }}" autocomplete="off"/>
+          </label>
+          <input type="hidden" name="extra_query_ids" value="{{ extra_queries_str if is_ib_flex_web else '' }}"/>
+          <label>
+            <span>Audit note (optional)</span>
+            <input name="note" placeholder="Why this changed"/>
+          </label>
+          <button class="btn" type="submit">Save</button>
+        </form>
+      </div>
+
+      <div class="ui-card">
+        <div class="ui-section-title">Upload</div>
+        <form method="post" action="/sync/connections/{{ conn.id }}/upload" enctype="multipart/form-data" class="form-compact">
+          <label>
+            <span>Statement file</span>
+            <input type="file" name="upload"/>
+          </label>
+          <label>
+            <span>Audit note (optional)</span>
+            <input name="note" placeholder="Why this was uploaded"/>
+          </label>
+          <button class="btn btn--primary" type="submit">Upload</button>
+        </form>
+        <div class="ui-muted" style="margin-top:10px">
+          Parsed file types:
+          <code>.csv</code>, <code>.tsv</code>, <code>.txt</code>, <code>.xml</code>{% if is_rj_offline %}, <code>.qfx</code>, <code>.ofx</code>{% endif %}{% if is_rj_offline or is_chase_offline %}, <code>.pdf</code>{% endif %}.
+        </div>
+      </div>
+    </div>
+
+    {% if files_on_disk and files_on_disk|length > 0 %}
+      <div class="ui-section-title" style="margin-top:14px">Files on disk</div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>Name</th><th>Supported</th><th class="num">Bytes</th><th class="nowrap">Modified</th><th>Path</th></tr>
+          </thead>
+          <tbody>
+            {% for f in files_on_disk[:50] %}
+              <tr>
+                <td>{{ f.name }}</td>
+                <td class="ui-muted">{{ f.supported_label or ("Yes" if f.supported else "No") }}</td>
+                <td class="num ui-muted">{{ f.bytes }}</td>
+                <td class="ui-muted nowrap">{{ f.mtime }}</td>
+                <td class="ui-muted">{{ f.path }}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      <div class="ui-muted" style="margin-top:14px">No files found in the data directory.</div>
+    {% endif %}
+
+    {% if ingested_files and ingested_files|length > 0 %}
+      <details class="ui-disclosure" style="margin-top:12px">
+        <summary>Recently ingested files (tracked for incremental sync)</summary>
+        <div class="table-wrap" style="margin-top:10px">
+          <table>
+            <thead>
+              <tr><th>When</th><th>Name</th><th>Hash (prefix)</th></tr>
+            </thead>
+            <tbody>
+              {% for r in ingested_files[:20] %}
+                <tr>
+                  <td class="ui-muted">{{ r.imported_at|local_dt }}</td>
+                  <td>{{ r.file_name }}</td>
+                  <td class="ui-muted">{{ r.file_hash[:12] }}</td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </details>
+    {% endif %}
+  </details>
+{% endif %}

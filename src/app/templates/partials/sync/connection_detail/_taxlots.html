@@ -1,0 +1,18 @@
+<details class="ui-disclosure" style="margin-top:12px">
+  <summary>Tax lots (reconstructed)</summary>
+  <div class="ui-muted" style="margin-top:10px">
+    Builds planning-grade tax lots deterministically from full transaction history for this taxpayer’s taxable accounts (FIFO).
+    Labels all lots as <b>RECONSTRUCTED</b>; use for analytics and tax-aware planning, not as authoritative tax reporting.
+  </div>
+  <form method="post" action="/sync/connections/{{ conn.id }}/rebuild-lots" class="form-compact" style="margin-top:10px">
+    <label>
+      <span>Audit note (optional)</span>
+      <input name="note" placeholder="Why rebuild lots now?"/>
+    </label>
+    <div style="display:flex; gap:10px; flex-wrap:wrap">
+      <button class="btn btn--primary" type="submit">Rebuild lots</button>
+      <a class="btn" href="/taxlots/gains?source=auto">View tax lots / gains / wash</a>
+    </div>
+  </form>
+</details>
+

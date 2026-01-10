@@ -1,0 +1,84 @@
+<section class="ui-card" aria-label="Create connection">
+  <div class="ui-section-title">Create connection</div>
+
+  {% if not taxpayers or taxpayers|length == 0 %}
+    <div class="alert alert--warn" role="alert" style="margin-top:10px">
+      No taxpayers exist yet. Create baseline setup first at <a href="/setup">Setup</a> (click “Create defaults”), then come back here.
+    </div>
+  {% endif %}
+
+  <form method="post" action="/sync/connections" class="form-compact" data-create-form>
+    <label for="create_name">
+      <span>Name</span>
+      <input id="create_name" name="name" value="IB Flex (Web)" autocomplete="off" data-suggested-name="IB Flex (Web)"/>
+      <span class="ui-muted">Human-friendly label for this connection.</span>
+    </label>
+
+    <label for="create_kind">
+      <span>Provider</span>
+      <select name="connection_kind" id="create_kind" data-create-kind>
+        <option value="IB_FLEX_WEB" selected>IB Flex (Web Service)</option>
+        <option value="CHASE_OFFLINE">Chase (Offline CSV)</option>
+        <option value="RJ_OFFLINE">Raymond James (Offline QFX/OFX)</option>
+      </select>
+    </label>
+
+    <label for="create_taxpayer">
+      <span>Taxpayer</span>
+      <select name="taxpayer_entity_id" id="create_taxpayer" {% if not taxpayers or taxpayers|length == 0 %}disabled{% endif %}>
+        {% for t in taxpayers %}
+          <option value="{{ t.id }}">{{ t.name }} ({{ t.type }})</option>
+        {% endfor %}
+      </select>
+    </label>
+
+    <fieldset data-create-section="IB_FLEX_WEB" class="sync-create-section">
+      <legend>Credentials</legend>
+      <label for="create_ib_token">
+        <span>Token</span>
+        <input id="create_ib_token" name="token" type="password" placeholder="stored encrypted" autocomplete="new-password"/>
+        <span class="ui-muted">IB Flex Web Service token.</span>
+      </label>
+      <label for="create_ib_query">
+        <span>Flex Query ID</span>
+        <input id="create_ib_query" name="query_id" type="text" placeholder="e.g., 1354277" inputmode="numeric"/>
+        <span class="ui-muted">Numeric query id from IB Portal → Reports → Flex Queries.</span>
+      </label>
+
+      <details class="ui-disclosure" style="margin-top:8px">
+        <summary>Advanced</summary>
+        <div class="form-compact" style="margin-top:10px">
+          <label for="create_ib_extra_queries">
+            <span>Extra Flex Query IDs</span>
+            <input id="create_ib_extra_queries" name="extra_query_ids" placeholder="comma/space-separated (optional)"/>
+            <span class="ui-muted">Use multiple queries when splitting trades vs dividends/interest.</span>
+          </label>
+          <details class="ui-disclosure">
+            <summary>IP allowlist tips</summary>
+            <div class="ui-muted" style="margin-top:6px">
+              Flex Web Service is IP restricted. Ensure this machine/server IP is allowlisted in IB Portal.
+              If running on a laptop, your IP may change (wifi/VPN).
+            </div>
+          </details>
+        </div>
+      </details>
+    </fieldset>
+
+    <fieldset data-create-section="OFFLINE" class="sync-create-section" hidden>
+      <legend>Offline imports</legend>
+      <label for="create_offline_dir">
+        <span>Data directory (optional)</span>
+        <input id="create_offline_dir" name="data_dir" placeholder="e.g., ~/Downloads/Exports" autocomplete="off"/>
+        <span class="ui-muted">Drop exports into this folder and run sync. You can also upload files from the connection detail page.</span>
+      </label>
+    </fieldset>
+
+    <label for="create_note">
+      <span>Audit note (optional)</span>
+      <input id="create_note" name="note" placeholder="Why this connection was created"/>
+    </label>
+
+    <button class="btn btn--primary" type="submit" {% if not taxpayers or taxpayers|length == 0 %}disabled{% endif %}>Create connection</button>
+    <div class="ui-muted">After creating, you can test or sync from the table.</div>
+  </form>
+</section>

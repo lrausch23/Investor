@@ -1,0 +1,20 @@
+<section class="alert alert--warn sync-danger" aria-label="Danger zone" style="margin-top:14px">
+  <details>
+    <summary>Danger zone</summary>
+    <div class="ui-muted" style="margin-top:8px">
+      Purge deletes transactions / holdings snapshots / sync runs imported by this connection.
+      It does not delete Accounts / Securities / Lots (manual safety).
+    </div>
+    <form method="post" action="/sync/connections/{{ conn.id }}/purge" class="form-compact" style="margin-top:10px">
+      <label>
+        <span>Type <code>PURGE</code> to confirm</span>
+        <input name="confirm" size="10" placeholder="PURGE" autocomplete="off"/>
+      </label>
+      <label>
+        <span>Audit note</span>
+        <input name="note" placeholder="Why are you purging?"/>
+      </label>
+      <button class="btn" type="submit">Purge imported data</button>
+    </form>
+  </details>
+</section>

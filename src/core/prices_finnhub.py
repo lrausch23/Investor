@@ -87,6 +87,9 @@ def download_finnhub_price_history_csv(
     end_date: dt.date,
     dest_path: Path,
     api_key: str,
+    timeout_s: float = 30.0,
+    max_retries: int = 4,
+    backoff_s: float = 1.0,
 ) -> FinnhubDownloadResult:
     """
     Download daily candles from Finnhub and store a normalized CSV.
@@ -118,9 +121,9 @@ def download_finnhub_price_history_csv(
         url,
         method="GET",
         headers={"Accept": "application/json"},
-        timeout_s=30.0,
-        max_retries=4,
-        backoff_s=1.0,
+        timeout_s=float(timeout_s),
+        max_retries=int(max_retries),
+        backoff_s=float(backoff_s),
     )
     if int(resp.status_code) != 200:
         raise ProviderError(f"Finnhub request failed: status={resp.status_code}")

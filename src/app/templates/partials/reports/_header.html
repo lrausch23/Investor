@@ -1,0 +1,46 @@
+<div class="holdings-header">
+  {% if report_breadcrumbs and report_breadcrumbs|length > 0 %}
+    <div class="ui-muted" style="margin-bottom:6px">
+      {% for c in report_breadcrumbs %}
+        {% if c.href %}
+          <a class="ui-muted" href="{{ c.href }}">{{ c.label }}</a>
+        {% else %}
+          <span class="ui-muted">{{ c.label }}</span>
+        {% endif %}
+        {% if not loop.last %}
+          <span class="ui-muted">·</span>
+        {% endif %}
+      {% endfor %}
+    </div>
+  {% endif %}
+
+  <div class="page-title">
+    <div class="page-title__left">
+      <h1>{{ report_title }}</h1>
+      {% if report_badge %}
+        <span class="ui-badge ui-badge--neutral">{{ report_badge }}</span>
+      {% endif %}
+    </div>
+    {% if auth_banner_detail %}
+      <details class="inline-alert" role="note">
+        <summary>
+          <span class="inline-alert__icon" aria-hidden="true">&#9888;</span>
+          <span>Running locally. Authentication disabled.</span>
+          <span class="inline-alert__link">Learn more</span>
+        </summary>
+        <div class="muted" style="margin-top:6px">{{ auth_banner_detail }}</div>
+      </details>
+    {% endif %}
+  </div>
+
+  {% if report_context %}
+    <div class="ui-muted selection-line">{{ report_context|safe }}</div>
+  {% endif %}
+
+  {% if ok_msg %}
+    <div class="alert alert--ok" role="status">{{ ok_msg }}</div>
+  {% endif %}
+  {% if error_msg %}
+    <div class="alert alert--warn" role="alert">{{ error_msg }}</div>
+  {% endif %}
+</div>

@@ -1,0 +1,95 @@
+<section class="ui-card" aria-label="Sync runs">
+  <div class="ui-section-title">Runs</div>
+
+  {% if last_run %}
+    {% set fetched = last_run.coverage_json.get("txn_count") or (last_run.coverage_json.get("new_inserted", 0) + last_run.coverage_json.get("duplicates_skipped", 0) + last_run.coverage_json.get("parse_fail_count", 0)) %}
+    <div class="sync-run-summary">
+      <div class="sync-run-summary__row">
+        <span class="ui-badge {% if last_run.status == 'SUCCESS' %}ui-badge--safe{% elif last_run.status == 'PARTIAL' %}ui-badge--risk{% else %}ui-badge--bad{% endif %}">
+          {{ last_run.status }}
+        </span>
+        <span class="ui-badge ui-badge--outline">Mode: {{ last_run.mode }}</span>
+        {% if last_run.started_at %}
+          <span class="ui-muted">Started: {{ last_run.started_at|local_dt }}</span>
+        {% endif %}
+        {% if last_run.finished_at %}
+          <span class="ui-muted">Finished: {{ last_run.finished_at|local_dt }}</span>
+        {% endif %}
+        {% if last_run_duration_s is not none %}
+          <span class="ui-muted">Duration: {{ last_run_duration_s }}s</span>
+        {% endif %}
+      </div>
+
+      <div class="ui-muted" style="margin-top:6px">
+        Requested: {{ last_run.requested_start_date or "—" }} → {{ last_run.requested_end_date or "—" }}
+        <span class="ui-muted">·</span>
+        Effective: {{ last_run.effective_start_date or "—" }} → {{ last_run.effective_end_date or "—" }}
+      </div>
+
+      <div class="ui-muted" style="margin-top:6px">
+        Counts: fetched={{ fetched }},
+        new={{ last_run.coverage_json.get("new_inserted", 0) }},
+        dupes={{ last_run.coverage_json.get("duplicates_skipped", 0) }},
+        parse_fails={{ last_run.coverage_json.get("parse_fail_count", 0) }},
+        pages={{ last_run.coverage_json.get("pages_fetched", 0) }}
+        {% if last_run.coverage_json.get("file_count") is not none %}, files_ingested={{ last_run.coverage_json.get("file_count", 0) }}{% endif %}
+        {% if last_run.coverage_json.get("file_total") is not none %}, files_found={{ last_run.coverage_json.get("file_total", 0) }}{% endif %}
+        {% if last_run.coverage_json.get("file_selected") is not none %}, files_selected={{ last_run.coverage_json.get("file_selected", 0) }}{% endif %}
+        {% if last_run.coverage_json.get("file_unsupported_total") is not none %}, unsupported={{ last_run.coverage_json.get("file_unsupported_total", 0) }}{% endif %}
+      </div>
+
+      {% if last_run.coverage_json.get("warnings") %}
+        <details class="ui-disclosure" style="margin-top:10px">
+          <summary>Warnings</summary>
+          <div class="ui-muted" style="margin-top:8px">{{ last_run.coverage_json.get("warnings") }}</div>
+        </details>
+      {% endif %}
+      {% if last_run.coverage_json.get("holdings_snapshot_debug") %}
+        <details class="ui-disclosure" style="margin-top:10px">
+          <summary>Holdings valuation points (debug)</summary>
+          <pre class="ui-muted" style="white-space:pre-wrap; margin-top:8px">{{ last_run.coverage_json.get("holdings_snapshot_debug") }}</pre>
+        </details>
+      {% endif %}
+      <details class="ui-disclosure" style="margin-top:10px">
+        <summary>Raw coverage JSON</summary>
+        <pre class="ui-muted" style="white-space:pre-wrap; margin-top:8px">{{ last_run.coverage_json }}</pre>
+      </details>
+      {% if last_run.coverage_json.get("new_inserted", 0) == 0 and last_run.coverage_json.get("duplicates_skipped", 0) > 0 %}
+        <div class="ui-muted" style="margin-top:8px">
+          Note: 0 new inserts + non-zero dupes usually means the run re-fetched data you already imported (idempotent).
+        </div>
+      {% endif %}
+    </div>
+  {% else %}
+    <div class="ui-muted">No runs yet.</div>
+  {% endif %}
+
+  {% if runs and runs|length > 0 %}
+    <details class="ui-disclosure" style="margin-top:12px">
+      <summary>Run history ({{ runs|length }})</summary>
+      <div class="table-wrap" style="margin-top:10px">
+        <table>
+          <thead>
+            <tr><th>ID</th><th>Started</th><th>Status</th><th>Mode</th><th>Effective range</th><th class="num">Txn</th><th class="num">New</th><th class="num">Dupes</th><th class="num">Parse fails</th></tr>
+          </thead>
+          <tbody>
+            {% for r in runs %}
+              {% set fetched_r = r.coverage_json.get("txn_count") or (r.coverage_json.get("new_inserted", 0) + r.coverage_json.get("duplicates_skipped", 0) + r.coverage_json.get("parse_fail_count", 0)) %}
+              <tr>
+                <td>{{ r.id }}</td>
+                <td class="ui-muted">{{ r.started_at|local_dt if r.started_at else "—" }}</td>
+                <td>{{ r.status }}</td>
+                <td>{{ r.mode }}</td>
+                <td class="ui-muted">{{ r.effective_start_date }} → {{ r.effective_end_date }}</td>
+                <td class="num">{{ fetched_r }}</td>
+                <td class="num">{{ r.coverage_json.get("new_inserted", 0) }}</td>
+                <td class="num">{{ r.coverage_json.get("duplicates_skipped", 0) }}</td>
+                <td class="num">{{ r.coverage_json.get("parse_fail_count", 0) }}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </details>
+  {% endif %}
+</section>

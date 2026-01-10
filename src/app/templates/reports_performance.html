@@ -1,18 +1,19 @@
 {% extends "layout.html" %}
 {% block content %}
-  <h1>Reports</h1>
-  <p><a class="muted" href="/reports">← Back to Reports</a></p>
+  {% from "partials/ui/components.html" import kpi_card %}
 
-  <h2>Performance</h2>
-  {% if ok_msg %}
-    <div class="banner banner--ok">{{ ok_msg }}</div>
-  {% endif %}
-  {% if error_msg %}
-    <div class="banner banner--warn">{{ error_msg }}</div>
-  {% endif %}
-  <div class="box">
-    <form method="get" action="/reports/performance">
-      <div class="grid3">
+  {% set report_breadcrumbs = [{"label": "Reports", "href": "/reports"}, {"label": "Performance", "href": None}] %}
+  {% set report_title = "Performance" %}
+  {% set report_badge = "Report" %}
+  {% set report_context = "<b>Scope:</b> " ~ scope_label ~ " <span class='ui-muted'>·</span> <b>Period:</b> " ~ period_label ~ " <span class='ui-muted'>·</span> <b>Frequency:</b> " ~ ("Monthly" if freq == "month_end" else "Daily") ~ " <span class='ui-muted'>·</span> <b>Benchmark:</b> " ~ (benchmark_symbol or "SPY") %}
+  {% include "partials/reports/_header.html" %}
+
+  {% set primary = report.combined if report.combined else (report.rows[0] if report.rows and report.rows|length > 0 else None) %}
+
+  <div class="ui-card" style="margin-top:10px">
+    <div class="ui-section-title">Filters</div>
+    <form method="get" action="/reports/performance" id="perfFiltersForm">
+      <div class="report-filters-grid">
         <label>Scope<br/>
           <select name="scope">
             <option value="household" {% if scope == "household" %}selected{% endif %}>Household</option>
@@ -20,6 +21,7 @@
             <option value="ira" {% if scope == "ira" %}selected{% endif %}>IRA only</option>
           </select>
         </label>
+
         <label>Account<br/>
           <select name="account_id">
             <option value="" {% if not account_id %}selected{% endif %}>All</option>
@@ -28,189 +30,394 @@
             {% endfor %}
           </select>
         </label>
+
         <label>Date range<br/>
-          <select name="period" id="period_sel" onchange="toggleYear()">
+          <select name="period" id="perfPeriodSel">
             <option value="ytd" {% if period == "ytd" %}selected{% endif %}>YTD</option>
+            <option value="1y" {% if period == "1y" %}selected{% endif %}>Last 1y</option>
+            <option value="3y" {% if period == "3y" %}selected{% endif %}>Last 3y</option>
+            <option value="5y" {% if period == "5y" %}selected{% endif %}>Last 5y</option>
             <option value="year" {% if period == "year" %}selected{% endif %}>Calendar year</option>
+            <option value="custom" {% if period == "custom" %}selected{% endif %}>Custom</option>
           </select>
         </label>
-        <label id="year_wrap">Year<br/>
+
+        <div>
+          <label style="display:flex; gap:8px; align-items:center">
+            <input type="checkbox" name="compare" value="1" {% if compare_prior %}checked{% endif %} />
+            Compare to prior period
+          </label>
+          <div class="ui-muted" style="margin-top:4px">YTD compares to prior YTD; others compare to the immediately preceding window.</div>
+        </div>
+
+        <label id="perfYearWrap">Year<br/>
           <select name="year">
             {% for y in year_options %}
               <option value="{{ y }}" {% if year == y %}selected{% endif %}>{{ y }}</option>
             {% endfor %}
           </select>
         </label>
+
+        <div id="perfCustomWrap" class="report-filters-grid" style="display:none">
+          <label>Start (YYYY-MM-DD)<br/>
+            <input name="start" value="{{ custom_start or start_date }}" />
+          </label>
+          <label>End (YYYY-MM-DD)<br/>
+            <input name="end" value="{{ custom_end or end_date }}" />
+          </label>
+        </div>
+
+        <label>Benchmark<br/>
+          <input name="benchmark" value="{{ benchmark_symbol or 'SPY' }}" list="benchList" placeholder="e.g., SPY" />
+          <datalist id="benchList">
+            <option value="SPY"></option>
+            <option value="VTI"></option>
+            <option value="AGG"></option>
+            <option value="BIL"></option>
+          </datalist>
+        </label>
+
+        <label>Benchmark provider<br/>
+          <select name="bench_provider">
+            <option value="auto" {% if (bench_provider or 'auto') == "auto" %}selected{% endif %}>Auto (Cache → Stooq)</option>
+            <option value="cache" {% if bench_provider in ["cache", "local"] %}selected{% endif %}>Cache only (offline)</option>
+            <option value="stooq" {% if bench_provider == "stooq" %}selected{% endif %}>Stooq</option>
+            <option value="yahoo" {% if bench_provider == "yahoo" %}selected{% endif %}>Yahoo only (not recommended)</option>
+            <option value="none" {% if bench_provider == "none" %}selected{% endif %}>None (portfolio only)</option>
+          </select>
+        </label>
+
         <label>Frequency<br/>
           <select name="freq">
             <option value="month_end" {% if freq == "month_end" %}selected{% endif %}>Monthly (month-end)</option>
             <option value="daily" {% if freq == "daily" %}selected{% endif %}>Daily (all snapshots)</option>
           </select>
         </label>
-        <label>&nbsp;<br/><button type="submit">Run</button></label>
-      </div>
-      <div class="muted">
-        Performance is computed from holdings snapshots + TRANSFER cashflows.
-        Period: <b>{{ period_label }}</b> ({{ start_date }} → {{ end_date }}).
-      </div>
-    </form>
-    <div style="margin-top:10px">
-      <a class="muted" href="/reports/performance.csv?scope={{ scope }}&account_id={{ account_id or '' }}&period={{ period }}&year={{ year }}&freq={{ freq }}">Download CSV</a>
+
+    <div class="report-filters-actions">
+      <button class="btn btn--primary" type="submit">Run report</button>
+      <button class="btn btn--secondary" type="submit" name="refresh_benchmark" value="1" style="margin-top:8px">Refresh benchmark</button>
+      <div class="ui-muted" style="margin-top:6px">Portfolio metrics use holdings snapshots + TRANSFER cashflows.</div>
+    </div>
+  </div>
+</form>
+
+  <div style="margin-top:10px; display:flex; gap:10px; flex-wrap:wrap">
+      {% if benchmark_info and benchmark_info.warning %}
+        <span class="ui-muted">{{ benchmark_info.warning }}</span>
+      {% else %}
+        <span class="ui-muted">Benchmark source: {{ benchmark_info.provider }}</span>
+      {% endif %}
+      {% if compare_prior and prior and prior.label %}
+        <span class="ui-muted">· {{ prior.label }}</span>
+      {% endif %}
     </div>
   </div>
 
-  <h3>Benchmark (S&P 500 proxy: {{ benchmark_info.label }})</h3>
-  <div class="box">
-    <div class="muted">File: <code>{{ benchmark_info.path }}</code></div>
-    {% if benchmark_info.exists %}
-      <div class="muted">Loaded: {{ benchmark_info.bytes }} bytes, mtime={{ benchmark_info.mtime }}</div>
-    {% else %}
-      <div class="banner banner--warn">No benchmark file uploaded yet. Upload a CSV with columns like <code>Date</code> and <code>Adj Close</code> (preferred) or <code>Close</code>.</div>
-    {% endif %}
-    <form method="post" action="/reports/benchmarks/voo/upload?scope={{ scope }}&account_id={{ account_id or '' }}&period={{ period }}&year={{ year }}&freq={{ freq }}" enctype="multipart/form-data" style="margin-top:10px">
-      <label>Upload {{ benchmark_info.label }} CSV <input type="file" name="upload"/></label>
-      <button type="submit">Upload</button>
-    </form>
-    <div class="muted" style="margin-top:6px">Note: benchmark prices are loaded from a local CSV (no network fetch).</div>
-    {% if report.benchmark_period_start and report.benchmark_period_end %}
-      <div class="muted" style="margin-top:6px">
-        Selected period: {{ report.benchmark_period_start }} → {{ report.benchmark_period_end }}
+  {% if primary %}
+    {% set p_irr = primary.xirr %}
+    {% set p_twr = primary.twr %}
+    {% set p_sharpe = primary.sharpe %}
+    {% set b_twr = primary.benchmark_twr %}
+    {% set b_sharpe = primary.benchmark_sharpe %}
+
+    {% set prior_primary = (prior.primary if prior and prior.primary is defined else None) %}
+    {% set prior_twr = (prior_primary.twr if prior_primary else None) %}
+    {% set prior_sharpe = (prior_primary.sharpe if prior_primary else None) %}
+    {% set prior_cagr = (prior.comparison.portfolio_cagr if prior and prior.comparison is defined else None) %}
+    {% set prior_maxdd = (prior.comparison.portfolio_max_drawdown if prior and prior.comparison is defined else None) %}
+
+    <div class="ui-kpi-grid">
+      {{ kpi_card("IRR (portfolio)", (("—" if p_irr is none else ("%.2f"|format(p_irr * 100.0) ~ "%"))), subtext="Cashflow-weighted (XIRR)") }}
+      {% set twr_sub = ("Benchmark: " ~ ("—" if b_twr is none else ("%.2f"|format(b_twr * 100.0) ~ "%")) ~ " · Excess: " ~ ("—" if primary.excess_twr is none else ("%.2f"|format(primary.excess_twr * 100.0) ~ "%"))) %}
+      {% if compare_prior and prior_primary and p_twr is not none and prior_twr is not none %}
+        {% set dtwr = p_twr - prior_twr %}
+        {% set dtwr_html = ("<span class='" ~ ("ui-text-positive" if dtwr >= 0 else "ui-text-negative") ~ "'>" ~ ("+" if dtwr >= 0 else "") ~ ("%.2f"|format(dtwr * 100.0) ~ "%") ~ "</span>") %}
+        {% set twr_sub = twr_sub ~ " · Prior: " ~ ("%.2f"|format(prior_twr * 100.0) ~ "%") ~ " · Δ " ~ dtwr_html %}
+        {{ kpi_card("TWR (portfolio)", (("—" if p_twr is none else ("%.2f"|format(p_twr * 100.0) ~ "%"))), subtext=(twr_sub|safe)) }}
+      {% else %}
+        {{ kpi_card("TWR (portfolio)", (("—" if p_twr is none else ("%.2f"|format(p_twr * 100.0) ~ "%"))), subtext=twr_sub) }}
+      {% endif %}
+
+      {% set sharpe_sub = ("Benchmark: " ~ ("—" if b_sharpe is none else ("%.2f"|format(b_sharpe))) ~ " · Excess: " ~ ("—" if primary.excess_sharpe is none else ("%.2f"|format(primary.excess_sharpe)))) %}
+      {% if compare_prior and prior_primary and p_sharpe is not none and prior_sharpe is not none %}
+        {% set dsh = p_sharpe - prior_sharpe %}
+        {% set dsh_html = ("<span class='" ~ ("ui-text-positive" if dsh >= 0 else "ui-text-negative") ~ "'>" ~ ("+" if dsh >= 0 else "") ~ ("%.2f"|format(dsh)) ~ "</span>") %}
+        {% set sharpe_sub = sharpe_sub ~ " · Prior: " ~ ("%.2f"|format(prior_sharpe)) ~ " · Δ " ~ dsh_html %}
+        {{ kpi_card("Sharpe (portfolio)", (("—" if p_sharpe is none else ("%.2f"|format(p_sharpe)))), subtext=(sharpe_sub|safe)) }}
+      {% else %}
+        {{ kpi_card("Sharpe (portfolio)", (("—" if p_sharpe is none else ("%.2f"|format(p_sharpe)))), subtext=sharpe_sub) }}
+      {% endif %}
+
+      {% if compare_prior and prior_primary and comparison.portfolio_cagr is not none and prior_cagr is not none %}
+        {% set dcagr = comparison.portfolio_cagr - prior_cagr %}
+        {% set dcagr_html = ("<span class='" ~ ("ui-text-positive" if dcagr >= 0 else "ui-text-negative") ~ "'>" ~ ("+" if dcagr >= 0 else "") ~ ("%.2f"|format(dcagr * 100.0) ~ "%") ~ "</span>") %}
+        {{ kpi_card("Annualized return (portfolio)", ("—" if comparison.portfolio_cagr is none else ("%.2f"|format(comparison.portfolio_cagr * 100.0) ~ "%")), subtext=(("From TWR growth curve · Prior: " ~ ("%.2f"|format(prior_cagr * 100.0) ~ "%") ~ " · Δ " ~ dcagr_html)|safe)) }}
+      {% else %}
+        {{ kpi_card("Annualized return (portfolio)", ("—" if comparison.portfolio_cagr is none else ("%.2f"|format(comparison.portfolio_cagr * 100.0) ~ "%")), subtext="From TWR growth curve") }}
+      {% endif %}
+      {{ kpi_card("Annualized return (benchmark)", ("—" if comparison.benchmark_cagr is none else ("%.2f"|format(comparison.benchmark_cagr * 100.0) ~ "%")), subtext="From benchmark growth curve") }}
+      {{ kpi_card("Tracking error", ("—" if comparison.tracking_error is none else ("%.2f"|format(comparison.tracking_error * 100.0) ~ "%")), subtext="Std dev of (portfolio − benchmark) returns, annualized") }}
+      {% if compare_prior and prior_primary and comparison.portfolio_max_drawdown is not none and prior_maxdd is not none %}
+        {% set ddd = comparison.portfolio_max_drawdown - prior_maxdd %}
+        {% set ddd_html = ("<span class='" ~ ("ui-text-positive" if ddd >= 0 else "ui-text-negative") ~ "'>" ~ ("+" if ddd >= 0 else "") ~ ("%.2f"|format(ddd * 100.0) ~ "%") ~ "</span>") %}
+        {{ kpi_card("Max drawdown (portfolio)", ("—" if comparison.portfolio_max_drawdown is none else ("%.2f"|format(comparison.portfolio_max_drawdown * 100.0) ~ "%")), subtext=(("Benchmark: " ~ ("—" if comparison.benchmark_max_drawdown is none else ("%.2f"|format(comparison.benchmark_max_drawdown * 100.0) ~ "%")) ~ " · Prior: " ~ ("%.2f"|format(prior_maxdd * 100.0) ~ "%") ~ " · Δ " ~ ddd_html)|safe)) }}
+      {% else %}
+        {{ kpi_card("Max drawdown (portfolio)", ("—" if comparison.portfolio_max_drawdown is none else ("%.2f"|format(comparison.portfolio_max_drawdown * 100.0) ~ "%")), subtext=("Benchmark: " ~ ("—" if comparison.benchmark_max_drawdown is none else ("%.2f"|format(comparison.benchmark_max_drawdown * 100.0) ~ "%")))) }}
+      {% endif %}
+    </div>
+
+    {% if compare_prior and prior and (prior.error is defined or (prior.obs is defined and (prior.obs.portfolio_returns|int) < 10)) %}
+      <div style="margin-top:8px">
+        <span class="ui-badge ui-badge--risk" title="Sharpe and tracking metrics need enough observations">Prior period incomplete</span>
+        <span class="ui-muted">
+          {% if prior.error is defined %}{{ prior.error }}{% else %}Need at least 10 return observations to compare some metrics reliably.{% endif %}
+        </span>
       </div>
     {% endif %}
-    <div class="muted" style="margin-top:6px">
-      Benchmark coverage: {{ report.benchmark_coverage_start or "—" }} → {{ report.benchmark_coverage_end or "—" }} —
-      TWR: {% if report.benchmark_period_twr is none %}—{% else %}{{ "%.2f"|format(report.benchmark_period_twr * 100.0) }}%{% endif %},
-      Sharpe: {% if report.benchmark_period_sharpe is none %}—{% else %}{{ "%.2f"|format(report.benchmark_period_sharpe) }}{% endif %}
+
+    <div class="ui-card" style="margin-top:12px">
+      <div class="ui-section-title">Commentary</div>
+      <div style="margin-top:8px">
+        {% if commentary and commentary.sentences %}
+          {% for s in commentary.sentences %}
+            <div>{{ s }}</div>
+          {% endfor %}
+        {% endif %}
+
+        {% if commentary and commentary.notes %}
+          <div class="ui-muted" style="margin-top:8px">
+            {% for n in commentary.notes %}
+              <div>{{ n }}</div>
+            {% endfor %}
+          </div>
+        {% endif %}
+
+        <div class="ui-muted" style="margin-top:8px">Auto-generated summary based on available data (not advice).</div>
+      </div>
     </div>
+  {% endif %}
+
+  <div class="ui-card" style="margin-top:12px">
+    <div class="ui-section-title">Growth of $1 (TWR)</div>
+    <div class="ui-muted">Portfolio and benchmark are aligned by available valuation/price dates.</div>
+    <div class="perf-chart-controls" style="margin-top:10px">
+      <div class="perf-chart-controls__left">
+        <label class="ui-muted" style="display:flex; gap:8px; align-items:center">
+          <input type="checkbox" id="perfShowEvents" checked />
+          Show cashflow markers
+        </label>
+      </div>
+      <div class="perf-chart-controls__right">
+        <span class="ui-muted" style="margin-right:8px">View</span>
+        <button type="button" class="btn btn--secondary btn--sm perf-mode-btn" data-perf-mode="growth" aria-pressed="true">Growth</button>
+        <button type="button" class="btn btn--secondary btn--sm perf-mode-btn" data-perf-mode="drawdown" aria-pressed="false">Drawdown</button>
+        <button type="button" class="btn btn--secondary btn--sm perf-mode-btn" data-perf-mode="vol" aria-pressed="false">Rolling vol</button>
+      </div>
+    </div>
+    {% if chart_data and chart_data.event_summary %}
+      <div class="ui-muted" style="margin-top:6px">
+        Cashflows: {{ chart_data.event_summary.deposits }} deposits, {{ chart_data.event_summary.withdrawals }} withdrawals
+        (threshold: {{ chart_data.event_summary.threshold|usd(0) }}; largest withdrawal: {{ chart_data.event_summary.largest_withdrawal|usd(0) }}).
+      </div>
+    {% endif %}
+    <div class="perf-chart-wrap" style="margin-top:10px">
+      <svg id="perfChart" class="perf-chart" role="img" aria-label="Portfolio vs benchmark cumulative growth chart"></svg>
+      <div id="perfChartTooltip" class="perf-chart-tooltip" role="status" aria-live="polite" style="display:none"></div>
+    </div>
+    <div id="perfChartLegend" class="perf-chart-legend ui-muted" aria-live="polite" style="margin-top:8px"></div>
+    <div id="perfChartInspector" class="perf-chart-inspector ui-muted" style="margin-top:10px"></div>
+    <script type="application/json" id="perfChartData">{{ chart_data_json|safe }}</script>
+  </div>
+
+  <div class="ui-card" style="margin-top:12px">
+    <div class="ui-section-title">Comparison</div>
+    <div class="table-wrap" style="margin-top:10px">
+      <table>
+        <thead>
+          <tr>
+            <th scope="col">Metric</th>
+            <th scope="col" class="num">Portfolio</th>
+            {% if compare_prior %}<th scope="col" class="num">Prior</th>{% endif %}
+            <th scope="col" class="num">Benchmark</th>
+            {% if compare_prior %}<th scope="col" class="num">Prior</th>{% endif %}
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>TWR (period)</td>
+            <td class="num">{% if primary and primary.twr is not none %}{{ "%.2f"|format(primary.twr * 100.0) }}%{% else %}—{% endif %}</td>
+            {% if compare_prior %}<td class="num">{% if prior_primary and prior_primary.twr is not none %}{{ "%.2f"|format(prior_primary.twr * 100.0) }}%{% else %}—{% endif %}</td>{% endif %}
+            <td class="num">{% if primary and primary.benchmark_twr is not none %}{{ "%.2f"|format(primary.benchmark_twr * 100.0) }}%{% else %}—{% endif %}</td>
+            {% if compare_prior %}<td class="num">{% if prior_primary and prior_primary.benchmark_twr is not none %}{{ "%.2f"|format(prior_primary.benchmark_twr * 100.0) }}%{% else %}—{% endif %}</td>{% endif %}
+          </tr>
+          <tr>
+            <td>Sharpe (period)</td>
+            <td class="num">{% if primary and primary.sharpe is not none %}{{ "%.2f"|format(primary.sharpe) }}{% else %}—{% endif %}</td>
+            {% if compare_prior %}<td class="num">{% if prior_primary and prior_primary.sharpe is not none %}{{ "%.2f"|format(prior_primary.sharpe) }}{% else %}—{% endif %}</td>{% endif %}
+            <td class="num">{% if primary and primary.benchmark_sharpe is not none %}{{ "%.2f"|format(primary.benchmark_sharpe) }}{% else %}—{% endif %}</td>
+            {% if compare_prior %}<td class="num">{% if prior_primary and prior_primary.benchmark_sharpe is not none %}{{ "%.2f"|format(prior_primary.benchmark_sharpe) }}{% else %}—{% endif %}</td>{% endif %}
+          </tr>
+          <tr>
+            <td>Max drawdown</td>
+            <td class="num">{% if comparison.portfolio_max_drawdown is not none %}{{ "%.2f"|format(comparison.portfolio_max_drawdown * 100.0) }}%{% else %}—{% endif %}</td>
+            {% if compare_prior %}<td class="num">{% if prior and prior.comparison and prior.comparison.portfolio_max_drawdown is not none %}{{ "%.2f"|format(prior.comparison.portfolio_max_drawdown * 100.0) }}%{% else %}—{% endif %}</td>{% endif %}
+            <td class="num">{% if comparison.benchmark_max_drawdown is not none %}{{ "%.2f"|format(comparison.benchmark_max_drawdown * 100.0) }}%{% else %}—{% endif %}</td>
+            {% if compare_prior %}<td class="num">{% if prior and prior.comparison and prior.comparison.benchmark_max_drawdown is not none %}{{ "%.2f"|format(prior.comparison.benchmark_max_drawdown * 100.0) }}%{% else %}—{% endif %}</td>{% endif %}
+          </tr>
+          <tr>
+            <td>Correlation</td>
+            <td class="num" colspan="{% if compare_prior %}4{% else %}2{% endif %}">{% if comparison.correlation is not none %}{{ "%.2f"|format(comparison.correlation) }}{% else %}—{% endif %}</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <details class="ui-disclosure" style="margin-top:12px">
+      <summary>Notes</summary>
+      <div class="ui-muted" style="margin-top:8px">
+        <div><b>IRR</b> is cashflow-weighted (XIRR). <b>TWR</b> is time-weighted return from holdings snapshots, adjusted for cashflows. <b>Sharpe</b> uses the return series (monthly or daily) with <code>RISK_FREE_RATE_ANNUAL</code> (default 0).</div>
+        <div style="margin-top:8px">
+          Benchmark candles are cache-first (SQLite under <code>data/benchmarks/</code>). Missing ranges are fetched from Stooq (preferred) and fall back to Yahoo Finance only when needed.
+        </div>
+      </div>
+    </details>
   </div>
 
   {% if report.warnings %}
-    <div class="box">
-      <b>Warnings</b>
-      <ul>
+    <details class="alert alert--warn" style="margin-top:12px">
+      <summary>Warnings ({{ report.warnings|length }})</summary>
+      <ul class="ui-muted" style="margin:8px 0 0 18px">
         {% for w in report.warnings %}<li>{{ w }}</li>{% endfor %}
       </ul>
-    </div>
+    </details>
   {% endif %}
 
-  <h3>Results</h3>
-  {% if report.baseline_grace_days is not none and report.requested_start %}
-  <div class="muted" style="margin-bottom:10px">
-    Baseline requirement: need a holdings snapshot near period start (<code>{{ report.requested_start }}</code>, within ~{{ report.baseline_grace_days }} days).
-    Returns are computed from holdings snapshot valuations; transactions alone are not enough.
-  </div>
-  {% endif %}
-  <div class="box">
-    <b>Data Availability</b>
-    <div class="muted" style="margin-top:6px">Period: {{ start_date }} → {{ end_date }}</div>
-    <table style="margin-top:8px">
-      <tr><th>Account</th><th>Transactions</th><th>Valuation points</th></tr>
-      {% for r in report.rows %}
-        <tr>
-          <td>{{ r.portfolio_name }}</td>
-          <td class="muted">
-            {% if r.txn_count and r.txn_count > 0 %}
-              {{ r.txn_count }} txn(s) ({{ r.txn_start or "—" }} → {{ r.txn_end or "—" }})
-            {% else %}
-              0 txn(s)
-            {% endif %}
-          </td>
-          <td class="muted">
-            {{ r.valuation_points }} point(s) ({{ r.coverage_start or "—" }} → {{ r.coverage_end or "—" }})
-          </td>
-        </tr>
-      {% endfor %}
-    </table>
-  </div>
-  <table>
-    <tr>
-      <th>Account</th>
-      <th>Taxpayer</th>
-      <th>Valuation coverage</th>
-      <th>Begin value</th>
-      <th>End value</th>
-      <th>Deposits</th>
-      <th>Withdrawals</th>
-      <th>Fees</th>
-      <th>Withholding</th>
-      <th>Other cash out</th>
-      <th>Total cash out</th>
-      <th>Gain value</th>
-      <th>IRR</th>
-      <th>XIRR</th>
-      <th>TWR</th>
-      <th>Sharpe</th>
-      <th>{{ benchmark_info.label }} TWR</th>
-      <th>{{ benchmark_info.label }} Sharpe</th>
-      <th>Excess TWR</th>
-    </tr>
-    {% if report.combined %}
-      {% set r = report.combined %}
-      <tr>
-        <td><b>{{ r.portfolio_name }}</b></td>
-        <td class="muted">{{ r.taxpayer_name }}</td>
-        <td class="muted">{{ r.coverage_start or "—" }} → {{ r.coverage_end or "—" }}</td>
-        <td>{{ r.begin_value|usd(0) }}</td>
-        <td>{{ r.end_value|usd(0) }}</td>
-        <td>{{ r.contributions|usd(0) }}</td>
-        <td>{{ r.withdrawals|usd(0) }}</td>
-        <td>{{ r.fees|usd(0) }}</td>
-        <td>{{ r.withholding|usd(0) }}</td>
-        <td>{{ r.other_cash_out|usd(0) }}</td>
-        <td>{{ r.total_cash_out|usd(0) }}</td>
-        <td>{{ r.gain_value|usd(0) }}</td>
-        <td>{% if r.irr is none %}—{% else %}{{ "%.2f"|format(r.irr * 100.0) }}%{% endif %}</td>
-        <td>{% if r.xirr is none %}—{% else %}{{ "%.2f"|format(r.xirr * 100.0) }}%{% endif %}</td>
-        <td>{% if r.twr is none %}—{% else %}{{ "%.2f"|format(r.twr * 100.0) }}%{% endif %}</td>
-        <td>{% if r.sharpe is none %}—{% else %}{{ "%.2f"|format(r.sharpe) }}{% endif %}</td>
-        <td>{% if r.benchmark_twr is none %}—{% else %}{{ "%.2f"|format(r.benchmark_twr * 100.0) }}%{% endif %}</td>
-        <td>{% if r.benchmark_sharpe is none %}—{% else %}{{ "%.2f"|format(r.benchmark_sharpe) }}{% endif %}</td>
-        <td>{% if r.excess_twr is none %}—{% else %}{{ "%.2f"|format(r.excess_twr * 100.0) }}%{% endif %}</td>
-      </tr>
+  <details class="ui-disclosure" style="margin-top:12px">
+    <summary>Details tables</summary>
+    {% if report.baseline_grace_days is not none and report.requested_start %}
+      <div class="ui-muted" style="margin-top:8px">
+        Baseline requirement: need a holdings snapshot near period start (<code>{{ report.requested_start }}</code>, within ~{{ report.baseline_grace_days }} days).
+      </div>
     {% endif %}
-    {% for r in report.rows %}
-      <tr>
-        <td>{{ r.portfolio_name }}</td>
-        <td class="muted">{{ r.taxpayer_name }} ({{ r.taxpayer_type }})</td>
-        <td class="muted">{{ r.coverage_start or "—" }} → {{ r.coverage_end or "—" }} <span class="muted">({{ r.valuation_points }} pts)</span></td>
-        <td>{{ r.begin_value|usd(0) }}</td>
-        <td>{{ r.end_value|usd(0) }}</td>
-        <td>{{ r.contributions|usd(0) }}</td>
-        <td>{{ r.withdrawals|usd(0) }}</td>
-        <td>{{ r.fees|usd(0) }}</td>
-        <td>{{ r.withholding|usd(0) }}</td>
-        <td>{{ r.other_cash_out|usd(0) }}</td>
-        <td>{{ r.total_cash_out|usd(0) }}</td>
-        <td>{{ r.gain_value|usd(0) }}</td>
-        <td>{% if r.irr is none %}—{% else %}{{ "%.2f"|format(r.irr * 100.0) }}%{% endif %}</td>
-        <td>{% if r.xirr is none %}—{% else %}{{ "%.2f"|format(r.xirr * 100.0) }}%{% endif %}</td>
-        <td>{% if r.twr is none %}—{% else %}{{ "%.2f"|format(r.twr * 100.0) }}%{% endif %}</td>
-        <td>{% if r.sharpe is none %}—{% else %}{{ "%.2f"|format(r.sharpe) }}{% endif %}</td>
-        <td>{% if r.benchmark_twr is none %}—{% else %}{{ "%.2f"|format(r.benchmark_twr * 100.0) }}%{% endif %}</td>
-        <td>{% if r.benchmark_sharpe is none %}—{% else %}{{ "%.2f"|format(r.benchmark_sharpe) }}{% endif %}</td>
-        <td>{% if r.excess_twr is none %}—{% else %}{{ "%.2f"|format(r.excess_twr * 100.0) }}%{% endif %}</td>
-      </tr>
-      {% if r.warnings and r.warnings|length > 0 %}
-        <tr>
-          <td colspan="19" class="muted">
-            {% for w in r.warnings %}• {{ w }} {% endfor %}
-          </td>
-        </tr>
-      {% endif %}
-    {% endfor %}
-  </table>
 
-  <div class="muted" style="margin-top:10px">
-    Notes: Deposits/Withdrawals are inferred from cash TRANSFER rows (with internal FX/multi-currency sweeps filtered out when they net to 0). Total cash out = Withdrawals + Fees + Withholding + Other cash out. Gain value = End − Begin − Net investor flow (adds back withdrawals, subtracts contributions). Benchmark uses local CSV prices for {{ benchmark_info.label }}.
-  </div>
+    <div class="ui-card" style="margin-top:10px">
+      <div class="ui-section-title">Data availability</div>
+      <div class="ui-muted" style="margin-top:6px">Period: {{ start_date }} → {{ end_date }}</div>
+      <div class="table-wrap" style="margin-top:10px">
+        <table>
+          <thead>
+            <tr>
+              <th scope="col">Account</th>
+              <th scope="col">Transactions</th>
+              <th scope="col">Valuation points</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for r in report.rows %}
+              <tr>
+                <td>{{ r.portfolio_name }}</td>
+                <td class="ui-muted">
+                  {% if r.txn_count and r.txn_count > 0 %}
+                    {{ r.txn_count }} txn(s) ({{ r.txn_start or "—" }} → {{ r.txn_end or "—" }})
+                  {% else %}
+                    0 txn(s)
+                  {% endif %}
+                </td>
+                <td class="ui-muted">
+                  {{ r.valuation_points }} point(s) ({{ r.coverage_start or "—" }} → {{ r.coverage_end or "—" }})
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
 
-  <script>
-    function toggleYear() {
-      const sel = document.getElementById("period_sel");
-      const wrap = document.getElementById("year_wrap");
-      if (!sel || !wrap) return;
-      wrap.style.display = (sel.value === "year") ? "block" : "none";
-    }
-    toggleYear();
-  </script>
+    <div class="ui-card" style="margin-top:12px">
+      <div class="ui-section-title">Results</div>
+      <div class="table-wrap" style="margin-top:10px">
+        <table>
+          <thead>
+            <tr>
+              <th scope="col">Account</th>
+              <th scope="col">Taxpayer</th>
+              <th scope="col">Valuation coverage</th>
+              <th scope="col" class="num">Begin value</th>
+              <th scope="col" class="num">End value</th>
+              <th scope="col" class="num">Deposits</th>
+              <th scope="col" class="num">Withdrawals</th>
+              <th scope="col" class="num">Fees</th>
+              <th scope="col" class="num">Withholding</th>
+              <th scope="col" class="num">Other cash out</th>
+              <th scope="col" class="num">Total cash out</th>
+              <th scope="col" class="num">Gain value</th>
+              <th scope="col" class="num">IRR</th>
+              <th scope="col" class="num">TWR</th>
+              <th scope="col" class="num">Sharpe</th>
+              <th scope="col" class="num">{{ report.benchmark_label }} TWR</th>
+              <th scope="col" class="num">{{ report.benchmark_label }} Sharpe</th>
+              <th scope="col" class="num">Excess TWR</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% if report.combined %}
+              {% set r = report.combined %}
+              <tr class="is-total-row">
+                <td><b>{{ r.portfolio_name }}</b></td>
+                <td class="ui-muted">{{ r.taxpayer_name }}</td>
+                <td class="ui-muted">{{ r.coverage_start or "—" }} → {{ r.coverage_end or "—" }}</td>
+                <td class="num">{{ r.begin_value|usd(0) }}</td>
+                <td class="num">{{ r.end_value|usd(0) }}</td>
+                <td class="num">{{ r.contributions|usd(0) }}</td>
+                <td class="num">{{ r.withdrawals|usd(0) }}</td>
+                <td class="num">{{ r.fees|usd(0) }}</td>
+                <td class="num">{{ r.withholding|usd(0) }}</td>
+                <td class="num">{{ r.other_cash_out|usd(0) }}</td>
+                <td class="num">{{ r.total_cash_out|usd(0) }}</td>
+                <td class="num">{{ r.gain_value|usd(0) }}</td>
+                <td class="num">{% if r.irr is none %}—{% else %}{{ "%.2f"|format(r.irr * 100.0) }}%{% endif %}</td>
+                <td class="num">{% if r.twr is none %}—{% else %}{{ "%.2f"|format(r.twr * 100.0) }}%{% endif %}</td>
+                <td class="num">{% if r.sharpe is none %}—{% else %}{{ "%.2f"|format(r.sharpe) }}{% endif %}</td>
+                <td class="num">{% if r.benchmark_twr is none %}—{% else %}{{ "%.2f"|format(r.benchmark_twr * 100.0) }}%{% endif %}</td>
+                <td class="num">{% if r.benchmark_sharpe is none %}—{% else %}{{ "%.2f"|format(r.benchmark_sharpe) }}{% endif %}</td>
+                <td class="num">{% if r.excess_twr is none %}—{% else %}{{ "%.2f"|format(r.excess_twr * 100.0) }}%{% endif %}</td>
+              </tr>
+            {% endif %}
+            {% for r in report.rows %}
+              <tr>
+                <td>{{ r.portfolio_name }}</td>
+                <td class="ui-muted">{{ r.taxpayer_name }} ({{ r.taxpayer_type }})</td>
+                <td class="ui-muted">{{ r.coverage_start or "—" }} → {{ r.coverage_end or "—" }} <span class="ui-muted">({{ r.valuation_points }} pts)</span></td>
+                <td class="num">{{ r.begin_value|usd(0) }}</td>
+                <td class="num">{{ r.end_value|usd(0) }}</td>
+                <td class="num">{{ r.contributions|usd(0) }}</td>
+                <td class="num">{{ r.withdrawals|usd(0) }}</td>
+                <td class="num">{{ r.fees|usd(0) }}</td>
+                <td class="num">{{ r.withholding|usd(0) }}</td>
+                <td class="num">{{ r.other_cash_out|usd(0) }}</td>
+                <td class="num">{{ r.total_cash_out|usd(0) }}</td>
+                <td class="num">{{ r.gain_value|usd(0) }}</td>
+                <td class="num">{% if r.irr is none %}—{% else %}{{ "%.2f"|format(r.irr * 100.0) }}%{% endif %}</td>
+                <td class="num">{% if r.twr is none %}—{% else %}{{ "%.2f"|format(r.twr * 100.0) }}%{% endif %}</td>
+                <td class="num">{% if r.sharpe is none %}—{% else %}{{ "%.2f"|format(r.sharpe) }}{% endif %}</td>
+                <td class="num">{% if r.benchmark_twr is none %}—{% else %}{{ "%.2f"|format(r.benchmark_twr * 100.0) }}%{% endif %}</td>
+                <td class="num">{% if r.benchmark_sharpe is none %}—{% else %}{{ "%.2f"|format(r.benchmark_sharpe) }}{% endif %}</td>
+                <td class="num">{% if r.excess_twr is none %}—{% else %}{{ "%.2f"|format(r.excess_twr * 100.0) }}%{% endif %}</td>
+              </tr>
+              {% if r.warnings and r.warnings|length > 0 %}
+                <tr>
+                  <td colspan="18" class="ui-muted">
+                    {% for w in r.warnings %}• {{ w }} {% endfor %}
+                  </td>
+                </tr>
+              {% endif %}
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </details>
+
+  <script src="/static/reports_performance.js?v={{ perf_js_version or static_version or '0' }}"></script>
 {% endblock %}

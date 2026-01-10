@@ -1,0 +1,106 @@
+OFXHEADER:100
+DATA:OFXSGML
+VERSION:102
+SECURITY:NONE
+ENCODING:USASCII
+CHARSET:1252
+COMPRESSION:NONE
+OLDFILEUID:NONE
+NEWFILEUID:NONE
+
+<OFX>
+  <SIGNONMSGSRSV1>
+    <SONRS>
+      <FI>
+        <ORG>RAYMONDJAMES
+        <FID>1234
+      </FI>
+    </SONRS>
+  </SIGNONMSGSRSV1>
+
+  <SECLISTMSGSRSV1>
+    <SECLIST>
+      <STOCKINFO>
+        <SECINFO>
+          <SECID>
+            <UNIQUEID>037833100
+            <UNIQUEIDTYPE>CUSIP
+          </SECID>
+          <TICKER>AAPL
+          <SECNAME>Apple Inc
+        </SECINFO>
+      </STOCKINFO>
+    </SECLIST>
+  </SECLISTMSGSRSV1>
+
+  <INVSTMTMSGSRSV1>
+    <INVSTMTTRNRS>
+      <TRNUID>1
+      <STATUS>
+        <CODE>0
+        <SEVERITY>INFO
+      </STATUS>
+      <INVSTMTRS>
+        <INVACCTFROM>
+          <BROKERID>RJ
+          <ACCTID>xxxxW554
+        </INVACCTFROM>
+        <DTASOF>20260107
+
+        <INVPOSLIST>
+          <POSSTOCK>
+            <INVPOS>
+              <SECID>
+                <UNIQUEID>037833100
+                <UNIQUEIDTYPE>CUSIP
+              </SECID>
+              <UNITS>10
+              <UNITPRICE>200
+              <MKTVAL>2000
+              <COSTBASIS>1500
+            </INVPOS>
+          </POSSTOCK>
+        </INVPOSLIST>
+
+        <INVBAL>
+          <AVAILCASH>100
+        </INVBAL>
+
+        <INVTRANLIST>
+          <DTSTART>20250101
+          <DTEND>20250131
+
+          <BUYOTHER>
+            <INVTRAN>
+              <FITID>F1
+              <DTTRADE>20250102
+              <MEMO>Buy AAPL
+            </INVTRAN>
+            <SECID>
+              <UNIQUEID>037833100
+              <UNIQUEIDTYPE>CUSIP
+            </SECID>
+            <TOTAL>-2000
+            <UNITS>10
+            <UNITPRICE>200
+          </BUYOTHER>
+
+          <INCOME>
+            <INVTRAN>
+              <FITID>F2
+              <DTTRADE>20250115
+              <MEMO>Dividend
+            </INVTRAN>
+            <SECID>
+              <UNIQUEID>037833100
+              <UNIQUEIDTYPE>CUSIP
+            </SECID>
+            <TOTAL>5.00
+            <INCOMETYPE>DIV
+          </INCOME>
+        </INVTRANLIST>
+      </INVSTMTRS>
+    </INVSTMTTRNRS>
+  </INVSTMTMSGSRSV1>
+</OFX>
+

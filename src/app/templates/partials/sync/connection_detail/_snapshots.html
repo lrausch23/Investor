@@ -1,0 +1,87 @@
+<section class="ui-card" aria-label="Snapshots">
+  <div class="ui-section-title">Snapshots</div>
+
+  <div class="ui-muted">
+    Snapshots are stored for audit/verification. Portfolio analytics still use lots + prices unless you import lots for all positions.
+  </div>
+
+  <div class="sync-snapshots-grid">
+    <div>
+      <div class="ui-section-title" style="margin-top:10px; margin-bottom:6px">Latest holdings snapshot</div>
+      {% if latest_holdings %}
+        <table class="kv">
+          <tr><td>As-of</td><td>{{ latest_holdings.as_of|local_dt }}</td></tr>
+          <tr><td>Items</td><td>{{ holdings_items|length }}</td></tr>
+          {% if latest_holdings.payload_json and (latest_holdings.payload_json.get("statement_period_start") or latest_holdings.payload_json.get("statement_period_end")) %}
+            <tr><td>Statement period</td><td>{{ latest_holdings.payload_json.get("statement_period_start") or "—" }} → {{ latest_holdings.payload_json.get("statement_period_end") or "—" }}</td></tr>
+          {% endif %}
+          {% if latest_holdings.payload_json and latest_holdings.payload_json.get("statement_total_value") is not none %}
+            <tr><td>Total value</td><td>{{ latest_holdings.payload_json.get("statement_total_value")|usd }}</td></tr>
+          {% endif %}
+        </table>
+
+        {% if holdings_items and holdings_items|length > 0 %}
+          <details class="ui-disclosure" style="margin-top:10px">
+            <summary>View items</summary>
+            <div class="table-wrap" style="margin-top:10px">
+              <table>
+                <thead>
+                  <tr><th>Provider account</th><th>Symbol</th><th class="num">Qty</th><th class="num">Market value</th></tr>
+                </thead>
+                <tbody>
+                  {% for h in holdings_items %}
+                    <tr>
+                      <td class="ui-muted">{{ h.get("provider_account_id") or "—" }}</td>
+                      <td>{{ h.get("symbol") or h.get("ticker") or "—" }}</td>
+                      <td class="num">{{ h.get("qty") or "—" }}</td>
+                      <td class="num">{{ h.get("market_value")|usd }}</td>
+                    </tr>
+                  {% endfor %}
+                </tbody>
+              </table>
+            </div>
+          </details>
+        {% endif %}
+      {% else %}
+        <div class="ui-muted">No holdings snapshot yet. Run sync to capture one.</div>
+      {% endif %}
+    </div>
+
+    <div>
+      <div class="ui-section-title" style="margin-top:10px; margin-bottom:6px">Recent synced transactions</div>
+      {% if recent_txns and recent_txns|length > 0 %}
+        <div class="ui-muted">Latest {{ recent_txns|length }} transactions imported by this connection.</div>
+        <details class="ui-disclosure" style="margin-top:10px">
+          <summary>View transactions</summary>
+          <div class="table-wrap" style="margin-top:10px">
+            <table>
+              <thead>
+                <tr><th>Date</th><th>Account</th><th>Type</th><th>Ticker</th><th class="num">Qty</th><th class="num">Amount</th><th>Provider txn id</th></tr>
+              </thead>
+              <tbody>
+                {% for t, a, m in recent_txns %}
+                  <tr>
+                    <td>{{ t.date }}</td>
+                    <td>{{ a.name }}</td>
+                    <td>{{ t.type }}</td>
+                    <td>{{ t.ticker or "" }}</td>
+                    <td class="num">{{ t.qty or "" }}</td>
+                    <td class="num">{{ t.amount|usd }}</td>
+                    <td class="ui-muted">{{ m.provider_txn_id }}</td>
+                  </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+          <div class="ui-muted" style="margin-top:8px">
+            These are imported into the main <code>Transaction</code> table.
+            See <a href="/holdings/transactions?connection_id={{ conn.id }}">Holdings → Transactions (filtered)</a>.
+          </div>
+        </details>
+      {% else %}
+        <div class="ui-muted">No imported transactions found for this connection yet.</div>
+      {% endif %}
+    </div>
+  </div>
+</section>
+

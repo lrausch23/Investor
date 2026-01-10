@@ -1,0 +1,53 @@
+<div class="holdings-header">
+  <div class="ui-muted breadcrumb">
+    <a class="ui-muted" href="/sync/connections">Sync</a>
+    <span class="ui-muted">·</span>
+    <a class="ui-muted" href="/sync/connections">Connections</a>
+    <span class="ui-muted">·</span>
+    <span>{{ conn.name }}</span>
+  </div>
+
+  <div class="page-title">
+    <div class="page-title__left">
+      <h1>Connection: {{ conn.name }}</h1>
+      <span class="ui-badge ui-badge--outline">{{ (conn.provider or conn.broker or "—")|upper }}</span>
+      <span class="ui-badge {% if status_u == 'ACTIVE' %}ui-badge--safe{% else %}ui-badge--neutral{% endif %}">{{ status_u or "—" }}</span>
+      <span class="ui-badge {{ health_badge }}" title="{{ health.reason }}">{{ health.icon }} {{ health.label }}</span>
+    </div>
+    <div class="page-title__right">
+      <a class="btn btn--secondary" href="/sync/connections">Back to connections</a>
+    </div>
+  </div>
+
+  {% if auth_banner_detail %}
+    <details class="inline-alert" role="note">
+      <summary>
+        <span class="inline-alert__icon" aria-hidden="true">&#9888;</span>
+        <span>Running locally. Authentication disabled.</span>
+        <span class="inline-alert__link">Learn more</span>
+      </summary>
+      <div class="muted" style="margin-top:6px">{{ auth_banner_detail }}</div>
+    </details>
+  {% endif %}
+
+  {% if not secret_key_ok %}
+    <details class="alert alert--warn" role="note" style="margin-top:10px">
+      <summary>APP_SECRET_KEY is not set (credential storage disabled)</summary>
+      <div class="muted" style="margin-top:6px">
+        This affects connectors that store credentials (e.g., IB Flex Web / Chase Yodlee). Set <code>APP_SECRET_KEY</code> and restart.
+      </div>
+    </details>
+  {% endif %}
+
+  {% if error_msg %}
+    <div class="alert alert--warn" role="alert">{{ error_msg }}</div>
+  {% endif %}
+  {% if test_ok is not none and test_msg %}
+    {% if test_ok == "1" %}
+      <div class="alert alert--ok" role="status">Test connection: OK — {{ test_msg }}</div>
+    {% else %}
+      <div class="alert alert--warn" role="alert">Test connection: FAIL — {{ test_msg }}</div>
+    {% endif %}
+  {% endif %}
+</div>
+

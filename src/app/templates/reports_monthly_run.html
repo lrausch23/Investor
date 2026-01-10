@@ -1,53 +1,52 @@
 {% extends "layout.html" %}
 {% block content %}
-  <h1>Monthly Report Run</h1>
-  <p>
-    <a class="muted" href="/reports/monthly">← Monthly Report</a>
-    <span class="muted">•</span>
-    <a class="muted" href="/reports">Reports</a>
-  </p>
+  {% set report_breadcrumbs = [{"label": "Reports", "href": "/reports"}, {"label": "Monthly report", "href": "/reports/monthly"}, {"label": "Run " ~ run_id, "href": None}] %}
+  {% set report_title = "Monthly report run" %}
+  {% set report_badge = "Report" %}
+  {% set report_context = "<b>Run id:</b> <code>" ~ run_id ~ "</code> <span class='ui-muted'>·</span> <b>Period:</b> " ~ meta.start_date ~ " → " ~ meta.end_date ~ " (as-of " ~ meta.asof ~ ") <span class='ui-muted'>·</span> <b>Benchmark:</b> " ~ meta.benchmark %}
+  {% include "partials/reports/_header.html" %}
 
   {% if ok_msg %}
-    <div class="banner banner--ok">Run complete.</div>
+    <div class="alert alert--ok" role="status">Run complete.</div>
   {% endif %}
 
-  <div class="box">
-    <div><b>Run id:</b> <code>{{ run_id }}</code></div>
-    <div class="muted" style="margin-top:6px">
-      Period: {{ meta.start_date }} → {{ meta.end_date }} (as-of {{ meta.asof }}) • Benchmark: {{ meta.benchmark }}
-    </div>
+  <div class="ui-card" style="margin-top:10px">
+    <div class="ui-section-title">Summary</div>
     {% if meta.summary %}
-      <div class="muted" style="margin-top:6px">
+      <div class="ui-muted" style="margin-top:6px">
         TWR: {% if meta.summary.twr_ytd is none %}—{% else %}{{ "%.2f"|format(meta.summary.twr_ytd * 100.0) }}%{% endif %},
         XIRR: {% if meta.summary.xirr is none %}—{% else %}{{ "%.2f"|format(meta.summary.xirr * 100.0) }}%{% endif %},
         warnings: {{ meta.summary.warnings_count }}
       </div>
+    {% else %}
+      <div class="ui-muted">No summary available.</div>
+    {% endif %}
+    {% if report_name %}
+      <div style="margin-top:10px">
+        <a class="btn btn--primary btn--sm" href="/reports/monthly/files/{{ run_id }}/{{ report_name }}">Open report</a>
+      </div>
     {% endif %}
   </div>
 
-  {% if report_name %}
-    <div class="box">
-      <a href="/reports/monthly/files/{{ run_id }}/{{ report_name }}">Open report</a>
+  <div class="ui-card" style="margin-top:12px">
+    <div class="ui-section-title">Artifacts</div>
+    <div class="table-wrap" style="margin-top:10px">
+      <table>
+        <thead>
+          <tr><th scope="col">File</th><th scope="col" class="num">Size</th></tr>
+        </thead>
+        <tbody>
+          {% for f in files %}
+            <tr>
+              <td><a class="ui-muted" href="/reports/monthly/files/{{ run_id }}/{{ f.name }}">{{ f.name }}</a></td>
+              <td class="num ui-muted">{{ f.bytes }} bytes</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
     </div>
-  {% endif %}
-
-  <h2>Artifacts</h2>
-  <div class="box">
-    <table>
-      <tr><th>File</th><th class="muted">Size</th></tr>
-      {% for f in files %}
-        <tr>
-          <td><a class="muted" href="/reports/monthly/files/{{ run_id }}/{{ f.name }}">{{ f.name }}</a></td>
-          <td class="muted">{{ f.bytes }} bytes</td>
-        </tr>
-      {% endfor %}
-    </table>
+    {% if meta.summary and meta.summary.warnings_count and meta.summary.warnings_count > 0 %}
+      <div class="ui-muted" style="margin-top:10px">Open <code>run_metadata.json</code> for the full warnings list.</div>
+    {% endif %}
   </div>
-
-  {% if meta.summary and meta.summary.warnings_count and meta.summary.warnings_count > 0 %}
-    <div class="box">
-      <div class="muted">Open <code>run_metadata.json</code> for the full warnings list.</div>
-    </div>
-  {% endif %}
 {% endblock %}
-

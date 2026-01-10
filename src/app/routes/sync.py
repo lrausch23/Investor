@@ -122,6 +122,201 @@ def connections_list(
         or 0
     )
 
+    # Avoid global banner on this page; show inline (Holdings-style) instead.
+    auth_banner_detail = auth_banner_message()
+
+    # Bust CSS/JS cache for this page during development (same rationale as Holdings).
+    static_version: str = "0"
+    try:
+        css_path = Path(__file__).resolve().parents[1] / "static" / "app.css"
+        static_version = str(int(css_path.stat().st_mtime))
+    except Exception:
+        static_version = "0"
+
+    # Derived UI helpers (presentation only).
+    now_utc = dt.datetime.now(dt.timezone.utc)
+    data_dir_by_conn: dict[int, str] = {}
+    extra_queries_str_by_conn: dict[int, str] = {}
+    conn_warnings_by_id: dict[int, list[str]] = {}
+    health_by_conn: dict[int, dict[str, str]] = {}
+    time_display_by_conn: dict[int, dict[str, str]] = {}
+    creds_status_by_conn: dict[int, str] = {}
+    active_count = 0
+    complete_count = 0
+    partial_count = 0
+    unknown_count = 0
+    unhealthy_count = 0
+    attention_count = 0
+    last_success_at: dt.datetime | None = None
+
+    def _cred_keys(connector_u: str) -> tuple[str, str]:
+        if connector_u == "IB_FLEX_WEB":
+            return ("IB_FLEX_TOKEN", "IB_FLEX_QUERY_ID")
+        if connector_u == "CHASE_YODLEE":
+            return ("YODLEE_ACCESS_TOKEN", "YODLEE_REFRESH_TOKEN")
+        return ("IB_YODLEE_TOKEN", "IB_YODLEE_QUERY_ID")
+
+    def _relative_time(ts: dt.datetime | None) -> str:
+        if ts is None:
+            return "—"
+        try:
+            delta = now_utc - ts
+        except Exception:
+            return "—"
+        seconds = max(0, int(delta.total_seconds()))
+        if seconds < 60:
+            return "just now"
+        if seconds < 3600:
+            return f"{seconds // 60}m ago"
+        if seconds < 86400:
+            return f"{seconds // 3600}h ago"
+        days = seconds // 86400
+        if days < 7:
+            return f"{days}d ago"
+        # Fall back to a compact date label (month + day).
+        try:
+            m = ts.strftime("%b")
+            return f"{m} {int(ts.day)}"
+        except Exception:
+            return ts.date().isoformat()
+
+    def _compute_health(*, connector_u: str, status_u: str, coverage_u: str, missing_creds: bool, last_success: dt.datetime | None) -> dict[str, str]:
+        if status_u == "DISABLED":
+            return {"level": "disabled", "label": "Disabled", "icon": "⏸", "reason": "Connection is disabled", "threshold": "—"}
+
+        if missing_creds:
+            return {"level": "unhealthy", "label": "Unhealthy", "icon": "⛔", "reason": "Missing credentials", "threshold": "Credentials required"}
+
+        if last_success is None:
+            return {"level": "unhealthy", "label": "Unhealthy", "icon": "⛔", "reason": "Never synced successfully", "threshold": "—"}
+
+        is_web = connector_u in {"IB_FLEX_WEB", "CHASE_YODLEE"}
+        if is_web:
+            attention_hours = 18
+            stale_hours = 36
+            threshold = f"Web: attention >{attention_hours}h · unhealthy >{stale_hours}h"
+            age_h = (now_utc - last_success).total_seconds() / 3600.0
+            if age_h > stale_hours:
+                return {"level": "unhealthy", "label": "Unhealthy", "icon": "⛔", "reason": f"Stale (last success {_relative_time(last_success)})", "threshold": threshold}
+            if age_h > attention_hours:
+                return {"level": "attention", "label": "Attention", "icon": "⚠️", "reason": f"Aging (last success {_relative_time(last_success)})", "threshold": threshold}
+        else:
+            attention_days = 7
+            stale_days = 14
+            threshold = f"Offline: attention >{attention_days}d · unhealthy >{stale_days}d"
+            age_d = (now_utc - last_success).total_seconds() / 86400.0
+            if age_d > stale_days:
+                return {"level": "unhealthy", "label": "Unhealthy", "icon": "⛔", "reason": f"Stale (last success {_relative_time(last_success)})", "threshold": threshold}
+            if age_d > attention_days:
+                return {"level": "attention", "label": "Attention", "icon": "⚠️", "reason": f"Aging (last success {_relative_time(last_success)})", "threshold": threshold}
+
+        if coverage_u in {"PARTIAL", "UNKNOWN"}:
+            return {"level": "attention", "label": "Attention", "icon": "⚠️", "reason": f"Coverage {coverage_u.lower()}", "threshold": "Coverage should be COMPLETE"}
+
+        return {"level": "healthy", "label": "Healthy", "icon": "✅", "reason": "Up to date", "threshold": "—"}
+
+    for c in conns:
+        cid = int(c.id)
+        connector_u = (c.connector or "").upper()
+        status_u = (c.status or "").upper()
+        coverage_u = (c.coverage_status or "UNKNOWN").upper()
+        meta = c.metadata_json or {}
+        dd = str(meta.get("data_dir") or "").strip()
+        data_dir_by_conn[cid] = dd or f"data/external/conn_{cid}"
+        extra_str = ""
+        try:
+            extra = meta.get("extra_query_ids") or []
+            if isinstance(extra, list):
+                parts = [str(x).strip() for x in extra if str(x).strip()]
+                extra_str = ", ".join(parts)
+        except Exception:
+            extra_str = ""
+        extra_queries_str_by_conn[cid] = extra_str
+
+        warnings: list[str] = []
+        if status_u == "ACTIVE":
+            active_count += 1
+            if coverage_u == "COMPLETE":
+                complete_count += 1
+            elif coverage_u == "PARTIAL":
+                partial_count += 1
+            else:
+                unknown_count += 1
+
+        if status_u != "ACTIVE":
+            warnings.append("Disabled")
+        if coverage_u != "COMPLETE":
+            warnings.append(f"Coverage: {coverage_u.lower()}")
+        if c.last_error_json:
+            warnings.append("Last error recorded")
+        last_run = latest_by_conn.get(cid)
+        if last_run is not None and getattr(last_run, "status", None) not in {None, "SUCCESS"}:
+            warnings.append(f"Last run: {last_run.status}")
+
+        if c.last_successful_sync_at is not None:
+            if last_success_at is None or c.last_successful_sync_at > last_success_at:
+                last_success_at = c.last_successful_sync_at
+
+        uses_credentials = connector_u not in {"CHASE_OFFLINE", "RJ_OFFLINE", "IB_FLEX_OFFLINE"}
+        missing_creds = False
+        if uses_credentials:
+            token_key, qid_key = _cred_keys(connector_u)
+            try:
+                token_masked = get_credential_masked(session, connection_id=cid, key=token_key)
+                qid_masked = get_credential_masked(session, connection_id=cid, key=qid_key)
+                if connector_u == "IB_FLEX_WEB":
+                    missing_creds = (token_masked == "—") or (qid_masked == "—")
+                elif connector_u == "CHASE_YODLEE":
+                    # Tokens may be set later; treat as missing only if both are absent.
+                    missing_creds = (token_masked == "—") and (qid_masked == "—")
+                else:
+                    missing_creds = (token_masked == "—") or (qid_masked == "—")
+                if missing_creds:
+                    warnings.append("Missing credentials")
+            except Exception:
+                warnings.append("Credentials unreadable (check APP_SECRET_KEY)")
+                missing_creds = True
+            creds_status_by_conn[cid] = "Missing" if missing_creds else "Stored encrypted"
+        else:
+            creds_status_by_conn[cid] = "Not used"
+
+        health = _compute_health(
+            connector_u=connector_u,
+            status_u=status_u,
+            coverage_u=coverage_u,
+            missing_creds=missing_creds,
+            last_success=c.last_successful_sync_at,
+        )
+        health_by_conn[cid] = health
+        if health["level"] == "unhealthy":
+            unhealthy_count += 1
+        elif health["level"] == "attention":
+            attention_count += 1
+
+        time_display_by_conn[cid] = {
+            "last_success_rel": _relative_time(c.last_successful_sync_at),
+            "last_full_rel": _relative_time(c.last_full_sync_at),
+        }
+
+        conn_warnings_by_id[cid] = warnings
+
+    if active_count <= 0:
+        coverage_value = "—"
+        coverage_subtext = "No active connections"
+        coverage_tone = "neutral"
+    elif complete_count == active_count:
+        coverage_value = "Complete"
+        coverage_subtext = f"{complete_count} complete · {partial_count} partial · {unknown_count} unknown"
+        coverage_tone = "positive"
+    else:
+        coverage_value = "Needs attention"
+        coverage_subtext = f"{complete_count} complete · {partial_count} partial · {unknown_count} unknown"
+        coverage_tone = "warning"
+
+    warnings_count = unhealthy_count + attention_count
+    warnings_tone = "warning" if warnings_count > 0 else "neutral"
+    warnings_subtext = f"{unhealthy_count} unhealthy · {attention_count} attention"
+
     from src.app.main import templates
 
     return templates.TemplateResponse(
@@ -129,7 +324,10 @@ def connections_list(
         {
             "request": request,
             "actor": actor,
-            "auth_banner": auth_banner_message(),
+            # Connections page shows auth warning inline (non-intrusive) vs global banner.
+            "auth_banner": None,
+            "auth_banner_detail": auth_banner_detail,
+            "static_version": static_version,
             "secret_key_ok": secret_ok,
             "error": error,
             "ok": ok,
@@ -142,6 +340,23 @@ def connections_list(
             "today": dt.date.today().isoformat(),
             "ten_years_ago": (dt.date.today() - dt.timedelta(days=365 * 10)).isoformat(),
             "legacy_ib_flex_offline_count": legacy_ib_flex_offline_count,
+            # KPI cards
+            "connections_total_count": str(len(conns)),
+            "connections_active_count": str(active_count),
+            "coverage_value": coverage_value,
+            "coverage_subtext": coverage_subtext,
+            "coverage_tone": coverage_tone,
+            "last_success_at": last_success_at,
+            "warnings_count": str(warnings_count),
+            "warnings_tone": warnings_tone,
+            "warnings_subtext": warnings_subtext,
+            # Per-connection UI helpers
+            "data_dir_by_conn": data_dir_by_conn,
+            "extra_queries_str_by_conn": extra_queries_str_by_conn,
+            "conn_warnings_by_id": conn_warnings_by_id,
+            "health_by_conn": health_by_conn,
+            "time_display_by_conn": time_display_by_conn,
+            "creds_status_by_conn": creds_status_by_conn,
         },
     )
 
@@ -321,6 +536,15 @@ def connection_detail(
         if qid_plain:
             query_id_display = qid_plain
     secret_ok = secret_key_available()
+    auth_banner_detail = auth_banner_message()
+
+    # Bust CSS/JS cache for this page during development.
+    static_version: str = "0"
+    try:
+        css_path = Path(__file__).resolve().parents[1] / "static" / "app.css"
+        static_version = str(int(css_path.stat().st_mtime))
+    except Exception:
+        static_version = "0"
 
     holdings_row = (
         session.query(ExternalHoldingSnapshot)
@@ -377,6 +601,8 @@ def connection_detail(
     if is_offline_files or is_ib_flex_web:
         p = Path(data_dir)
         supported_exts = {".csv", ".tsv", ".txt", ".xml"}
+        if is_rj_offline:
+            supported_exts.update({".qfx", ".ofx"})
         if is_rj_offline or is_chase_offline:
             supported_exts.add(".pdf")
         if p.exists() and p.is_dir():
@@ -388,6 +614,8 @@ def connection_detail(
                     supported_label = "Yes" if supported else "No"
                     if (is_rj_offline or is_chase_offline) and ext == ".pdf":
                         supported_label = "Yes (Holdings total from statement PDF)"
+                    if is_rj_offline and ext in {".qfx", ".ofx"}:
+                        supported_label = "Yes (QFX/OFX investment download)"
                     files_on_disk.append(
                         {
                             "name": f.name,
@@ -405,6 +633,157 @@ def connection_detail(
         .limit(50)
         .all()
     )
+
+    # Presentation-only helpers
+    now_utc = dt.datetime.now(dt.timezone.utc)
+    last_success_rel = "—"
+    last_full_rel = "—"
+    try:
+        # Mirror relative time format used on Connections list.
+        def _rel(ts: dt.datetime | None) -> str:
+            if ts is None:
+                return "—"
+            seconds = max(0, int((now_utc - ts).total_seconds()))
+            if seconds < 60:
+                return "just now"
+            if seconds < 3600:
+                return f"{seconds // 60}m ago"
+            if seconds < 86400:
+                return f"{seconds // 3600}h ago"
+            days = seconds // 86400
+            if days < 7:
+                return f"{days}d ago"
+            try:
+                m = ts.strftime("%b")
+                return f"{m} {int(ts.day)}"
+            except Exception:
+                return ts.date().isoformat()
+
+        last_success_rel = _rel(conn.last_successful_sync_at)
+        last_full_rel = _rel(conn.last_full_sync_at)
+    except Exception:
+        last_success_rel = "—"
+        last_full_rel = "—"
+
+    missing_creds = False
+    creds_status = "—"
+    if connector_u in {"CHASE_OFFLINE", "RJ_OFFLINE", "IB_FLEX_OFFLINE"}:
+        creds_status = "Not used"
+    else:
+        try:
+            if connector_u == "CHASE_YODLEE":
+                missing_creds = (token_masked == "—") and (qid_masked == "—")
+            elif connector_u == "IB_FLEX_WEB":
+                missing_creds = (token_masked == "—") or (qid_masked == "—")
+            else:
+                missing_creds = (token_masked == "—") or (qid_masked == "—")
+        except Exception:
+            missing_creds = True
+        creds_status = "Missing" if missing_creds else "Stored encrypted"
+
+    # Health (UI interpretation only; does not affect sync behavior).
+    coverage_u = (conn.coverage_status or "UNKNOWN").upper()
+    status_u = (conn.status or "").upper()
+    is_web = connector_u in {"IB_FLEX_WEB", "CHASE_YODLEE"}
+    health: dict[str, str] = {"level": "attention", "label": "Attention", "icon": "⚠️", "reason": "—", "threshold": "—"}
+    if status_u == "DISABLED":
+        health = {"level": "disabled", "label": "Disabled", "icon": "⏸", "reason": "Connection is disabled", "threshold": "—"}
+    elif missing_creds:
+        health = {"level": "unhealthy", "label": "Unhealthy", "icon": "⛔", "reason": "Missing credentials", "threshold": "Credentials required"}
+    elif conn.last_successful_sync_at is None:
+        health = {"level": "unhealthy", "label": "Unhealthy", "icon": "⛔", "reason": "Never synced successfully", "threshold": "—"}
+    else:
+        aging_or_stale = False
+        if is_web:
+            attention_hours = 18
+            stale_hours = 36
+            threshold = f"Web: attention >{attention_hours}h · unhealthy >{stale_hours}h"
+            age_h = (now_utc - conn.last_successful_sync_at).total_seconds() / 3600.0
+            if age_h > stale_hours:
+                health = {
+                    "level": "unhealthy",
+                    "label": "Unhealthy",
+                    "icon": "⛔",
+                    "reason": f"Stale (last success {last_success_rel})",
+                    "threshold": threshold,
+                }
+                aging_or_stale = True
+            elif age_h > attention_hours:
+                health = {
+                    "level": "attention",
+                    "label": "Attention",
+                    "icon": "⚠️",
+                    "reason": f"Aging (last success {last_success_rel})",
+                    "threshold": threshold,
+                }
+                aging_or_stale = True
+        else:
+            attention_days = 7
+            stale_days = 14
+            threshold = f"Offline: attention >{attention_days}d · unhealthy >{stale_days}d"
+            age_d = (now_utc - conn.last_successful_sync_at).total_seconds() / 86400.0
+            if age_d > stale_days:
+                health = {
+                    "level": "unhealthy",
+                    "label": "Unhealthy",
+                    "icon": "⛔",
+                    "reason": f"Stale (last success {last_success_rel})",
+                    "threshold": threshold,
+                }
+                aging_or_stale = True
+            elif age_d > attention_days:
+                health = {
+                    "level": "attention",
+                    "label": "Attention",
+                    "icon": "⚠️",
+                    "reason": f"Aging (last success {last_success_rel})",
+                    "threshold": threshold,
+                }
+                aging_or_stale = True
+
+        if not aging_or_stale and coverage_u in {"PARTIAL", "UNKNOWN"}:
+            health = {
+                "level": "attention",
+                "label": "Attention",
+                "icon": "⚠️",
+                "reason": f"Coverage {coverage_u.lower()}",
+                "threshold": "Coverage should be COMPLETE",
+            }
+        elif not aging_or_stale:
+            health = {"level": "healthy", "label": "Healthy", "icon": "✅", "reason": "Up to date", "threshold": "—"}
+
+    if health["level"] == "healthy":
+        health_badge = "ui-badge--safe"
+    elif health["level"] == "unhealthy":
+        health_badge = "ui-badge--bad"
+    elif health["level"] == "disabled":
+        health_badge = "ui-badge--neutral"
+    else:
+        health_badge = "ui-badge--risk"
+
+    last_run_status = (getattr(last_run, "status", None) or "—") if last_run else "—"
+    last_run_mode = (getattr(last_run, "mode", None) or "—") if last_run else "—"
+    last_run_duration_s: int | None = None
+    try:
+        if last_run and last_run.started_at and last_run.finished_at:
+            last_run_duration_s = int((last_run.finished_at - last_run.started_at).total_seconds())
+    except Exception:
+        last_run_duration_s = None
+    last_run_tone = "neutral"
+    if last_run_status == "SUCCESS":
+        last_run_tone = "positive"
+    elif last_run_status in {"PARTIAL", "FAIL", "FAILED", "ERROR"}:
+        last_run_tone = "warning"
+
+    # Files summary for collapsed accordions.
+    files_count = int(len(files_on_disk or []))
+    last_upload_at: dt.datetime | None = None
+    try:
+        if ingested_files:
+            last_upload_at = ingested_files[0].imported_at
+    except Exception:
+        last_upload_at = None
+
     from src.app.main import templates
 
     return templates.TemplateResponse(
@@ -412,7 +791,10 @@ def connection_detail(
         {
             "request": request,
             "actor": actor,
-            "auth_banner": auth_banner_message(),
+            # Detail page shows auth warning inline (non-intrusive) vs global banner.
+            "auth_banner": None,
+            "auth_banner_detail": auth_banner_detail,
+            "static_version": static_version,
             "conn": conn,
             "taxpayer": taxpayer,
             "runs": runs,
@@ -448,6 +830,21 @@ def connection_detail(
             "extra_queries_str": extra_queries_str,
             "withdrawals_ytd": withdrawals_ytd,
             "withdrawals_count_ytd": withdrawals_count_ytd,
+            # Presentation helpers
+            "health": health,
+            "health_badge": health_badge,
+            "creds_status": creds_status,
+            "missing_creds": missing_creds,
+            "coverage_u": coverage_u,
+            "status_u": status_u,
+            "last_success_rel": last_success_rel,
+            "last_full_rel": last_full_rel,
+            "last_run_status": last_run_status,
+            "last_run_mode": last_run_mode,
+            "last_run_duration_s": last_run_duration_s,
+            "last_run_tone": last_run_tone,
+            "files_count": files_count,
+            "last_upload_at": last_upload_at,
         },
     )
 
@@ -553,11 +950,15 @@ def connection_upload_file(
     session.commit()
     ext = Path(safe).suffix.lower()
     supported_exts = {".csv", ".tsv", ".txt", ".xml"}
+    if (conn.connector or "").upper() == "RJ_OFFLINE":
+        supported_exts.update({".qfx", ".ofx"})
     if (conn.connector or "").upper() in {"RJ_OFFLINE", "CHASE_OFFLINE"}:
         supported_exts.add(".pdf")
     if ext and ext not in supported_exts:
         hint = ".csv/.tsv/.txt/.xml"
-        if (conn.connector or "").upper() in {"RJ_OFFLINE", "CHASE_OFFLINE"}:
+        if (conn.connector or "").upper() == "RJ_OFFLINE":
+            hint = ".qfx/.ofx (preferred), .csv/.tsv/.txt/.xml (legacy), or .pdf statements (holdings totals only)"
+        elif (conn.connector or "").upper() == "CHASE_OFFLINE":
             hint = ".csv/.tsv/.txt/.xml (or .pdf statements for holdings totals)"
         msg = urllib.parse.quote(
             f"Uploaded '{safe}', but this file type ({ext}) is not parsed. Export as {hint} and re-upload."

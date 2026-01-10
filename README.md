@@ -11,6 +11,12 @@ This is an MVP: manual entry + CSV upload, plus adapter-based ingestion for offl
 - `assumptions.md`: explicit product/data/environment assumptions
 - `Architecture_Guide.md`: architecture guidance (“source of truth”)
 
+## Feature docs
+
+- `docs/benchmarks.md` — Benchmark price cache (cache-first; Stooq default)
+- `docs/expenses.md` — Expense analysis (CSV imports, categorization, recurring reports)
+- `docs/rj_qfx.md` — Raymond James QFX/OFX (“Quicken Downloads”) imports
+
 ## Quickstart
 
 Recommended Python: **3.11 or 3.12** (some dependencies may lag on 3.13).

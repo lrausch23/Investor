@@ -484,6 +484,10 @@ class ExternalFileIngest(Base):
     file_bytes: Mapped[Optional[int]] = mapped_column(Integer)
     file_mtime: Mapped[Optional[dt.datetime]] = mapped_column(UTCDateTime())
     imported_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=utcnow, nullable=False)
+    stored_path: Mapped[Optional[str]] = mapped_column(Text)
+    start_date_hint: Mapped[Optional[dt.date]] = mapped_column(Date)
+    end_date_hint: Mapped[Optional[dt.date]] = mapped_column(Date)
+    metadata_json: Mapped[Optional[dict[str, Any]]] = mapped_column(JSON)
 
 
 class BrokerLotClosure(Base):

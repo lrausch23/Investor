@@ -1,0 +1,47 @@
+<section class="ui-card" aria-label="Sync help">
+  <div class="ui-section-title">Help</div>
+
+  <details class="ui-disclosure">
+    <summary>How sync works</summary>
+    <div class="ui-muted" style="margin-top:8px; display:grid; gap:8px">
+      <div><b>IB Flex (Web)</b>: pulls trades, positions, dividends, and cashflows via IB Flex Web Service.</div>
+      <div><b>Chase / RJ (Offline)</b>: ingests exported CSV/PDF statements placed in a data directory or uploaded per-connection.</div>
+      <div>Coverage is <b>COMPLETE</b> when the latest run is successful and parsing had no failures; otherwise <b>PARTIAL</b>.</div>
+    </div>
+  </details>
+
+  <details class="ui-disclosure" style="margin-top:10px">
+    <summary>Legacy connectors</summary>
+    <div class="ui-muted" style="margin-top:8px; display:grid; gap:8px">
+      <div>Legacy/experimental connectors are hidden by default to avoid duplicate imports.</div>
+      <div>
+        {% if not show_legacy %}
+          <a class="btn btn--secondary" href="/sync/connections?show_legacy=1">Show legacy connectors</a>
+        {% else %}
+          <a class="btn btn--secondary" href="/sync/connections">Hide legacy connectors</a>
+        {% endif %}
+      </div>
+
+      {% if show_legacy and legacy_ib_flex_offline_count and legacy_ib_flex_offline_count > 0 %}
+        <details class="alert alert--warn">
+          <summary>Legacy IB Flex (Offline) detected ({{ legacy_ib_flex_offline_count }})</summary>
+          <div class="ui-muted" style="margin-top:6px">
+            This deprecated connector can cause duplicates. Purge removes imported artifacts and disables the connector.
+          </div>
+          <form method="post" action="/sync/connections/purge-ib-flex-offline" class="form-compact" style="margin-top:10px">
+            <label>
+              <span>Type <code>PURGE</code> to confirm</span>
+              <input name="confirm" size="12" placeholder="PURGE" autocomplete="off"/>
+            </label>
+            <label>
+              <span>Audit note (optional)</span>
+              <input name="note" placeholder="Why this was purged"/>
+            </label>
+            <button class="btn" type="submit">Purge + disable all IB Flex (Offline)</button>
+          </form>
+        </details>
+      {% endif %}
+    </div>
+  </details>
+</section>
+

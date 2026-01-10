@@ -40,7 +40,7 @@
   <div class="ui-section-title">Pricing</div>
   <div class="ui-muted">
     Prices:
-    <b>Yahoo Finance</b>
+    <b>Local cache</b>
     <span class="ui-muted">·</span>
     Last updated:
     <b>{{ ns.last_px|local_dt if ns.last_px else "—" }}</b>
@@ -51,8 +51,9 @@
     <input type="hidden" name="account_id" value="{{ account_id or '' }}"/>
     <label class="muted">Provider
       <select name="provider">
-        <option value="yahoo">Yahoo Finance (chart API)</option>
-        <option value="finnhub">Finnhub (API key)</option>
+        <option value="stooq" selected>Stooq (daily candles)</option>
+        <option value="yahoo">Yahoo Finance (chart API; may rate limit)</option>
+        <option value="cache">Cache only (no network)</option>
       </select>
     </label>
     <button type="submit" class="btn">Refresh</button>
@@ -62,7 +63,7 @@
     <summary>Pricing details</summary>
     <div class="ui-muted" style="margin-top:6px">
       Uses local cache under <code>data/prices/</code> (first) and falls back to <code>data/prices/yfinance/</code> if present.
-      If a price is stale, refresh it (requires network enabled + allowlist). Finnhub requires <code>FINNHUB_API_KEY</code>.
+      Refreshing prices requires network enabled + outbound allowlist (Stooq uses <code>stooq.com</code>; Yahoo uses <code>query1.finance.yahoo.com</code>).
     </div>
   </details>
 </div>

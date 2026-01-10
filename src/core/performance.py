@@ -845,11 +845,13 @@ def build_performance_report(
     end_date: dt.date,
     frequency: str = "month_end",
     benchmark_prices_path: Path | None = None,
+    benchmark_series: list[tuple[dt.date, float]] | None = None,
     benchmark_label: str = "VOO",
     baseline_grace_days: int = 14,
     connection_ids: list[int] | None = None,
     account_ids: list[int] | None = None,
     include_combined: bool = True,
+    include_series: bool = False,
 ) -> dict[str, Any]:
     warnings: list[str] = []
     grace_days = max(0, int(baseline_grace_days))
@@ -942,7 +944,15 @@ def build_performance_report(
             acct_label_by_conn[int(cid)] = names[0]
 
     spx_series: list[tuple[dt.date, float]] = []
-    if benchmark_prices_path is not None:
+    if benchmark_series is not None:
+        try:
+            spx_series = [(d, float(v)) for d, v in (benchmark_series or []) if d is not None and v is not None]
+            spx_series.sort(key=lambda x: x[0])
+            if not spx_series:
+                warnings.append("Benchmark series was provided but contained 0 usable rows.")
+        except Exception as e:
+            warnings.append(f"Failed to use benchmark series: {type(e).__name__}: {e}")
+    elif benchmark_prices_path is not None:
         try:
             spx_series = load_price_series(benchmark_prices_path)
             if not spx_series:
@@ -970,9 +980,17 @@ def build_performance_report(
         rf_annual = 0.0
     include_withholding = str(os.environ.get("PERF_INCLUDE_WITHHOLDING_AS_FLOW", "0")).strip().lower() in {"1", "true", "yes", "on"}
 
+    # Optional charting series (does not affect any performance calculations).
+    series_curves_by_portfolio: dict[int, list[tuple[dt.date, float]]] = {}
+    benchmark_curve: list[tuple[dt.date, float]] = []
+    # Transfer cashflows used in IRR/TWR calculations (portfolio perspective: deposits positive).
+    # Exposed only for UI-level reporting (event markers) and does not affect calculations.
+    transfer_flows_by_portfolio: dict[int, list[tuple[dt.date, float]]] = {}
+
     # Benchmark KPIs for the selected period (independent of portfolio snapshot coverage).
     benchmark_period_twr = None
     benchmark_period_sharpe = None
+    b_rets: list[float] = []
     benchmark_period_prices = _bench_series_for_period(
         spx_series, start_date=start_date, end_date=end_date, frequency=frequency
     )
@@ -986,6 +1004,15 @@ def build_performance_report(
                 risk_free_annual=rf_annual,
                 periods_per_year=12.0 if frequency == "month_end" else 252.0,
             )
+            if include_series and len(b_rets) == (len(benchmark_period_prices) - 1):
+                try:
+                    g = 1.0
+                    benchmark_curve = [(benchmark_period_prices[0][0], float(g))]
+                    for i, rret in enumerate(b_rets):
+                        g *= (1.0 + float(rret))
+                        benchmark_curve.append((benchmark_period_prices[i + 1][0], float(g)))
+                except Exception:
+                    benchmark_curve = []
         if benchmark_coverage_start and benchmark_coverage_start > start_date:
             warnings.append(
                 f"{benchmark_label} benchmark coverage starts at {benchmark_coverage_start} (missing earlier prices for selected period)."
@@ -1007,16 +1034,6 @@ def build_performance_report(
         # When `frequency == "month_end"`, `_downsample()` intentionally drops non-month-end points (e.g. 2025-01-01),
         # but those points can still be the correct baseline anchor for a calendar-year report.
         vals_for_anchors = sorted(raw_vals.items(), key=lambda x: x[0])
-
-        flows = _transfer_flows(
-            session,
-            connection_id=pid,
-            scope=scope,
-            start_date=start_date,
-            end_date=end_date,
-            account_ids=acct_ids or None,
-            include_withholding_as_flow=bool(include_withholding),
-        )
 
         cov_start = vals_window[0][0] if vals_window else None
         cov_end = vals_window[-1][0] if vals_window else None
@@ -1044,6 +1061,22 @@ def build_performance_report(
         end_v = float(end_pt[1]) if end_pt else None
         has_baseline = bool(begin_d is not None)
         has_end = bool(end_d is not None)
+
+        # Transfer flows should align to the valuation window we actually use.
+        # When we have to anchor begin/end valuations within grace windows, use those anchor dates for flows
+        # (otherwise flows in the anchor gap get misclassified as "performance").
+        flow_start = begin_d or start_date
+        flow_end = end_d or end_date
+        flows = _transfer_flows(
+            session,
+            connection_id=pid,
+            scope=scope,
+            start_date=flow_start,
+            end_date=flow_end,
+            account_ids=acct_ids or None,
+            include_withholding_as_flow=bool(include_withholding),
+        )
+        transfer_flows_by_portfolio[int(pid)] = list(flows or [])
 
         # Valuation series used for return calculations (bounded by chosen begin/end valuation dates).
         vals_ds: list[tuple[dt.date, float]] = []
@@ -1075,8 +1108,8 @@ def build_performance_report(
                 .join(TaxpayerEntity, TaxpayerEntity.id == Account.taxpayer_entity_id)
                 .filter(
                     ExternalTransactionMap.connection_id == pid,
-                    Transaction.date >= start_date,
-                    Transaction.date <= end_date,
+                    Transaction.date >= flow_start,
+                    Transaction.date <= flow_end,
                     Transaction.type == txn_type,
                 )
             )
@@ -1125,8 +1158,8 @@ def build_performance_report(
             .join(TaxpayerEntity, TaxpayerEntity.id == Account.taxpayer_entity_id)
             .filter(
                 ExternalTransactionMap.connection_id == pid,
-                Transaction.date >= start_date,
-                Transaction.date <= end_date,
+                Transaction.date >= flow_start,
+                Transaction.date <= flow_end,
             )
         )
         if acct_ids:
@@ -1142,12 +1175,12 @@ def build_performance_report(
         txn_end = tx_max
         txn_count = int(tx_cnt or 0)
         if txn_count == 0:
-            acct_warn.append(f"No transactions found in selected period ({start_date} → {end_date}).")
+            acct_warn.append(f"No transactions found in valuation window ({flow_start} → {flow_end}).")
         else:
-            if txn_start and txn_start > start_date:
-                acct_warn.append(f"Transactions start at {txn_start} (missing earlier activity in selected period).")
-            if txn_end and txn_end < end_date:
-                acct_warn.append(f"Transactions end at {txn_end} (missing later activity in selected period).")
+            if txn_start and txn_start > flow_start:
+                acct_warn.append(f"Transactions start at {txn_start} (missing earlier activity in valuation window).")
+            if txn_end and txn_end < flow_end:
+                acct_warn.append(f"Transactions end at {txn_end} (missing later activity in valuation window).")
 
         if cov_start is None:
             acct_warn.append("No valuation points (holdings snapshots) found in this period.")
@@ -1226,6 +1259,18 @@ def build_performance_report(
             excess = float(twr) - float(bench_twr)
 
         display_name = acct_label_by_conn.get(pid) or str(conn.name or f"Connection {pid}")
+        if include_series:
+            try:
+                curve: list[tuple[dt.date, float]] = []
+                if vals_ds and subrets and len(subrets) == (len(vals_ds) - 1):
+                    g = 1.0
+                    curve = [(vals_ds[0][0], float(g))]
+                    for i, rret in enumerate(subrets):
+                        g *= (1.0 + float(rret))
+                        curve.append((vals_ds[i + 1][0], float(g)))
+                series_curves_by_portfolio[int(pid)] = curve
+            except Exception:
+                series_curves_by_portfolio[int(pid)] = []
         rows_out.append(
             PerformanceRow(
                 portfolio_id=pid,
@@ -1426,6 +1471,18 @@ def build_performance_report(
             )
         combined_bench = benchmark_period_twr
         combined_bench_sharpe = benchmark_period_sharpe
+        if include_series:
+            try:
+                curve: list[tuple[dt.date, float]] = []
+                if combined_ds and combined_subrets and len(combined_subrets) == (len(combined_ds) - 1):
+                    g = 1.0
+                    curve = [(combined_ds[0][0], float(g))]
+                    for i, rret in enumerate(combined_subrets):
+                        g *= (1.0 + float(rret))
+                        curve.append((combined_ds[i + 1][0], float(g)))
+                series_curves_by_portfolio[0] = curve
+            except Exception:
+                series_curves_by_portfolio[0] = []
 
         if baseline_portfolio_ids:
             combined_row = PerformanceRow(
@@ -1461,11 +1518,12 @@ def build_performance_report(
                 excess_sharpe=(float(combined_sharpe) - float(combined_bench_sharpe)) if (combined_sharpe is not None and combined_bench_sharpe is not None) else None,
                 warnings=combined_warn,
             )
+            transfer_flows_by_portfolio[0] = list(combined_flows or [])
         else:
             # Leave combined blank; warnings already surfaced above.
             pass
 
-    return {
+    out = {
         "warnings": warnings,
         "rows": rows_out,
         "combined": combined_row,
@@ -1483,3 +1541,11 @@ def build_performance_report(
         "risk_free_rate_annual": rf_annual,
         "include_withholding_as_flow": bool(include_withholding),
     }
+    if include_series:
+        out["twr_curves"] = {int(pid): [(d.isoformat(), float(v)) for d, v in (pts or [])] for pid, pts in series_curves_by_portfolio.items()}
+        out["benchmark_curve"] = [(d.isoformat(), float(v)) for d, v in (benchmark_curve or [])]
+        out["transfer_flows"] = {
+            int(pid): [(d.isoformat(), float(a)) for d, a in (flows or [])]
+            for pid, flows in (transfer_flows_by_portfolio or {}).items()
+        }
+    return out

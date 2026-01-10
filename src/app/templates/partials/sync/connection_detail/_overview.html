@@ -1,0 +1,82 @@
+<section class="ui-card" aria-label="Connection overview">
+  <div class="ui-section-title">Overview</div>
+
+  <table class="kv">
+    <tr><td>Provider / broker</td><td>{{ conn.provider }} / {{ conn.broker }}</td></tr>
+    <tr><td>Taxpayer</td><td>{{ taxpayer.name }} <span class="ui-muted">({{ taxpayer.type }})</span></td></tr>
+    <tr><td>Connector</td><td><code>{{ conn.connector or "—" }}</code></td></tr>
+    <tr><td>Status</td><td><b>{{ status_u or "—" }}</b></td></tr>
+    <tr><td>Health</td><td><b>{{ health.label }}</b> <span class="ui-muted">— {{ health.reason }}</span></td></tr>
+    <tr><td>Coverage</td><td><b>{{ coverage_u }}</b></td></tr>
+    <tr><td>Credentials</td><td>{{ creds_status }}</td></tr>
+    {% if is_offline_files or is_ib_flex_web %}
+      <tr><td>Data directory</td><td><code>{{ data_dir }}</code></td></tr>
+    {% endif %}
+    {% if is_ib_flex_web %}
+      <tr><td>Flex Query ID</td><td><code>{{ query_id_display }}</code></td></tr>
+    {% endif %}
+  </table>
+
+  <details class="ui-disclosure" style="margin-top:10px">
+    <summary>Show all fields</summary>
+    <table class="kv" style="margin-top:10px">
+      <tr><td>Earliest transactions available</td><td>{{ conn.txn_earliest_available or "Unknown (run FULL backfill)" }}</td></tr>
+      <tr><td>Last successful txn end</td><td>{{ conn.last_successful_txn_end or "—" }}</td></tr>
+      <tr><td>Holdings as-of</td><td>{{ conn.holdings_last_asof|local_dt if conn.holdings_last_asof else "—" }}</td></tr>
+      <tr><td>Last error</td><td class="ui-muted">{{ conn.last_error_json or "—" }}</td></tr>
+      <tr><td>Withdrawals / distributions (YTD)</td><td>{{ withdrawals_ytd|usd }} <span class="ui-muted">({{ withdrawals_count_ytd }} txn(s))</span></td></tr>
+      {% if not is_offline_files %}
+        {% if is_chase_yodlee %}
+          <tr><td>YODLEE_ACCESS_TOKEN</td><td>{{ token_masked }}</td></tr>
+          <tr><td>YODLEE_REFRESH_TOKEN</td><td>{{ query_id_masked }}</td></tr>
+          <tr><td>Yodlee base URL</td><td class="ui-muted">{{ (conn.metadata_json or {}).get("yodlee_base_url") or "env YODLEE_BASE_URL" }}</td></tr>
+          <tr><td>Yodlee API version</td><td class="ui-muted">{{ (conn.metadata_json or {}).get("yodlee_api_version") or "env YODLEE_API_VERSION" }}</td></tr>
+        {% else %}
+          <tr><td>{{ cred_token_key }}</td><td>{{ token_masked }}</td></tr>
+          <tr><td>{{ cred_qid_key }}</td><td>{{ query_id_display }}</td></tr>
+        {% endif %}
+      {% endif %}
+      {% if is_ib_flex_web %}
+        <tr><td>Extra Flex Query IDs</td><td class="ui-muted">{{ extra_queries_str or "—" }}</td></tr>
+      {% endif %}
+    </table>
+  </details>
+
+  <div class="sync-conn-overview-actions">
+    {% if not is_offline_files %}
+      <a class="btn" href="/sync/connections/{{ conn.id }}/auth">Edit credentials</a>
+    {% endif %}
+    <a class="btn" href="/sync/connections/{{ conn.id }}">Open detail view</a>
+  </div>
+
+  <details class="ui-disclosure" style="margin-top:10px">
+    <summary>Settings</summary>
+    <div class="form-compact" style="margin-top:10px">
+      {% if is_offline_files or is_ib_flex_web %}
+        <form method="post" action="/sync/connections/{{ conn.id }}/settings" class="form-compact">
+          <label>
+            <span>Data directory</span>
+            <input name="data_dir" value="{{ data_dir }}" autocomplete="off"/>
+          </label>
+          {% if is_ib_flex_web %}
+            <label>
+              <span>Extra Flex Query IDs</span>
+              <input name="extra_query_ids" value="{{ extra_queries_str }}" placeholder="comma/space-separated (optional)"/>
+              <span class="ui-muted">Names (preferred) or numeric ids.</span>
+            </label>
+          {% else %}
+            <input type="hidden" name="extra_query_ids" value=""/>
+          {% endif %}
+          <label>
+            <span>Audit note (optional)</span>
+            <input name="note" placeholder="Why this changed"/>
+          </label>
+          <button class="btn" type="submit">Save settings</button>
+        </form>
+      {% else %}
+        <div class="ui-muted">No local settings for this connector.</div>
+      {% endif %}
+    </div>
+  </details>
+</section>
+

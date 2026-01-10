@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import math
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
@@ -303,6 +304,25 @@ def _offline_data_dir(connection: ExternalConnection) -> Path:
     return Path("data") / "external" / f"conn_{connection.id}"
 
 
+def _archive_raw_file(*, connection_id: int, file_hash: str, src_path: Path) -> str | None:
+    """
+    Copy an ingested offline file into an append-only archive directory.
+
+    This is a safety/audit mechanism: users can re-run imports and still have the exact bytes that were processed.
+    """
+    try:
+        base = Path("data") / "external" / "raw_archive" / f"conn_{int(connection_id)}"
+        base.mkdir(parents=True, exist_ok=True)
+        ext = src_path.suffix.lower() if src_path.suffix else ".bin"
+        dest = base / f"{file_hash}{ext}"
+        if dest.exists():
+            return str(dest)
+        shutil.copy2(src_path, dest)
+        return str(dest)
+    except Exception:
+        return None
+
+
 def _select_offline_files(
     session: Session,
     *,
@@ -323,6 +343,8 @@ def _select_offline_files(
         }
 
     supported_exts = {".csv", ".tsv", ".txt", ".xml"}
+    if connector == "RJ_OFFLINE":
+        supported_exts.update({".qfx", ".ofx"})
     known_unsupported_exts = {".xlsx", ".xls", ".pdf"}
 
     all_paths = [p for p in sorted(data_dir.glob("**/*")) if p.is_file()]
@@ -332,11 +354,10 @@ def _select_offline_files(
 
     seen_hashes: set[str] = set()
     if not reprocess_files and mode == "INCREMENTAL":
-        rows = (
-            session.query(ExternalFileIngest.file_hash)
-            .filter(ExternalFileIngest.connection_id == connection.id, ExternalFileIngest.kind == "TRANSACTIONS")
-            .all()
-        )
+        # ExternalFileIngest is unique by (connection_id, file_hash), so treat any previously ingested file as "seen"
+        # regardless of its kind (transactions/holdings/etc). This enables QFX files (containing both) to be handled
+        # idempotently without reprocessing on every run.
+        rows = session.query(ExternalFileIngest.file_hash).filter(ExternalFileIngest.connection_id == connection.id).all()
         seen_hashes = {r[0] for r in rows}
 
     selected: list[dict[str, Any]] = []
@@ -402,15 +423,13 @@ def _select_offline_holdings_files(
     supported_exts = {".csv", ".tsv", ".txt", ".xml"}
     if connector in {"RJ_OFFLINE", "CHASE_OFFLINE"}:
         supported_exts.add(".pdf")
+    if connector == "RJ_OFFLINE":
+        supported_exts.update({".qfx", ".ofx"})
     all_files = [p for p in sorted(data_dir.glob("**/*")) if p.is_file() and p.suffix.lower() in supported_exts]
 
     seen_hashes: set[str] = set()
     if not reprocess_files and mode == "INCREMENTAL":
-        rows = (
-            session.query(ExternalFileIngest.file_hash)
-            .filter(ExternalFileIngest.connection_id == connection.id, ExternalFileIngest.kind == "HOLDINGS")
-            .all()
-        )
+        rows = session.query(ExternalFileIngest.file_hash).filter(ExternalFileIngest.connection_id == connection.id).all()
         seen_hashes = {r[0] for r in rows}
 
     selected: list[dict[str, Any]] = []
@@ -418,7 +437,7 @@ def _select_offline_holdings_files(
     holdings_total = 0
     for p in all_files:
         name = p.name.lower()
-        if p.suffix.lower() == ".pdf":
+        if p.suffix.lower() in {".pdf", ".qfx", ".ofx"}:
             kind = "HOLDINGS"
         else:
             kind = "HOLDINGS" if ("position" in name or "positions" in name or "holding" in name or "openpositions" in name or "portfolio" in name) else "TRANSACTIONS"
@@ -1001,17 +1020,50 @@ def run_sync(
                     if 0 <= idx < len(selected_files):
                         f = selected_files[idx]
                         coverage["file_count"] += 1
+                        pth = Path(str(f.get("path") or ""))
+                        ext = pth.suffix.lower()
+                        ingest_kind = "TRANSACTIONS"
+                        meta_json: dict[str, Any] | None = None
+                        start_hint: dt.date | None = None
+                        end_hint: dt.date | None = None
+                        stored_path = None
+                        if ext in {".qfx", ".ofx"} and (conn.connector or "").upper() == "RJ_OFFLINE":
+                            ingest_kind = "QFX"
+                            try:
+                                from src.adapters.rj_offline.qfx_parser import extract_qfx_header_meta
+
+                                txt = pth.read_text(encoding="utf-8-sig", errors="ignore")
+                                hdr = extract_qfx_header_meta(txt)
+                                start_hint = hdr.dt_start
+                                end_hint = hdr.dt_end or hdr.dt_asof
+                                meta_json = {
+                                    "broker_id": hdr.broker_id,
+                                    "acct_id": hdr.acct_id,
+                                    "dt_start": hdr.dt_start.isoformat() if hdr.dt_start else None,
+                                    "dt_end": hdr.dt_end.isoformat() if hdr.dt_end else None,
+                                    "dt_asof": hdr.dt_asof.isoformat() if hdr.dt_asof else None,
+                                    "org": hdr.org,
+                                    "fid": hdr.fid,
+                                    "trnuid": hdr.intuid,
+                                }
+                            except Exception:
+                                meta_json = None
+                        stored_path = _archive_raw_file(connection_id=conn.id, file_hash=str(f.get("file_hash") or ""), src_path=pth)
                         with session.begin_nested():
                             session.add(
                                 ExternalFileIngest(
                                     connection_id=conn.id,
-                                    kind="TRANSACTIONS",
-                                    file_name=str(f.get("file_name") or Path(str(f.get("path"))).name),
+                                    kind=ingest_kind,
+                                    file_name=str(f.get("file_name") or pth.name),
                                     file_hash=str(f.get("file_hash")),
                                     file_bytes=int(f.get("file_bytes") or 0) or None,
                                     file_mtime=dt.datetime.fromisoformat(str(f.get("file_mtime_iso")))
                                     if f.get("file_mtime_iso")
                                     else None,
+                                    stored_path=stored_path,
+                                    start_date_hint=start_hint,
+                                    end_date_hint=end_hint,
+                                    metadata_json=meta_json,
                                 )
                             )
                         coverage["file_new_recorded"] += 1

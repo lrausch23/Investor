@@ -32,6 +32,24 @@ router = APIRouter(prefix="/reports", tags=["reports"])
 
 _RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,80}$")
 
+def _static_version() -> str:
+    # Similar to Holdings/Sync: override per-request so UI changes are visible without a server restart.
+    try:
+        css_path = Path(__file__).resolve().parents[1] / "static" / "app.css"
+        return str(int(css_path.stat().st_mtime))
+    except Exception:
+        return "0"
+
+def _static_version_for(path_relative_to_static: str) -> str:
+    """
+    Cache-bust helper for individual static assets under `src/app/static/`.
+    """
+    try:
+        p = Path(__file__).resolve().parents[1] / "static" / str(path_relative_to_static).lstrip("/").strip()
+        return str(int(p.stat().st_mtime))
+    except Exception:
+        return "0"
+
 
 def _monthly_reports_root() -> Path:
     root = Path("data") / "monthly_reports"
@@ -149,6 +167,36 @@ def _portfolio_options_for_scope(session: Session, *, scope: str) -> list[dict[s
             label = f"{label} ({tp_types[0]})"
         out.append({"id": int(cid), "name": label})
     return out
+
+
+def _parse_period_dates_for_performance(
+    *,
+    period: str,
+    year: int,
+    today: dt.date,
+    custom_start: str | None = None,
+    custom_end: str | None = None,
+) -> tuple[dt.date, dt.date, str]:
+    p = (period or "ytd").strip().lower()
+    if p == "year":
+        start_date = dt.date(int(year), 1, 1)
+        end_date = dt.date(int(year), 12, 31)
+        return start_date, end_date, f"Calendar year {year}"
+    if p in {"1y", "3y", "5y"}:
+        years = int(p[0])
+        end_date = today
+        start_date = today - dt.timedelta(days=int(365 * years))
+        return start_date, end_date, f"Last {years}y"
+    if p == "custom":
+        start_date = _parse_iso_date(custom_start or "", label="start")
+        end_date = _parse_iso_date(custom_end or "", label="end")
+        if end_date < start_date:
+            raise HTTPException(status_code=400, detail="End date must be >= start date.")
+        return start_date, end_date, f"{start_date.isoformat()} → {end_date.isoformat()}"
+    # Default: YTD.
+    start_date = dt.date(today.year, 1, 1)
+    end_date = today
+    return start_date, end_date, f"YTD ({today.year})"
 
 
 def _account_options_for_scope(session: Session, *, scope: str, portfolio_id: int | None) -> list[dict[str, object]]:
@@ -283,7 +331,9 @@ def reports_monthly_home(
         {
             "request": request,
             "actor": actor,
-            "auth_banner": auth_banner_message(),
+            "auth_banner": None,
+            "auth_banner_detail": auth_banner_message(),
+            "static_version": _static_version(),
             "scope": scope,
             "scope_label": _reports_scope_label(scope),
             "portfolio_options": portfolio_options,
@@ -554,7 +604,9 @@ def reports_monthly_run_view(
         {
             "request": request,
             "actor": actor,
-            "auth_banner": auth_banner_message(),
+            "auth_banner": None,
+            "auth_banner_detail": auth_banner_message(),
+            "static_version": _static_version(),
             "run_id": rid,
             "meta": meta,
             "files": files,
@@ -696,15 +748,20 @@ def reports_home(
         )
     ).filter(*_scope_account_predicates(scope))
     combined_row = cq.one()
+    combined_withdrawal_total = float(combined_row.withdrawal_total or 0.0)
+    combined_withdrawal_count = int(combined_row.withdrawal_count or 0)
     combined_fee_total = float(combined_row.fee_total or 0.0)
     combined_fee_count = int(combined_row.fee_count or 0)
     combined_withholding_total = float(combined_row.withholding_total or 0.0)
     combined_withholding_count = int(combined_row.withholding_count or 0)
-    combined_total = float(combined_row.withdrawal_total or 0.0) + combined_fee_total + combined_withholding_total + float(combined_row.other_total or 0.0)
-    combined_count = int(combined_row.withdrawal_count or 0) + combined_fee_count + combined_withholding_count + int(combined_row.other_count or 0)
+    combined_other_total = float(combined_row.other_total or 0.0)
+    combined_other_count = int(combined_row.other_count or 0)
+    combined_total = combined_withdrawal_total + combined_fee_total + combined_withholding_total + combined_other_total
+    combined_count = combined_withdrawal_count + combined_fee_count + combined_withholding_count + combined_other_count
     combined_deposit_total = float(combined_row.deposit_total or 0.0)
     combined_deposit_count = int(combined_row.deposit_count or 0)
-    combined_net_total = combined_total - combined_deposit_total - combined_fee_total - combined_withholding_total
+    # Net cash out is the outflows (withdrawals+fees+taxes+other) reduced by deposits (inflows).
+    combined_net_total = combined_total - combined_deposit_total
     show_overall = scope in {"household", "trust"}
 
     detail_rows: list[tuple[Transaction, ExternalTransactionMap | None, ExternalConnection | None]] = []
@@ -765,7 +822,9 @@ def reports_home(
         {
             "request": request,
             "actor": actor,
-            "auth_banner": auth_banner_message(),
+            "auth_banner": None,
+            "auth_banner_detail": auth_banner_message(),
+            "static_version": _static_version(),
             "scope": scope,
             "scope_label": _reports_scope_label(scope),
             "period": period,
@@ -780,10 +839,14 @@ def reports_home(
             "combined_count": combined_count,
             "combined_deposit_total": combined_deposit_total,
             "combined_deposit_count": combined_deposit_count,
+            "combined_withdrawal_total": combined_withdrawal_total,
+            "combined_withdrawal_count": combined_withdrawal_count,
             "combined_fee_total": combined_fee_total,
             "combined_fee_count": combined_fee_count,
             "combined_withholding_total": combined_withholding_total,
             "combined_withholding_count": combined_withholding_count,
+            "combined_other_total": combined_other_total,
+            "combined_other_count": combined_other_count,
             "combined_net_total": combined_net_total,
             "show_overall": show_overall,
             "account_id": account_id,
@@ -799,9 +862,10 @@ def reports_performance(
     session: Session = Depends(db_session),
     actor: str = Depends(require_actor),
 ):
-    from pathlib import Path
-
     from src.core.performance import build_performance_report
+    from src.importers.adapters import ProviderError
+    from src.investor.marketdata.benchmarks import BenchmarkDataClient
+    from src.investor.marketdata.config import load_marketdata_config
 
     today = dt.date.today()
     scope = _parse_reports_scope(request.query_params.get("scope"))
@@ -811,6 +875,9 @@ def reports_performance(
     account_id = int(account_id_raw) if account_id_raw.isdigit() else None
     ok_msg = request.query_params.get("ok")
     error_msg = request.query_params.get("error")
+    refresh_benchmark = str(request.query_params.get("refresh_benchmark") or "").strip().lower() in {"1", "true", "yes", "on"}
+    bench_provider = (request.query_params.get("bench_provider") or "auto").strip().lower()
+    compare_prior = str(request.query_params.get("compare") or "").strip().lower() in {"1", "true", "yes", "on"}
 
     year_raw = (request.query_params.get("year") or "").strip()
     year_options = _available_year_options(session, scope=scope, today=today, kind="performance")
@@ -818,35 +885,108 @@ def reports_performance(
     if year not in year_options:
         year = year_options[0]
 
-    if period == "year":
-        start_date = dt.date(year, 1, 1)
-        end_date = dt.date(year, 12, 31)
-        period_label = f"Calendar year {year}"
-    else:
-        start_date = dt.date(today.year, 1, 1)
-        end_date = today
-        period_label = f"YTD ({today.year})"
+    custom_start = (request.query_params.get("start") or "").strip()
+    custom_end = (request.query_params.get("end") or "").strip()
+    start_date, end_date, period_label = _parse_period_dates_for_performance(
+        period=period,
+        year=year,
+        today=today,
+        custom_start=custom_start or None,
+        custom_end=custom_end or None,
+    )
+    compare_label: str | None = None
+    prior_start: dt.date | None = None
+    prior_end: dt.date | None = None
+    if compare_prior:
+        try:
+            span = end_date - start_date
+            if str(period or "").strip().lower() == "ytd":
+                prior_start = dt.date(int(start_date.year) - 1, 1, 1)
+                prior_end = prior_start + span
+                compare_label = f"Prior YTD ({prior_start.isoformat()} → {prior_end.isoformat()})"
+            else:
+                prior_end = start_date
+                prior_start = start_date - span
+                compare_label = f"Prior period ({prior_start.isoformat()} → {prior_end.isoformat()})"
+        except Exception:
+            prior_start = None
+            prior_end = None
+            compare_label = None
 
     account_options = _account_options_for_scope(session, scope=scope, portfolio_id=None)
     if account_id is not None and not any(int(a.get("id") or 0) == int(account_id) for a in account_options):
         account_id = None
 
-    benchmark_label = "VOO"
-    benchmark_path = Path("data") / "benchmarks" / "voo.csv"
+    benchmark_symbol = (request.query_params.get("benchmark") or "SPY").strip().upper()
+    # Add a small buffer before start_date so month-end anchoring can use the prior trading day if needed.
+    bench_anchor_start = start_date
+    if prior_start is not None and prior_end is not None:
+        bench_anchor_start = min(bench_anchor_start, prior_start)
+    bench_fetch_start = bench_anchor_start - dt.timedelta(days=40)
+    bench_fetch_end = end_date
+    bench_df = None
+    bench_series: list[tuple[dt.date, float]] | None = None
+    bench_meta = None
+    benchmark_warning: str | None = None
+    if bench_provider in {"none", "off", "disabled"}:
+        bench_df = None
+        bench_series = None
+    else:
+        cfg, _cfg_path = load_marketdata_config()
+        # Allow per-request provider override while keeping the cache-first strategy.
+        bench_cfg = cfg.benchmarks.model_copy(deep=True)
+        sel = (bench_provider or "auto").strip().lower()
+        if sel in {"cache", "local"}:
+            bench_cfg.provider_order = ["cache"]
+        elif sel == "stooq":
+            bench_cfg.provider_order = ["cache", "stooq", "yahoo"]
+        elif sel == "yahoo":
+            bench_cfg.provider_order = ["cache", "yahoo"]
+        else:
+            # auto: cache -> stooq -> yahoo
+            bench_cfg.provider_order = bench_cfg.provider_order or ["cache", "stooq", "yahoo"]
+
+        try:
+            client = BenchmarkDataClient(config=bench_cfg)
+            bench_df, bench_meta = client.get(
+                symbol=benchmark_symbol,
+                start=bench_fetch_start,
+                end=bench_fetch_end,
+                refresh=bool(refresh_benchmark),
+            )
+            # Build a simple (date, close) series for performance math (prefers adj_close when available).
+            if bench_df is not None and not bench_df.empty:
+                col = "adj_close" if "adj_close" in bench_df.columns else "close"
+                vals = bench_df[col].copy()
+                if col == "adj_close" and "close" in bench_df.columns:
+                    vals = vals.fillna(bench_df["close"])
+                bench_series = [(d.date(), float(v)) for d, v in vals.items() if v is not None and float(v) > 0.0]
+        except Exception as e:
+            benchmark_warning = str(e) if isinstance(e, ProviderError) else f"{type(e).__name__}: {e}"
+            bench_series = None
+
+    if refresh_benchmark and ok_msg is None and error_msg is None:
+        if bench_series is not None and len(bench_series) > 0:
+            ok_msg = f"Benchmark cache ready for {benchmark_symbol}."
+            if bench_meta and bench_meta.warning:
+                ok_msg = f"{ok_msg} {bench_meta.warning}"
+        elif benchmark_warning:
+            error_msg = benchmark_warning
+
+    provider_label = "Disabled"
+    if bench_provider not in {"none", "off", "disabled"}:
+        if bench_meta is not None:
+            provider_label = " → ".join(bench_meta.used_providers)
+        else:
+            provider_label = "Benchmark"
     benchmark_info = {
-        "path": str(benchmark_path),
-        "label": benchmark_label,
-        "exists": benchmark_path.exists(),
-        "mtime": None,
-        "bytes": None,
+        "provider": provider_label,
+        "symbol": benchmark_symbol,
+        "cached": True,
+        "path": None,
+        "rows": (len(bench_df) if bench_df is not None else None),
+        "warning": benchmark_warning or (bench_meta.warning if bench_meta else None),
     }
-    try:
-        if benchmark_path.exists():
-            st = benchmark_path.stat()
-            benchmark_info["mtime"] = dt.datetime.fromtimestamp(st.st_mtime).isoformat()
-            benchmark_info["bytes"] = int(st.st_size)
-    except Exception:
-        pass
 
     report = build_performance_report(
         session,
@@ -854,16 +994,424 @@ def reports_performance(
         start_date=start_date,
         end_date=end_date,
         frequency=freq,
-        benchmark_prices_path=benchmark_path if benchmark_path.exists() else None,
-        benchmark_label=benchmark_label,
+        benchmark_series=bench_series,
+        benchmark_label=(benchmark_symbol or "SPY"),
         account_ids=[int(account_id)] if account_id is not None else None,
         include_combined=(account_id is None),
+        include_series=True,
     )
     # Ensure deterministic ordering in UI.
     try:
         report["rows"] = sorted(report.get("rows") or [], key=lambda r: str(getattr(r, "portfolio_name", "")))
     except Exception:
         pass
+
+    # Build chart + benchmark comparison stats (best-effort).
+    primary_row = report.get("combined") or ((report.get("rows") or [None])[0])
+    primary_pid = int(getattr(primary_row, "portfolio_id", 0) or 0) if primary_row else 0
+    twr_curves = report.get("twr_curves") or {}
+    portfolio_curve = twr_curves.get(primary_pid) or []
+    bench_curve = report.get("benchmark_curve") or []
+
+    prior: dict[str, object] | None = None
+    if compare_prior and prior_start is not None and prior_end is not None:
+        try:
+            prior_report = build_performance_report(
+                session,
+                scope=scope,
+                start_date=prior_start,
+                end_date=prior_end,
+                frequency=freq,
+                benchmark_series=bench_series,
+                benchmark_label=(benchmark_symbol or "SPY"),
+                account_ids=[int(account_id)] if account_id is not None else None,
+                include_combined=(account_id is None),
+                include_series=True,
+            )
+            prior_primary = prior_report.get("combined") or ((prior_report.get("rows") or [None])[0])
+            prior_pid = int(getattr(prior_primary, "portfolio_id", 0) or 0) if prior_primary else 0
+            prior_twr_curves = prior_report.get("twr_curves") or {}
+            prior_portfolio_curve = prior_twr_curves.get(prior_pid) or []
+            prior_bench_curve = prior_report.get("benchmark_curve") or []
+
+            def _ret_obs(curve: list[tuple[str, float]]) -> int:
+                try:
+                    return max(0, int(len(curve or []) - 1))
+                except Exception:
+                    return 0
+
+            prior = {
+                "label": compare_label,
+                "start": prior_start.isoformat(),
+                "end": prior_end.isoformat(),
+                "primary": prior_primary,
+                "comparison": {
+                    "portfolio_cagr": _cagr(prior_portfolio_curve),
+                    "benchmark_cagr": _cagr(prior_bench_curve),
+                    "portfolio_max_drawdown": _max_drawdown(prior_portfolio_curve),
+                    "benchmark_max_drawdown": _max_drawdown(prior_bench_curve),
+                },
+                "obs": {
+                    "portfolio_returns": _ret_obs(prior_portfolio_curve),
+                    "benchmark_returns": _ret_obs(prior_bench_curve),
+                },
+                "warnings": prior_report.get("warnings") or [],
+            }
+        except Exception as e:
+            prior = {"label": compare_label, "start": prior_start.isoformat(), "end": prior_end.isoformat(), "error": f"{type(e).__name__}: {e}"}
+    chart_data = {
+        "portfolio": {"label": str(getattr(primary_row, "portfolio_name", "Portfolio")) if primary_row else "Portfolio", "curve": portfolio_curve},
+        "benchmark": {"label": str(report.get("benchmark_label") or benchmark_info.get("symbol") or "Benchmark"), "curve": bench_curve},
+        "frequency": str(report.get("frequency") or freq),
+    }
+
+    # Cashflow/event markers for the chart (derived from the same TRANSFER flows already used in performance math).
+    def _parse_iso_date(s: str) -> dt.date | None:
+        try:
+            return dt.date.fromisoformat(str(s)[:10])
+        except Exception:
+            return None
+
+    def _align_to_curve(d: dt.date, curve_dates: list[dt.date]) -> dt.date | None:
+        if not curve_dates:
+            return None
+        # Prefer the first valuation date on/after the event date; otherwise carry back to last available.
+        for cd in curve_dates:
+            if cd >= d:
+                return cd
+        return curve_dates[-1]
+
+    events: list[dict[str, object]] = []
+    event_summary: dict[str, object] | None = None
+    try:
+        flows_by_pid = report.get("transfer_flows") or {}
+        raw_flows = flows_by_pid.get(primary_pid) or []
+        curve_dates = [_parse_iso_date(d) for d, _v in (portfolio_curve or [])]
+        curve_dates = [d for d in curve_dates if d is not None]  # type: ignore[comparison-overlap]
+        curve_dates = sorted(set(curve_dates))
+
+        by_day: dict[dt.date, float] = {}
+        # Use the chart's effective valuation window rather than the requested period bounds,
+        # since performance may anchor begin/end valuations within grace windows.
+        curve_start = None
+        curve_end = None
+        try:
+            if portfolio_curve:
+                curve_start = _parse_iso_date(str(portfolio_curve[0][0]))
+                curve_end = _parse_iso_date(str(portfolio_curve[-1][0]))
+        except Exception:
+            curve_start = None
+            curve_end = None
+
+        eff_start = curve_start or start_date
+        eff_end = curve_end or end_date
+
+        for ds, amt in raw_flows:
+            d0 = _parse_iso_date(str(ds))
+            if d0 is None:
+                continue
+            if d0 < eff_start or d0 > eff_end:
+                continue
+            try:
+                a = float(amt or 0.0)
+            except Exception:
+                continue
+            if a == 0.0:
+                continue
+            by_day[d0] = float(by_day.get(d0, 0.0) + a)
+
+        # Select large events only (plus always include the largest deposit/withdrawal).
+        begin_v = getattr(primary_row, "begin_value", None) if primary_row else None
+        threshold = 5000.0
+        try:
+            if begin_v is not None:
+                threshold = max(threshold, 0.02 * float(begin_v or 0.0))
+        except Exception:
+            pass
+
+        deposits = [(d, a) for d, a in by_day.items() if a > 0]
+        withdrawals = [(d, a) for d, a in by_day.items() if a < 0]
+        largest_deposit = max(deposits, key=lambda x: x[1])[0] if deposits else None
+        largest_withdraw = min(withdrawals, key=lambda x: x[1])[0] if withdrawals else None  # most negative
+
+        selected_days: set[dt.date] = set()
+        for d, a in by_day.items():
+            if abs(float(a)) >= float(threshold):
+                selected_days.add(d)
+        if largest_deposit:
+            selected_days.add(largest_deposit)
+        if largest_withdraw:
+            selected_days.add(largest_withdraw)
+
+        # Align to valuation dates used by the chart series.
+        by_aligned: dict[dt.date, float] = {}
+        for d in sorted(selected_days):
+            ad = _align_to_curve(d, curve_dates)
+            if ad is None:
+                continue
+            by_aligned[ad] = float(by_aligned.get(ad, 0.0) + float(by_day.get(d, 0.0)))
+
+        # Cap marker count to avoid clutter (keep largest abs events).
+        aligned_items = sorted(by_aligned.items(), key=lambda x: abs(float(x[1])), reverse=True)
+        aligned_items = aligned_items[:25]
+
+        for ad, a in aligned_items:
+            kind = "deposit" if a > 0 else "withdrawal"
+            events.append({"date": ad.isoformat(), "amount": float(a), "kind": kind})
+
+        event_summary = {
+            "deposits": int(len(deposits)),
+            "withdrawals": int(len(withdrawals)),
+            "largest_deposit": float(max((a for _d, a in deposits), default=0.0)),
+            "largest_withdrawal": float(min((a for _d, a in withdrawals), default=0.0)),
+            "threshold": float(threshold),
+        }
+    except Exception:
+        events = []
+        event_summary = None
+
+    chart_data["events"] = events
+    chart_data["event_summary"] = event_summary
+    chart_data_json = "{}"
+    try:
+        chart_data_json = json.dumps(chart_data)
+    except Exception:
+        chart_data_json = "{}"
+
+    def _cagr(curve: list[tuple[str, float]]) -> float | None:
+        if not curve or len(curve) < 2:
+            return None
+        try:
+            d0 = dt.date.fromisoformat(str(curve[0][0])[:10])
+            d1 = dt.date.fromisoformat(str(curve[-1][0])[:10])
+            days = max(1, (d1 - d0).days)
+            ratio = float(curve[-1][1]) / max(1e-12, float(curve[0][1]))
+            if ratio <= 0:
+                return None
+            return (ratio ** (365.0 / float(days))) - 1.0
+        except Exception:
+            return None
+
+    def _max_drawdown(curve: list[tuple[str, float]]) -> float | None:
+        if not curve or len(curve) < 2:
+            return None
+        peak = None
+        max_dd = 0.0
+        try:
+            for _d, v in curve:
+                x = float(v)
+                if peak is None or x > peak:
+                    peak = x
+                if peak and peak > 0:
+                    dd = (x / peak) - 1.0
+                    if dd < max_dd:
+                        max_dd = dd
+            return float(max_dd)
+        except Exception:
+            return None
+
+    def _aligned_returns(
+        a: list[tuple[str, float]], b: list[tuple[str, float]]
+    ) -> tuple[list[float], list[float], list[float]]:
+        am = {str(d)[:10]: float(v) for d, v in (a or [])}
+        bm = {str(d)[:10]: float(v) for d, v in (b or [])}
+        dates = sorted(set(am.keys()) & set(bm.keys()))
+        if len(dates) < 3:
+            return [], [], []
+        pa: list[float] = []
+        pb: list[float] = []
+        ex: list[float] = []
+        prev = dates[0]
+        for d in dates[1:]:
+            av0 = am.get(prev)
+            av1 = am.get(d)
+            bv0 = bm.get(prev)
+            bv1 = bm.get(d)
+            prev = d
+            if not av0 or not av1 or not bv0 or not bv1:
+                continue
+            ra = (av1 / av0) - 1.0
+            rb = (bv1 / bv0) - 1.0
+            pa.append(float(ra))
+            pb.append(float(rb))
+            ex.append(float(ra - rb))
+        return pa, pb, ex
+
+    def _std(vals: list[float]) -> float | None:
+        if not vals or len(vals) < 2:
+            return None
+        m = sum(vals) / float(len(vals))
+        var = sum((x - m) ** 2 for x in vals) / float(len(vals) - 1)
+        return var ** 0.5
+
+    def _corr(a: list[float], b: list[float]) -> float | None:
+        if not a or not b or len(a) != len(b) or len(a) < 2:
+            return None
+        ma = sum(a) / float(len(a))
+        mb = sum(b) / float(len(b))
+        num = sum((x - ma) * (y - mb) for x, y in zip(a, b))
+        da = _std(a)
+        db = _std(b)
+        if not da or not db or da == 0 or db == 0:
+            return None
+        return num / ((len(a) - 1) * da * db)
+
+    pa, pb, ex = _aligned_returns(portfolio_curve, bench_curve)
+    periods_per_year = 12.0 if freq == "month_end" else 252.0
+    te = None
+    ex_std = _std(ex)
+    if ex_std is not None:
+        te = ex_std * (periods_per_year ** 0.5)
+
+    comparison = {
+        "portfolio_cagr": _cagr(portfolio_curve),
+        "benchmark_cagr": _cagr(bench_curve),
+        "portfolio_max_drawdown": _max_drawdown(portfolio_curve),
+        "benchmark_max_drawdown": _max_drawdown(bench_curve),
+        "tracking_error": te,
+        "correlation": _corr(pa, pb),
+    }
+
+    def _drawdown_date(curve: list[tuple[str, float]]) -> str | None:
+        if not curve or len(curve) < 2:
+            return None
+        peak = None
+        min_dd = 0.0
+        min_date = None
+        try:
+            for d, v in curve:
+                x = float(v)
+                if peak is None or x > peak:
+                    peak = x
+                if peak and peak > 0:
+                    dd = (x / peak) - 1.0
+                    if dd < min_dd:
+                        min_dd = dd
+                        min_date = str(d)[:10]
+            return min_date
+        except Exception:
+            return None
+
+    def _fmt_pct(x: float | None) -> str | None:
+        if x is None:
+            return None
+        try:
+            return f"{float(x) * 100.0:.2f}%"
+        except Exception:
+            return None
+
+    def _fmt_dd(x: float | None) -> str | None:
+        if x is None:
+            return None
+        try:
+            return f"{float(x) * 100.0:.2f}%"
+        except Exception:
+            return None
+
+    def _build_commentary(*, prior_ctx: dict[str, object] | None) -> dict[str, object]:
+        sentences: list[str] = []
+        notes: list[str] = []
+
+        p_twr = getattr(primary_row, "twr", None) if primary_row else None
+        b_twr = getattr(primary_row, "benchmark_twr", None) if primary_row else None
+        ex_twr = getattr(primary_row, "excess_twr", None) if primary_row else None
+        p_sharpe = getattr(primary_row, "sharpe", None) if primary_row else None
+        b_sharpe = getattr(primary_row, "benchmark_sharpe", None) if primary_row else None
+
+        p_twr_s = _fmt_pct(p_twr)
+        b_twr_s = _fmt_pct(b_twr)
+        ex_twr_s = _fmt_pct(ex_twr)
+
+        bench_sym = str(report.get("benchmark_label") or benchmark_symbol or "Benchmark")
+        if p_twr_s and b_twr_s and ex_twr_s:
+            sentences.append(
+                f"Over {period_label}, the portfolio returned {p_twr_s} (TWR) versus {b_twr_s} for {bench_sym}, an excess return of {ex_twr_s}."
+            )
+        elif p_twr_s:
+            sentences.append(f"Over {period_label}, the portfolio returned {p_twr_s} (TWR). Benchmark comparison is partially unavailable.")
+        else:
+            sentences.append(f"Over {period_label}, portfolio performance could not be computed from available valuation points.")
+
+        if prior_ctx and prior_ctx.get("primary") is not None:
+            try:
+                prior_row = prior_ctx.get("primary")
+                prior_twr = getattr(prior_row, "twr", None)
+                prior_dd = prior_ctx.get("comparison", {}).get("portfolio_max_drawdown") if isinstance(prior_ctx.get("comparison"), dict) else None
+                if p_twr is not None and prior_twr is not None:
+                    dp = float(p_twr) - float(prior_twr)
+                    dp_s = _fmt_pct(dp) or ""
+                    improved = "improved" if dp > 0 else ("declined" if dp < 0 else "was unchanged")
+                    if prior_dd is not None and comparison.get("portfolio_max_drawdown") is not None:
+                        dd_delta = float(comparison.get("portfolio_max_drawdown") or 0.0) - float(prior_dd or 0.0)
+                        dd_note = "and drawdowns were shallower" if dd_delta > 0.01 else ("and drawdowns were deeper" if dd_delta < -0.01 else "with similar drawdowns")
+                        sentences.append(f"Compared to the prior period, return {improved} by {dp_s} {dd_note}.")
+                    else:
+                        sentences.append(f"Compared to the prior period, return {improved} by {dp_s}.")
+            except Exception:
+                pass
+
+        if p_sharpe is not None and b_sharpe is not None:
+            try:
+                dp = float(p_sharpe)
+                db = float(b_sharpe)
+                delta = dp - db
+                if delta > 0.10:
+                    sentences.append(f"Risk-adjusted performance was stronger than the benchmark (Sharpe {dp:.2f} vs {db:.2f}).")
+                elif delta < -0.10:
+                    sentences.append(f"Risk-adjusted performance lagged the benchmark (Sharpe {dp:.2f} vs {db:.2f}).")
+                else:
+                    sentences.append(f"Risk-adjusted performance was broadly similar to the benchmark (Sharpe {dp:.2f} vs {db:.2f}).")
+            except Exception:
+                pass
+        elif p_sharpe is not None:
+            try:
+                sentences.append(f"Sharpe for the portfolio was {float(p_sharpe):.2f} (benchmark Sharpe unavailable).")
+            except Exception:
+                pass
+
+        p_dd = _fmt_dd(comparison.get("portfolio_max_drawdown"))
+        b_dd = _fmt_dd(comparison.get("benchmark_max_drawdown"))
+        if p_dd and b_dd:
+            try:
+                pdd = float(comparison.get("portfolio_max_drawdown"))  # type: ignore[arg-type]
+                bdd = float(comparison.get("benchmark_max_drawdown"))  # type: ignore[arg-type]
+                if (pdd - bdd) < -0.01:
+                    sentences.append(f"The portfolio experienced deeper drawdowns ({p_dd}) than the benchmark ({b_dd}) during the period.")
+                elif (pdd - bdd) > 0.01:
+                    sentences.append(f"Drawdowns were shallower than the benchmark ({p_dd} vs {b_dd}).")
+                else:
+                    sentences.append(f"Drawdown severity was similar ({p_dd} vs {b_dd}).")
+            except Exception:
+                sentences.append(f"Drawdown severity was similar ({p_dd} vs {b_dd}).")
+        elif comparison.get("tracking_error") is not None:
+            try:
+                te_v = float(comparison.get("tracking_error") or 0.0)
+                te_pct = te_v * 100.0
+                level = "low" if te_pct < 5.0 else ("moderate" if te_pct <= 10.0 else "high")
+                sentences.append(f"Tracking error was {te_pct:.2f}%, indicating {level} deviation from the benchmark.")
+            except Exception:
+                pass
+
+        dd_date = _drawdown_date(portfolio_curve)
+        if dd_date:
+            notes.append(f"Largest drawdown occurred around {dd_date}.")
+
+        if benchmark_info.get("warning"):
+            notes.append("Some benchmark ranges could not be fetched; comparisons use available overlapping dates.")
+
+        if prior_ctx:
+            try:
+                obs = prior_ctx.get("obs") if isinstance(prior_ctx.get("obs"), dict) else None
+                if prior_ctx.get("error") or (obs and int(obs.get("portfolio_returns") or 0) < 10):
+                    notes.append("Prior-period comparison is limited due to sparse observations.")
+            except Exception:
+                pass
+
+        # Clamp to 3 sentences (per UX spec).
+        sentences = sentences[:3]
+        return {"sentences": sentences, "notes": notes[:2]}
+
+    commentary = _build_commentary(prior_ctx=prior)
 
     from src.app.main import templates
 
@@ -872,7 +1420,10 @@ def reports_performance(
         {
             "request": request,
             "actor": actor,
-            "auth_banner": auth_banner_message(),
+            "auth_banner": None,
+            "auth_banner_detail": auth_banner_message(),
+            "static_version": _static_version(),
+            "perf_js_version": _static_version_for("reports_performance.js"),
             "scope": scope,
             "scope_label": _reports_scope_label(scope),
             "period": period,
@@ -884,8 +1435,18 @@ def reports_performance(
             "period_label": period_label,
             "start_date": start_date.isoformat(),
             "end_date": end_date.isoformat(),
+            "custom_start": custom_start,
+            "custom_end": custom_end,
             "benchmark_info": benchmark_info,
+            "benchmark_symbol": benchmark_symbol,
+            "bench_provider": bench_provider,
             "report": report,
+            "chart_data": chart_data,
+            "chart_data_json": chart_data_json,
+            "comparison": comparison,
+            "commentary": commentary,
+            "prior": prior,
+            "compare_prior": compare_prior,
             "ok_msg": ok_msg,
             "error_msg": error_msg,
         },
@@ -897,14 +1458,15 @@ def reports_performance_csv(
     session: Session = Depends(db_session),
     actor: str = Depends(require_actor),
 ):
-    from pathlib import Path
-
     from src.core.performance import build_performance_report
+    from src.investor.marketdata.benchmarks import BenchmarkDataClient
+    from src.investor.marketdata.config import load_marketdata_config
 
     today = dt.date.today()
     scope = _parse_reports_scope(request.query_params.get("scope"))
     period = (request.query_params.get("period") or "ytd").strip().lower()
     freq = (request.query_params.get("freq") or "month_end").strip().lower()
+    bench_provider = (request.query_params.get("bench_provider") or "auto").strip().lower()
     account_id_raw = (request.query_params.get("account_id") or "").strip()
     account_id = int(account_id_raw) if account_id_raw.isdigit() else None
 
@@ -914,23 +1476,54 @@ def reports_performance_csv(
     if year not in year_options:
         year = year_options[0]
 
-    if period == "year":
-        start_date = dt.date(year, 1, 1)
-        end_date = dt.date(year, 12, 31)
-    else:
-        start_date = dt.date(today.year, 1, 1)
-        end_date = today
+    custom_start = (request.query_params.get("start") or "").strip()
+    custom_end = (request.query_params.get("end") or "").strip()
+    start_date, end_date, _period_label = _parse_period_dates_for_performance(
+        period=period,
+        year=year,
+        today=today,
+        custom_start=custom_start or None,
+        custom_end=custom_end or None,
+    )
 
-    benchmark_label = "VOO"
-    benchmark_path = Path("data") / "benchmarks" / "voo.csv"
+    benchmark_symbol = (request.query_params.get("benchmark") or "SPY").strip().upper()
+    bench_fetch_start = start_date - dt.timedelta(days=40)
+    bench_fetch_end = end_date
+    bench_series: list[tuple[dt.date, float]] | None = None
+    if bench_provider not in {"none", "off", "disabled"}:
+        cfg, _cfg_path = load_marketdata_config()
+        bench_cfg = cfg.benchmarks.model_copy(deep=True)
+        sel = (bench_provider or "auto").strip().lower()
+        if sel in {"cache", "local"}:
+            bench_cfg.provider_order = ["cache"]
+        elif sel == "stooq":
+            bench_cfg.provider_order = ["cache", "stooq", "yahoo"]
+        elif sel == "yahoo":
+            bench_cfg.provider_order = ["cache", "yahoo"]
+        try:
+            client = BenchmarkDataClient(config=bench_cfg)
+            bench_df, _bench_meta = client.get(
+                symbol=benchmark_symbol,
+                start=bench_fetch_start,
+                end=bench_fetch_end,
+                refresh=False,
+            )
+            if bench_df is not None and not bench_df.empty:
+                col = "adj_close" if "adj_close" in bench_df.columns else "close"
+                vals = bench_df[col].copy()
+                if col == "adj_close" and "close" in bench_df.columns:
+                    vals = vals.fillna(bench_df["close"])
+                bench_series = [(d.date(), float(v)) for d, v in vals.items() if v is not None and float(v) > 0.0]
+        except Exception:
+            bench_series = None
     report = build_performance_report(
         session,
         scope=scope,
         start_date=start_date,
         end_date=end_date,
         frequency=freq,
-        benchmark_prices_path=benchmark_path if benchmark_path.exists() else None,
-        benchmark_label=benchmark_label,
+        benchmark_series=bench_series,
+        benchmark_label=(benchmark_symbol or "SPY"),
         account_ids=[int(account_id)] if account_id is not None else None,
         include_combined=(account_id is None),
     )

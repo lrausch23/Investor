@@ -1,0 +1,59 @@
+<section class="ui-card" aria-label="Help">
+  <div class="ui-section-title">Help</div>
+
+  {% if is_fixtures %}
+    <details class="alert alert--warn">
+      <summary>Fixtures adapter</summary>
+      <div class="ui-muted" style="margin-top:6px">
+        This connection uses the local fixtures adapter{% if fixture_dir %} ({{ fixture_dir }}){% endif %}. It does not contact a live brokerage/Yodlee endpoint.
+      </div>
+    </details>
+  {% endif %}
+
+  {% if is_chase_yodlee %}
+    <details class="ui-disclosure">
+      <summary>Chase (Yodlee) requirements</summary>
+      <div class="ui-muted" style="margin-top:8px">
+        Requires network access (<code>NETWORK_ENABLED=1</code>) and a Yodlee host allowlisted in <code>ALLOWED_OUTBOUND_HOSTS</code>.
+      </div>
+    </details>
+  {% endif %}
+
+  {% if is_ib_flex_web %}
+    <details class="ui-disclosure">
+      <summary>IB Flex (Web) requirements</summary>
+      <div class="ui-muted" style="margin-top:8px">
+        Requires network access (<code>NETWORK_ENABLED=1</code>) and IB Flex IP allowlisting.
+        If running on a laptop, your IP may change (wifi/VPN).
+      </div>
+    </details>
+  {% endif %}
+
+  {% if is_offline_flex %}
+    <details class="ui-disclosure">
+      <summary>IB Flex (Offline files)</summary>
+      <div class="ui-muted" style="margin-top:8px">
+        Drop statement exports (<code>.csv</code>/<code>.xml</code>) into the data directory or upload files under “Statement files”.
+      </div>
+    </details>
+  {% endif %}
+
+  {% if is_chase_offline %}
+    <details class="ui-disclosure">
+      <summary>Chase (Offline CSV)</summary>
+      <div class="ui-muted" style="margin-top:8px">
+        Drop Chase IRA CSV exports into the data directory or upload files under “Statement files”.
+      </div>
+    </details>
+  {% endif %}
+
+  {% if is_rj_offline %}
+    <details class="ui-disclosure">
+      <summary>Raymond James (Offline files)</summary>
+      <div class="ui-muted" style="margin-top:8px">
+        Preferred: export <code>Quicken Downloads</code> (<code>.qfx</code>/<code>.ofx</code>) from Raymond James Client Access and upload/drop it here.
+        Legacy CSV exports are still supported; PDF statements are holdings totals only (via <code>pdftotext</code>).
+      </div>
+    </details>
+  {% endif %}
+</section>

@@ -1,0 +1,313 @@
+<section aria-label="Existing connections">
+  <div class="table-toolbar">
+    <div class="ui-section-title">Existing connections</div>
+    <div class="ui-muted">{{ connections|length }} connection(s) · Health reflects recency + coverage + credentials.</div>
+  </div>
+
+  {% if not connections %}
+    <div class="ui-muted">No connections yet.</div>
+  {% else %}
+    <div class="table-wrap">
+      <table class="sync-connections-table">
+        <thead>
+          <tr>
+            <th class="col-toggle" scope="col"></th>
+            <th scope="col">Connection</th>
+            <th scope="col">Status</th>
+            <th scope="col">Coverage</th>
+            <th scope="col">Health</th>
+            <th scope="col">Last success</th>
+            <th scope="col">Last full</th>
+            <th scope="col">Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for c in connections %}
+            {% set last = latest_by_conn.get(c.id) %}
+            {% set connector = (c.connector or "")|upper %}
+            {% set status_u = (c.status or "")|upper %}
+            {% set coverage_u = (c.coverage_status or "UNKNOWN")|upper %}
+            {% set is_active = (status_u == "ACTIVE") %}
+            {% set uses_credentials = (connector not in ["CHASE_OFFLINE","RJ_OFFLINE","IB_FLEX_OFFLINE"]) %}
+            {% set dd = (data_dir_by_conn.get(c.id) if data_dir_by_conn else None) or ("data/external/conn_" ~ c.id) %}
+            {% set extra_queries = (extra_queries_str_by_conn.get(c.id) if extra_queries_str_by_conn else "") %}
+            {% set health = (health_by_conn.get(c.id) if health_by_conn else None) or {"level":"attention","label":"Attention","icon":"⚠️","reason":"—","threshold":"—"} %}
+            {% set health_level = (health.get("level") or "attention") %}
+            {% set health_label = (health.get("label") or "Attention") %}
+            {% set health_icon = (health.get("icon") or "⚠️") %}
+            {% set health_reason = (health.get("reason") or "—") %}
+            {% set health_threshold = (health.get("threshold") or "—") %}
+
+            {% set t = (time_display_by_conn.get(c.id) if time_display_by_conn else None) or {} %}
+            {% set last_success_rel = t.get("last_success_rel") or "—" %}
+            {% set last_full_rel = t.get("last_full_rel") or "—" %}
+            {% set creds_status = (creds_status_by_conn.get(c.id) if creds_status_by_conn else None) or "—" %}
+
+            {% set status_badge = "ui-badge--safe" if is_active else "ui-badge--neutral" %}
+            {% set coverage_badge = "ui-badge--safe" if coverage_u == "COMPLETE" else ("ui-badge--risk" if coverage_u == "PARTIAL" else "ui-badge--neutral") %}
+            {% set health_badge = "ui-badge--safe" if health_level == "healthy" else ("ui-badge--risk" if health_level == "attention" else ("ui-badge--bad" if health_level == "unhealthy" else "ui-badge--neutral")) %}
+            {% set sync_primary = (health_level in ["attention", "unhealthy"]) %}
+            {% set provider_tag = ((c.provider or c.broker or connector or "—")|upper) %}
+            {% if connector == "IB_FLEX_WEB" %}
+              {% set connector_label = "IB Flex (Web)" %}
+            {% elif connector == "CHASE_OFFLINE" %}
+              {% set connector_label = "Chase (Offline)" %}
+            {% elif connector == "RJ_OFFLINE" %}
+              {% set connector_label = "RJ (Offline)" %}
+            {% elif connector == "CHASE_YODLEE" %}
+              {% set connector_label = "Chase (Yodlee)" %}
+            {% elif connector == "IB_FLEX_OFFLINE" %}
+              {% set connector_label = "IB Flex (Offline)" %}
+            {% else %}
+              {% set connector_label = connector %}
+            {% endif %}
+
+            <tr class="sync-conn-row" data-conn-row data-conn-id="{{ c.id }}">
+              <td class="col-toggle">
+                <button
+                  type="button"
+                  class="holdings-row-toggle"
+                  aria-expanded="false"
+                  aria-controls="conn_details_{{ c.id }}"
+                  data-conn-toggle
+                  title="Show details"
+                >
+                  <span class="holdings-row-toggle__icon" aria-hidden="true">▸</span>
+                  <span class="sr-only">Toggle details</span>
+                </button>
+              </td>
+              <td>
+                <div class="conn-cell">
+                  <div class="conn-cell__top">
+                    <a class="conn-cell__name" href="/sync/connections/{{ c.id }}"><b>{{ c.name }}</b></a>
+                    <span class="ui-badge ui-badge--outline conn-cell__tag">{{ provider_tag }}</span>
+                  </div>
+                  <div class="conn-cell__meta ui-muted">
+                    {{ connector_label }}
+                    <span class="ui-muted">·</span>
+                    {{ tp_by_id.get(c.taxpayer_entity_id).name if tp_by_id.get(c.taxpayer_entity_id) else c.taxpayer_entity_id }}
+                    <span class="ui-muted">·</span>
+                    {{ connector }}
+                  </div>
+                </div>
+              </td>
+              <td>
+                <span class="ui-badge {{ status_badge }}">{{ status_u or "—" }}</span>
+              </td>
+              <td>
+                <span class="ui-badge {{ coverage_badge }}">{{ coverage_u }}</span>
+                {% if last and last.status == "PARTIAL" %}
+                  <div class="ui-muted" title="Last run status">{{ last.status }}</div>
+                {% endif %}
+              </td>
+              <td>
+                <span class="ui-badge {{ health_badge }}" title="{{ health_reason }}">{{ health_icon }} {{ health_label }}</span>
+              </td>
+              <td class="ui-muted nowrap">
+                {% if c.last_successful_sync_at %}
+                  <span title="{{ c.last_successful_sync_at|local_dt }}">{{ last_success_rel }}</span>
+                {% else %}
+                  —
+                {% endif %}
+              </td>
+              <td class="ui-muted nowrap">
+                {% if c.last_full_sync_at %}
+                  <span title="{{ c.last_full_sync_at|local_dt }}">{{ last_full_rel }}</span>
+                {% else %}
+                  —
+                {% endif %}
+              </td>
+              <td>
+                <div class="sync-actions">
+                  <form method="post" action="/sync/connections/{{ c.id }}/run" class="sync-actions__form">
+                    <input type="hidden" name="mode" value="INCREMENTAL"/>
+                    <input type="hidden" name="start_date" value=""/>
+                    <input type="hidden" name="end_date" value=""/>
+                    <input type="hidden" name="overlap_days" value="7"/>
+                    <input type="hidden" name="store_payloads" value=""/>
+                    <input type="hidden" name="reprocess_files" value=""/>
+                    <input type="hidden" name="note" value=""/>
+                    <button class="btn {% if sync_primary %}btn--primary{% else %}btn--secondary{% endif %}" type="submit" {% if not is_active %}disabled{% endif %}>Sync now</button>
+                  </form>
+
+                  <button class="btn" type="button" data-conn-toggle-secondary aria-controls="conn_details_{{ c.id }}">Details</button>
+
+                  <details class="dropdown">
+                    <summary class="btn">More</summary>
+                    <div class="dropdown__menu" role="menu">
+                      <form method="post" action="/sync/connections/{{ c.id }}/test" class="sync-actions__form" role="none">
+                        <button class="dropdown__item-btn" type="submit" {% if not is_active %}disabled{% endif %} role="menuitem">Test</button>
+                      </form>
+                      <a class="dropdown__item" href="/sync/connections/{{ c.id }}">View</a>
+                      {% if uses_credentials %}
+                        <a class="dropdown__item" href="/sync/connections/{{ c.id }}/auth">Credentials</a>
+                      {% endif %}
+                      <form method="post" action="/sync/connections/{{ c.id }}/disable" data-confirm-disable data-conn-name="{{ c.name|e }}">
+                        <input type="hidden" name="note" value="Disabled from Connections list"/>
+                        <button class="dropdown__danger" type="submit" role="menuitem">Disable</button>
+                      </form>
+                    </div>
+                  </details>
+                </div>
+                {% if not is_active %}
+                  <div class="ui-muted" style="margin-top:6px">Disabled connections are excluded from metrics and cannot sync.</div>
+                {% endif %}
+              </td>
+            </tr>
+
+            <tr class="sync-conn-details-row" id="conn_details_{{ c.id }}" hidden>
+              <td colspan="8">
+                <div class="ui-card sync-conn-details">
+                  <div class="sync-conn-details__grid">
+                    <div>
+                      <div class="ui-section-title" style="margin-bottom:6px">Details</div>
+                      <table class="kv">
+                        <tr><td>ID</td><td>{{ c.id }}</td></tr>
+                        <tr><td>Provider</td><td>{{ c.provider or "—" }}</td></tr>
+                        <tr><td>Broker</td><td>{{ c.broker or "—" }}</td></tr>
+                        <tr><td>Connector</td><td>{{ connector or "—" }}</td></tr>
+                        <tr><td>Taxpayer</td><td>{{ tp_by_id.get(c.taxpayer_entity_id).name if tp_by_id.get(c.taxpayer_entity_id) else c.taxpayer_entity_id }}</td></tr>
+                        <tr><td>Credentials</td><td>{{ creds_status }}</td></tr>
+                        <tr><td>Data directory</td><td><code>{{ dd }}</code></td></tr>
+                        <tr><td>Coverage</td><td><b>{{ coverage_u }}</b></td></tr>
+                        <tr><td>Health</td><td><b>{{ health_label }}</b> <span class="ui-muted">({{ health_level }})</span></td></tr>
+                        <tr><td>Health reason</td><td>{{ health_reason }}</td></tr>
+                        <tr><td>Threshold</td><td class="ui-muted">{{ health_threshold }}</td></tr>
+                        <tr><td>Last success</td><td>{{ c.last_successful_sync_at|local_dt if c.last_successful_sync_at else "—" }}</td></tr>
+                        <tr><td>Last full</td><td>{{ c.last_full_sync_at|local_dt if c.last_full_sync_at else "—" }}</td></tr>
+                        {% if last %}
+                          <tr><td>Last run</td><td>{{ last.status }}{% if last.started_at %} · {{ last.started_at|local_dt }}{% endif %}</td></tr>
+                        {% endif %}
+                      </table>
+
+                      {% if conn_warnings_by_id and conn_warnings_by_id.get(c.id) and conn_warnings_by_id.get(c.id)|length > 0 %}
+                        <details class="alert alert--warn" style="margin-top:10px">
+                          <summary>Warnings ({{ conn_warnings_by_id.get(c.id)|length }})</summary>
+                          <ul class="ui-muted" style="margin:8px 0 0 18px">
+                            {% for w in conn_warnings_by_id.get(c.id) %}
+                              <li>{{ w }}</li>
+                            {% endfor %}
+                          </ul>
+                        </details>
+                      {% endif %}
+                    </div>
+
+                    <div>
+                      <div class="ui-section-title" style="margin-bottom:6px">Settings</div>
+                      <form method="post" action="/sync/connections/{{ c.id }}/settings" class="form-compact">
+                        <label>
+                          <span>Data directory</span>
+                          <input name="data_dir" value="{{ dd }}" autocomplete="off"/>
+                          <span class="ui-muted">For offline imports, drop statement exports here (created if missing).</span>
+                        </label>
+                        {% if connector == "IB_FLEX_WEB" %}
+                          <label>
+                            <span>Extra Flex Query IDs</span>
+                            <input name="extra_query_ids" value="{{ extra_queries }}" placeholder="comma/space-separated"/>
+                            <span class="ui-muted">Optional additional queries (stored in connection settings).</span>
+                          </label>
+                        {% else %}
+                          <input type="hidden" name="extra_query_ids" value=""/>
+                        {% endif %}
+                        <label>
+                          <span>Audit note (optional)</span>
+                          <input name="note" placeholder="Why this setting changed"/>
+                        </label>
+                        <button class="btn" type="submit">Save settings</button>
+                      </form>
+
+                      <details class="ui-disclosure" style="margin-top:10px">
+                        <summary>Sync options</summary>
+                        <form method="post" action="/sync/connections/{{ c.id }}/run" class="form-compact" style="margin-top:10px">
+                          <label>
+                            <span>Mode</span>
+                            <select name="mode" data-sync-mode-select data-conn-id="{{ c.id }}">
+                              <option value="INCREMENTAL" selected>INCREMENTAL</option>
+                              <option value="FULL">FULL</option>
+                            </select>
+                          </label>
+                          <div class="grid3">
+                            <label>
+                              <span>Overlap days (0–30)</span>
+                              <input name="overlap_days" value="7"/>
+                            </label>
+                            <label>
+                              <span>Store raw payload snapshots</span>
+                              <input type="checkbox" name="store_payloads" id="payloads_{{ c.id }}"/>
+                            </label>
+                            <label>
+                              <span>Reprocess payloads/files</span>
+                              <input type="checkbox" name="reprocess_files"/>
+                            </label>
+                          </div>
+
+                          <div id="full_fields_{{ c.id }}" class="box" hidden>
+                            <b>FULL range</b>
+                            <div class="grid3" style="margin-top:6px">
+                              <label>
+                                <span>Start date</span>
+                                <input name="start_date" value="{{ ten_years_ago }}" placeholder="YYYY-MM-DD (or MM/DD/YYYY)"/>
+                              </label>
+                              <label>
+                                <span>End date</span>
+                                <input name="end_date" value="{{ today }}" placeholder="YYYY-MM-DD (or MM/DD/YYYY)"/>
+                              </label>
+                            </div>
+                            <div class="ui-muted" style="margin-top:6px">Default stores payload snapshots ON for FULL.</div>
+                          </div>
+
+                          <div id="inc_fields_{{ c.id }}" class="box">
+                            <b>INCREMENTAL</b>
+                            <div class="ui-muted" style="margin-top:6px">
+                              Last successful sync: {{ c.last_successful_sync_at|local_date if c.last_successful_sync_at else "—" }}.
+                              Default computed since (overlap=7): {{ since_default_by_conn.get(c.id) or "today-90d" }}.
+                            </div>
+                            <div class="grid3" style="margin-top:6px">
+                              <label>
+                                <span>Override start date (optional)</span>
+                                <input name="start_date" value=""/>
+                              </label>
+                              <label>
+                                <span>End date (ignored; uses today)</span>
+                                <input name="end_date" value="" disabled/>
+                              </label>
+                            </div>
+                          </div>
+
+                          <label>
+                            <span>Audit note (optional)</span>
+                            <input name="note" placeholder="Why this sync was run"/>
+                          </label>
+                          <button class="btn btn--primary" type="submit" {% if not is_active %}disabled{% endif %}>Run sync</button>
+                        </form>
+                      </details>
+
+                      <details class="ui-disclosure" style="margin-top:10px">
+                        <summary>Actions</summary>
+                        <div class="sync-conn-actions-extra" style="margin-top:10px">
+                          {% if uses_credentials %}
+                            <a class="btn" href="/sync/connections/{{ c.id }}/auth">Edit credentials</a>
+                          {% else %}
+                            <div class="ui-muted">This connector does not use stored credentials.</div>
+                          {% endif %}
+                          <a class="btn" href="/sync/connections/{{ c.id }}">Open connection</a>
+                          <form method="post" action="/sync/connections/{{ c.id }}/disable" data-confirm-disable data-conn-name="{{ c.name|e }}" style="margin-top:10px">
+                            <label class="ui-muted">
+                              <span>Audit note (optional)</span>
+                              <input name="note" placeholder="Why this was disabled"/>
+                            </label>
+                            <button class="btn" type="submit">Disable connection</button>
+                          </form>
+                        </div>
+                      </details>
+                    </div>
+                  </div>
+                </div>
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% endif %}
+</section>

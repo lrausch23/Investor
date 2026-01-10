@@ -1,19 +1,15 @@
 {% extends "layout.html" %}
 {% block content %}
-  <h1>Monthly Portfolio Performance Report</h1>
-  <p><a class="muted" href="/reports">← Back to Reports</a></p>
+  {% set report_breadcrumbs = [{"label": "Reports", "href": "/reports"}, {"label": "Monthly report", "href": None}] %}
+  {% set report_title = "Monthly Performance Report" %}
+  {% set report_badge = "Report" %}
+  {% set report_context = "<b>Scope:</b> " ~ scope_label ~ " <span class='ui-muted'>·</span> Runs are written under <code>data/monthly_reports/</code>." %}
+  {% include "partials/reports/_header.html" %}
 
-  {% if ok_msg %}
-    <div class="banner banner--ok">{{ ok_msg }}</div>
-  {% endif %}
-  {% if error_msg %}
-    <div class="banner banner--warn">{{ error_msg }}</div>
-  {% endif %}
-
-  <h2>Use Existing Investor Data</h2>
-  <div class="box">
+  <div class="ui-card" style="margin-top:10px">
+    <div class="ui-section-title">Use existing Investor data</div>
     <form method="post" action="/reports/monthly/run_db">
-      <div class="grid3">
+      <div class="report-filters-grid">
         <label>Scope<br/>
           <select name="scope" id="scope_sel" onchange="window.location='/reports/monthly?scope=' + this.value;">
             <option value="household" {% if scope == "household" %}selected{% endif %}>Household</option>
@@ -38,69 +34,79 @@
         <label>End<br/><input name="end" value="{{ default_end }}" /></label>
         <label>As-of (month-end)<br/><input name="asof" value="{{ default_asof }}" /></label>
         <label>Options<br/>
-          <div class="muted" style="margin-top:6px">
+          <div class="ui-muted" style="margin-top:6px">
             <label><input type="checkbox" name="download_prices" value="true" /> Download missing prices (needs yfinance + internet)</label><br/>
             <label><input type="checkbox" name="include_fees_as_flow" value="true" /> Treat fees as external flow</label>
           </div>
         </label>
-        <label>&nbsp;<br/><button type="submit">Run</button></label>
+        <div class="report-filters-actions">
+          <button class="btn btn--primary" type="submit">Run report</button>
+        </div>
       </div>
-      <div class="muted" style="margin-top:10px">
+      <div class="ui-muted" style="margin-top:10px">
         Uses existing holdings snapshots + transactions for the selected portfolio. Outputs are written under <code>data/monthly_reports/</code>.
       </div>
     </form>
   </div>
 
-  <h2>Upload Files</h2>
-  <div class="box">
+  <div class="ui-card" style="margin-top:12px">
+    <div class="ui-section-title">Upload files</div>
     <form method="post" action="/reports/monthly/run" enctype="multipart/form-data">
-      <div class="grid3">
+      <div class="report-filters-grid">
         <label>Start<br/><input name="start" value="{{ default_start }}" /></label>
         <label>End<br/><input name="end" value="{{ default_end }}" /></label>
         <label>As-of (month-end)<br/><input name="asof" value="{{ default_asof }}" /></label>
         <label>Benchmark<br/><input name="benchmark" value="{{ default_benchmark }}" /></label>
         <label>Options<br/>
-          <div class="muted" style="margin-top:6px">
+          <div class="ui-muted" style="margin-top:6px">
             <label><input type="checkbox" name="download_prices" value="true" /> Download missing prices (needs yfinance + internet)</label><br/>
             <label><input type="checkbox" name="include_fees_as_flow" value="true" /> Treat fees as external flow</label>
           </div>
         </label>
-        <label>&nbsp;<br/><button type="submit">Run</button></label>
+        <div class="report-filters-actions">
+          <button class="btn btn--primary" type="submit">Run report</button>
+        </div>
       </div>
       <div class="grid3" style="margin-top:12px">
         <label>transactions.csv<br/><input type="file" name="transactions" required /></label>
         <label>monthly_perf.csv<br/><input type="file" name="monthly_perf" required /></label>
         <label>holdings.csv (optional)<br/><input type="file" name="holdings" /></label>
       </div>
-      <div class="muted" style="margin-top:10px">
+      <div class="ui-muted" style="margin-top:10px">
         Outputs are written under <code>data/monthly_reports/</code> and served back via this page. Offline prices can be provided in <code>data/prices/*.csv</code>.
       </div>
     </form>
   </div>
 
   {% if runs and runs|length > 0 %}
-    <h2>Recent Runs</h2>
-    <div class="box">
-      <table>
-        <tr>
-          <th>Run</th>
-          <th>Period</th>
-          <th>Benchmark</th>
-          <th class="muted">TWR</th>
-          <th class="muted">XIRR</th>
-          <th class="muted">Warnings</th>
-        </tr>
-        {% for r in runs %}
-          <tr>
-            <td><a class="muted" href="/reports/monthly/run/{{ r.run_id }}">{{ r.run_id }}</a></td>
-            <td class="muted">{{ r.start_date }} → {{ r.end_date }} (as-of {{ r.asof }})</td>
-            <td class="muted">{{ r.benchmark }}</td>
-            <td class="muted">{% if r.twr_ytd is none %}—{% else %}{{ "%.2f"|format(r.twr_ytd * 100.0) }}%{% endif %}</td>
-            <td class="muted">{% if r.xirr is none %}—{% else %}{{ "%.2f"|format(r.xirr * 100.0) }}%{% endif %}</td>
-            <td class="muted">{{ r.warnings_count if r.warnings_count is not none else "—" }}</td>
-          </tr>
-        {% endfor %}
-      </table>
+    <div class="ui-card" style="margin-top:12px">
+      <div class="ui-section-title">Recent runs</div>
+      <div class="table-wrap" style="margin-top:10px">
+        <table>
+          <thead>
+            <tr>
+              <th scope="col">Run</th>
+              <th scope="col">Period</th>
+              <th scope="col">Benchmark</th>
+              <th scope="col" class="num">TWR</th>
+              <th scope="col" class="num">XIRR</th>
+              <th scope="col" class="num">Warnings</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for r in runs %}
+              <tr>
+                <td><a class="ui-muted" href="/reports/monthly/run/{{ r.run_id }}">{{ r.run_id }}</a></td>
+                <td class="ui-muted">{{ r.start_date }} → {{ r.end_date }} (as-of {{ r.asof }})</td>
+                <td class="ui-muted">{{ r.benchmark }}</td>
+                <td class="num ui-muted">{% if r.twr_ytd is none %}—{% else %}{{ "%.2f"|format(r.twr_ytd * 100.0) }}%{% endif %}</td>
+                <td class="num ui-muted">{% if r.xirr is none %}—{% else %}{{ "%.2f"|format(r.xirr * 100.0) }}%{% endif %}</td>
+                <td class="num ui-muted">{{ r.warnings_count if r.warnings_count is not none else "—" }}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
     </div>
   {% endif %}
 {% endblock %}

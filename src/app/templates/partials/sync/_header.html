@@ -1,0 +1,51 @@
+<div class="holdings-header">
+  <div class="page-title">
+    <div class="page-title__left">
+      <h1>Sync</h1>
+      <span class="ui-badge ui-badge--neutral">Connections</span>
+      {% if show_legacy %}
+        <span class="ui-badge ui-badge--outline">Legacy visible</span>
+      {% endif %}
+    </div>
+    <div class="page-title__right">
+      {% if not show_legacy %}
+        <a class="btn btn--secondary" href="/sync/connections?show_legacy=1">Show legacy</a>
+      {% else %}
+        <a class="btn btn--secondary" href="/sync/connections">Hide legacy</a>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="ui-muted selection-line">
+    <b>Showing:</b> {{ "Supported + legacy connectors" if show_legacy else "Supported connectors only" }}
+    <span class="ui-muted">·</span>
+    <span>Supports <b>IB Flex (Web)</b>, <b>Chase (Offline CSV)</b>, <b>Raymond James (Offline QFX/OFX)</b>.</span>
+  </div>
+
+  {% if auth_banner_detail %}
+    <details class="inline-alert" role="note">
+      <summary>
+        <span class="inline-alert__icon" aria-hidden="true">&#9888;</span>
+        <span>Running locally. Authentication disabled.</span>
+        <span class="inline-alert__link">Learn more</span>
+      </summary>
+      <div class="muted" style="margin-top:6px">{{ auth_banner_detail }}</div>
+    </details>
+  {% endif %}
+
+  {% if not secret_key_ok %}
+    <details class="alert alert--warn" role="note">
+      <summary>APP_SECRET_KEY is not set (credentials disabled)</summary>
+      <div class="muted" style="margin-top:6px">
+        This affects connectors that store credentials (e.g., IB Flex Web). Set <code>APP_SECRET_KEY</code> and restart.
+      </div>
+    </details>
+  {% endif %}
+
+  {% if ok %}
+    <div class="alert alert--ok" role="status">{{ ok }}</div>
+  {% endif %}
+  {% if error %}
+    <div class="alert alert--warn" role="alert">{{ error }}</div>
+  {% endif %}
+</div>

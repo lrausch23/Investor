@@ -134,3 +134,14 @@ def ensure_sqlite_schema(engine: Engine) -> None:
         cols = _table_columns(engine, "bullion_holdings")
         if "cost_basis_total" not in cols:
             _add_column(engine, "bullion_holdings", "cost_basis_total NUMERIC(20,2)")
+
+    if "external_file_ingests" in existing_tables:
+        cols = _table_columns(engine, "external_file_ingests")
+        for name, ddl in [
+            ("stored_path", "stored_path TEXT"),
+            ("start_date_hint", "start_date_hint DATE"),
+            ("end_date_hint", "end_date_hint DATE"),
+            ("metadata_json", "metadata_json TEXT"),
+        ]:
+            if name not in cols:
+                _add_column(engine, "external_file_ingests", ddl)

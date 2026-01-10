@@ -591,7 +591,7 @@ def _list_files(data_dir: Path) -> list[Path]:
         return []
     out: list[Path] = []
     for p in sorted(data_dir.glob("**/*")):
-        if p.is_file() and p.suffix.lower() in {".csv", ".tsv", ".txt", ".xml"}:
+        if p.is_file() and p.suffix.lower() in {".csv", ".tsv", ".txt", ".xml", ".qfx", ".ofx"}:
             out.append(p)
     return out
 
@@ -648,6 +648,9 @@ class RJOfflineAdapter(BrokerAdapter):
                 return out
         data_dir = self._data_dir(connection)
         for p in _list_files(data_dir):
+            if p.suffix.lower() in {".qfx", ".ofx"}:
+                out.append(OfflineFile(path=p, file_hash=_sha256_bytes(p.read_bytes()), kind="TRANSACTIONS"))
+                continue
             try:
                 txt = p.read_text(encoding="utf-8-sig")
             except Exception:
@@ -660,7 +663,10 @@ class RJOfflineAdapter(BrokerAdapter):
         data_dir = self._data_dir(connection)
         files = _list_files(data_dir)
         if not files:
-            return {"ok": False, "message": f"No .csv/.tsv/.txt files found in {data_dir}."}
+            return {
+                "ok": False,
+                "message": f"No supported files found in {data_dir} (.csv/.tsv/.txt/.xml/.qfx/.ofx).",
+            }
         return {"ok": True, "message": f"OK (RJ offline): {len(files)} file(s) found.", "data_dir": str(data_dir)}
 
     def fetch_accounts(self, connection: Any) -> list[dict[str, Any]]:
@@ -680,6 +686,105 @@ class RJOfflineAdapter(BrokerAdapter):
         f = files[idx]
         p = f.path
         next_cursor = str(idx + 1) if (idx + 1) < len(files) else None
+
+        if p.suffix.lower() in {".qfx", ".ofx"}:
+            from src.adapters.rj_offline.qfx_parser import (
+                extract_qfx_header_meta,
+                parse_security_list,
+                parse_transactions,
+                placeholder_ticker_from_security,
+                stable_txn_id_from_qfx,
+            )
+
+            try:
+                text = p.read_text(encoding="utf-8-sig", errors="ignore")
+            except Exception as e:
+                raise ProviderError(f"Failed to read RJ QFX file {p.name}: {type(e).__name__}: {e}")
+
+            try:
+                sec_map = parse_security_list(text)
+            except Exception:
+                sec_map = {}
+
+            try:
+                hdr = extract_qfx_header_meta(text)
+            except Exception:
+                hdr = None
+
+            txs = parse_transactions(text)
+            provider_account_id = "RJ:TAXABLE"
+            out: list[dict[str, Any]] = []
+            for i, tx in enumerate(txs):
+                d = tx.dt_trade or tx.dt_posted
+                if d is None or d < start_date or d > end_date:
+                    continue
+                raw = str(tx.raw_type or "").upper()
+                if raw.startswith("BUY"):
+                    ttype = "BUY"
+                elif raw.startswith("SELL"):
+                    ttype = "SELL"
+                elif raw == "INCOME":
+                    # Use memo to separate DIV/INT when possible.
+                    joined = " ".join([str(tx.name or ""), str(tx.memo or "")]).upper()
+                    ttype = "INT" if "INTEREST" in joined else "DIV"
+                elif raw in {"REINVEST"}:
+                    ttype = "DIV"
+                elif raw in {"FEES", "FEE", "INVEXPENSE"}:
+                    ttype = "FEE"
+                elif raw == "BANKTRN":
+                    ttype = "TRANSFER"
+                else:
+                    joined = " ".join([raw, str(tx.name or ""), str(tx.memo or "")]).upper()
+                    if "DIV" in joined:
+                        ttype = "DIV"
+                    elif "INTEREST" in joined or joined.startswith("INT"):
+                        ttype = "INT"
+                    elif "FEE" in joined:
+                        ttype = "FEE"
+                    elif "WITHHOLD" in joined or "TAX" in joined:
+                        ttype = "WITHHOLDING"
+                    elif "TRANSFER" in joined or "WIRE" in joined or "ACH" in joined or "DEPOSIT" in joined or "WITHDRAW" in joined:
+                        ttype = "TRANSFER"
+                    else:
+                        ttype = "OTHER"
+
+                uid = (tx.unique_id or "").upper() if tx.unique_id else None
+                sec = sec_map.get(uid) if uid else None
+                ticker = placeholder_ticker_from_security(sec, unique_id=uid) if (uid or sec) else None
+
+                amt = float(tx.amount or 0.0)
+                if ttype in {"BUY", "FEE", "WITHHOLDING"}:
+                    amt = -abs(amt)
+                elif ttype in {"SELL", "DIV", "INT"}:
+                    amt = abs(amt)
+                # TRANSFER keeps source sign.
+
+                qty = float(tx.units) if tx.units is not None else None
+                desc = (tx.memo or tx.name or (sec.name if sec else None) or "").strip()
+                additional_detail = ""
+                if hdr is not None:
+                    additional_detail = " ".join([x for x in [hdr.acct_id, hdr.broker_id] if x]).strip()
+
+                out.append(
+                    {
+                        "provider_account_id": provider_account_id,
+                        "provider_transaction_id": stable_txn_id_from_qfx(provider_account_id=provider_account_id, tx=tx),
+                        "date": d.isoformat(),
+                        "type": ttype,
+                        "ticker": ticker,
+                        "qty": qty,
+                        "amount": float(amt),
+                        "description": desc,
+                        "additional_detail": additional_detail,
+                        "source_file": p.name,
+                        "source_row": i + 1,
+                        "source_file_hash": f.file_hash,
+                        "qfx_raw_type": raw,
+                        "qfx_cusip": uid,
+                    }
+                )
+            return out, next_cursor
+
         try:
             text = p.read_text(encoding="utf-8-sig")
         except Exception as e:
@@ -819,16 +924,120 @@ class RJOfflineAdapter(BrokerAdapter):
             files = _list_files(data_dir)
             for p in files:
                 try:
-                    txt = p.read_text(encoding="utf-8-sig")
+                    txt = p.read_text(encoding="utf-8-sig", errors="ignore")
                 except Exception:
                     continue
-                if _looks_like_holdings(txt):
+                if p.suffix.lower() in {".qfx", ".ofx"}:
+                    holdings_files.append(p)
+                elif _looks_like_holdings(txt):
                     holdings_files.append(p)
             if not holdings_files:
                 return {"as_of": (as_of or utcnow()).isoformat(), "items": []}
             holdings_files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
 
         p = holdings_files[0]
+        if p.suffix.lower() in {".qfx", ".ofx"}:
+            from src.adapters.rj_offline.qfx_parser import (
+                extract_qfx_header_meta,
+                parse_positions,
+                parse_security_list,
+                placeholder_ticker_from_security,
+            )
+
+            text = p.read_text(encoding="utf-8-sig", errors="ignore")
+            try:
+                sec_map = parse_security_list(text)
+            except Exception:
+                sec_map = {}
+            asof_date, pos, meta = parse_positions(text, securities=sec_map)
+            try:
+                hdr = extract_qfx_header_meta(text)
+            except Exception:
+                hdr = None
+
+            asof_dt = end_of_day_utc(asof_date) if asof_date else (as_of or utcnow())
+            provider_account_id = "RJ:TAXABLE"
+            items: list[dict[str, Any]] = []
+            total_value = 0.0
+            for it in pos:
+                if it.qty is None or abs(float(it.qty)) <= 1e-9:
+                    continue
+                sec = sec_map.get((it.unique_id or "").upper()) if it.unique_id else None
+                ticker = placeholder_ticker_from_security(sec, unique_id=it.unique_id)
+                mv = float(it.market_value) if it.market_value is not None else None
+                if mv is None and it.unit_price is not None and it.qty is not None:
+                    mv = float(it.unit_price) * float(it.qty)
+                if mv is not None:
+                    total_value += float(mv)
+                items.append(
+                    {
+                        "provider_account_id": provider_account_id,
+                        "symbol": ticker,
+                        "qty": float(it.qty),
+                        "market_value": float(mv) if mv is not None else None,
+                        "cost_basis_total": float(it.cost_basis) if it.cost_basis is not None else None,
+                        "source_file": p.name,
+                        "metadata": {"cusip": it.unique_id, "name": it.name},
+                    }
+                )
+
+            # Add cash balance when present (USD-only in MVP).
+            cash_balances: list[dict[str, Any]] = []
+            try:
+                avail = float(meta.get("avail_cash") or 0.0) if isinstance(meta, dict) else 0.0
+            except Exception:
+                avail = 0.0
+            if abs(avail) > 1e-9:
+                cash_balances.append(
+                    {
+                        "provider_account_id": provider_account_id,
+                        "currency": "USD",
+                        "amount": float(avail),
+                        "as_of_date": asof_dt.date().isoformat(),
+                        "source_file": p.name,
+                    }
+                )
+                items.append(
+                    {
+                        "provider_account_id": provider_account_id,
+                        "symbol": "CASH:USD",
+                        "qty": float(avail),
+                        "market_value": float(avail),
+                        "asset_type": "CASH",
+                        "source_file": p.name,
+                    }
+                )
+                total_value += float(avail)
+
+            # Total row for valuation points.
+            items.append(
+                {
+                    "provider_account_id": provider_account_id,
+                    "symbol": "STATEMENT:TOTAL",
+                    "market_value": float(total_value) if total_value else None,
+                    "is_total": True,
+                    "source_file": p.name,
+                }
+            )
+
+            out: dict[str, Any] = {
+                "as_of": asof_dt.isoformat(),
+                "items": items,
+                "source_file": p.name,
+                "statement_period_start": hdr.dt_start.isoformat() if hdr and hdr.dt_start else None,
+                "statement_period_end": hdr.dt_end.isoformat() if hdr and hdr.dt_end else None,
+                "statement_total_value": float(total_value) if total_value else None,
+                "qfx_meta": {
+                    "broker_id": hdr.broker_id if hdr else None,
+                    "acct_id": hdr.acct_id if hdr else None,
+                    "dt_start": hdr.dt_start.isoformat() if hdr and hdr.dt_start else None,
+                    "dt_end": hdr.dt_end.isoformat() if hdr and hdr.dt_end else None,
+                    "dt_asof": hdr.dt_asof.isoformat() if hdr and hdr.dt_asof else None,
+                },
+            }
+            if cash_balances:
+                out["cash_balances"] = cash_balances
+            return out
         file_mtime_asof = utcfromtimestamp(p.stat().st_mtime)
         name_date = date_from_filename(p.name)
         file_name_asof = end_of_day_utc(name_date) if name_date else None

@@ -377,19 +377,18 @@ def holdings_refresh_prices(
 ):
     """
     Refresh local price cache for symbols currently displayed on the Holdings page.
-    Uses Yahoo Finance chart API or Finnhub (behind NETWORK_ENABLED + outbound allowlist gates).
+    Uses Stooq daily candles (preferred) or Yahoo Finance chart API (may rate limit).
     """
     from src.core.benchmarks import download_yahoo_price_history_csv
     from src.core.dashboard_service import parse_scope
     from src.core.external_holdings import build_holdings_view
-    from src.core.prices_finnhub import download_finnhub_quote_csv, download_finnhub_price_history_csv
+    from src.investor.marketdata.benchmarks import StooqProvider
     from market_data.symbols import normalize_ticker
 
     sc = parse_scope(scope)
     acct_id = int(account_id) if str(account_id).strip().isdigit() else None
     today = dt.date.today()
-    provider_norm = (provider or "yahoo").strip().lower()
-    finnhub_key = (os.environ.get("FINNHUB_API_KEY") or "").strip()
+    provider_norm = (provider or "stooq").strip().lower()
 
     # Build holdings WITHOUT price override to avoid confusing the refresh list.
     view = build_holdings_view(session, scope=sc, account_id=acct_id, today=today, prices_dir=None)
@@ -409,52 +408,45 @@ def holdings_refresh_prices(
     fetched_at = dt.datetime.now(dt.timezone.utc).isoformat()
 
     updated = 0
+    skipped = 0
     failed: list[tuple[str, str]] = []
     def _safe_err(msg: str) -> str:
         s = (msg or "").strip()
         if not s:
             return ""
-        # Never leak API keys if they somehow appear in an exception string.
-        if finnhub_key:
-            s = s.replace(finnhub_key, "***")
         # Keep URLs out of UI messages; show only the tail.
         s = s.replace("https://", "").replace("http://", "")
         return (s[:220] + "…") if len(s) > 220 else s
 
+    stooq = StooqProvider()
     for sym, provider_ticker in priceable:
         try:
             dest = prices_dir / f"{sym}.csv"
-            if provider_norm == "finnhub":
-                if not finnhub_key:
-                    raise RuntimeError("Missing FINNHUB_API_KEY")
-                # Prefer quote (near-real-time) for holdings valuation; deterministic once cached.
-                try:
-                    quote_dt, quote_px = download_finnhub_quote_csv(symbol=provider_ticker, dest_path=dest, api_key=finnhub_key)
-                    meta = {
-                        "provider": "finnhub_quote",
-                        "provider_ticker": provider_ticker,
-                        "original_ticker": sym,
-                        "quote_time": quote_dt.isoformat(),
-                        "quote_price": float(quote_px),
-                        "fetched_at": fetched_at,
-                    }
-                except Exception:
-                    # Fallback: candles (daily close history).
-                    res = download_finnhub_price_history_csv(
-                        symbol=provider_ticker,
-                        start_date=start,
-                        end_date=today,
-                        dest_path=dest,
-                        api_key=finnhub_key,
-                    )
-                    meta = {
-                        "provider": "finnhub_candles",
-                        "provider_ticker": provider_ticker,
-                        "original_ticker": sym,
-                        "first_date": str(res.start_date),
-                        "last_date": str(res.end_date),
-                        "fetched_at": fetched_at,
-                    }
+            if provider_norm == "cache":
+                skipped += 1
+                continue
+            if provider_norm == "stooq":
+                df = stooq.fetch(symbol=provider_ticker, start=start, end=today)
+                # Write a simple, load_price_csv-compatible file.
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                with dest.open("w", encoding="utf-8", newline="") as f:
+                    f.write("Date,Close\n")
+                    for ts, row in df.iterrows():
+                        try:
+                            d = ts.date().isoformat()
+                            px = float(row.get("close") or 0.0)
+                            if px > 0:
+                                f.write(f"{d},{px}\n")
+                        except Exception:
+                            continue
+                meta = {
+                    "provider": "stooq_daily",
+                    "provider_ticker": provider_ticker,
+                    "original_ticker": sym,
+                    "first_date": str(start),
+                    "last_date": str(today),
+                    "fetched_at": fetched_at,
+                }
             else:
                 res = download_yahoo_price_history_csv(
                     symbol=provider_ticker,
@@ -477,20 +469,18 @@ def holdings_refresh_prices(
                 failed.append((sym, type(e).__name__))
 
     base = f"/holdings?scope={sc}" + (f"&account_id={acct_id}" if acct_id is not None else "")
+    if provider_norm == "cache":
+        msg = f"Cache-only mode: no network fetch performed (skipped {skipped} symbol(s))."
+        return RedirectResponse(url=f"{base}&ok={msg}", status_code=303)
     if failed and updated:
         sample = "; ".join([f"{s}: {m}" for s, m in failed[:4]])
         suffix = "…" if len(failed) > 4 else ""
         msg = f"Updated {updated} price file(s); failed {len(failed)}: {sample}{suffix}"
         return RedirectResponse(url=f"{base}&ok={msg}", status_code=303)
     if failed and not updated:
-        if provider_norm == "finnhub":
-            sample = "; ".join([f"{s}: {m}" for s, m in failed[:4]])
-            suffix = "…" if len(failed) > 4 else ""
-            msg = f"Price refresh failed for {len(failed)} symbol(s): {sample}{suffix}"
-        else:
-            sample = "; ".join([f"{s}: {m}" for s, m in failed[:4]])
-            suffix = "…" if len(failed) > 4 else ""
-            msg = f"Price refresh failed for {len(failed)} symbol(s): {sample}{suffix}"
+        sample = "; ".join([f"{s}: {m}" for s, m in failed[:4]])
+        suffix = "…" if len(failed) > 4 else ""
+        msg = f"Price refresh failed for {len(failed)} symbol(s): {sample}{suffix}"
         return RedirectResponse(url=f"{base}&error={msg}", status_code=303)
     return RedirectResponse(url=f"{base}&ok=Updated {updated} price file(s).", status_code=303)
 

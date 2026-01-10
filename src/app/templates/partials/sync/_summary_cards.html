@@ -1,0 +1,11 @@
+{% from "partials/ui/components.html" import kpi_card %}
+
+<div class="holdings-summary">
+  <div class="ui-kpi-grid" role="group" aria-label="Sync connection summary">
+    {{ kpi_card("Active connections", connections_active_count, subtext=("Visible: " ~ connections_total_count), tone="neutral") }}
+    {{ kpi_card("Coverage", coverage_value, subtext=coverage_subtext, tone=coverage_tone) }}
+    {{ kpi_card("Last successful sync", (last_success_at|local_dt if last_success_at else "—"), subtext="Across visible connections", tone="neutral") }}
+    {{ kpi_card("Warnings", warnings_count, subtext=warnings_subtext, tone=warnings_tone) }}
+  </div>
+</div>
+
