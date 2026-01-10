@@ -1,6 +1,6 @@
 {% extends "layout.html" %}
 {% block content %}
-	  <h1>Recurring Charges</h1>
+	  {% include "partials/expenses/_header.html" %}
 	  <form method="get" action="/expenses/recurring" class="box">
 	    <label>Year <input name="year" value="{{ year }}" size="6" /></label>
 	    <label>Min months <input name="min_months" value="{{ min_months }}" size="4" /></label>

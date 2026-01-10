@@ -1,12 +1,6 @@
 {% extends "layout.html" %}
 {% block content %}
-  <h1>Expense Rules</h1>
-  {% if error %}
-    <div class="banner banner--warn">{{ error }}</div>
-  {% endif %}
-  {% if ok %}
-    <div class="banner banner--ok">{{ ok }}</div>
-  {% endif %}
+  {% include "partials/expenses/_header.html" %}
 
   <div class="box">
     <div>Rules path: <code>{{ rules_path }}</code></div>
@@ -26,4 +20,3 @@
     <a class="muted" href="/expenses">Back</a>
   </form>
 {% endblock %}
-

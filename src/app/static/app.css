@@ -227,6 +227,14 @@ a:focus-visible, button:focus-visible, summary:focus-visible, input:focus-visibl
 .sync-snapshots-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; align-items: start; }
 .sync-files-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; align-items: start; }
 
+/* Expenses subnav (tabs) */
+.ui-tabs { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+.ui-tab { display: inline-flex; align-items: center; gap: 8px; padding: 6px 10px; border-radius: 999px; border: 1px solid #e5e7eb; background: #fff; color: #374151; text-decoration: none; }
+.ui-tab:hover { background: #f9fafb; }
+.ui-tab--active, .ui-tab[aria-current="page"] { background: #111827; border-color: #111827; color: #fff; }
+.ui-tab--active .ui-muted, .ui-tab[aria-current="page"] .ui-muted { color: rgba(255,255,255,0.82); }
+.ui-tab__count { font-size: 0.92em; }
+
 /* Sell optimizer (drill-down) */
 .opt-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; align-items: start; margin-top: 8px; }
 .opt-col { display: grid; gap: 10px; align-content: start; }

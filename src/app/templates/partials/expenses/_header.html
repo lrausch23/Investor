@@ -2,7 +2,7 @@
   <div class="page-title">
     <div class="page-title__left">
       <h1>Expenses</h1>
-      <span class="ui-badge ui-badge--neutral">Statements</span>
+      <span class="ui-badge ui-badge--neutral">{{ expenses_badge or "Statements" }}</span>
     </div>
     {% if auth_banner_detail %}
       <details class="inline-alert" role="note">
@@ -16,15 +16,7 @@
     {% endif %}
   </div>
 
-  <div class="ui-muted selection-line">
-    <a class="ui-muted" href="/expenses/reports?year={{ today[:4] }}">Reports</a>
-    <span class="ui-muted">·</span>
-    <a class="ui-muted" href="/expenses/recurring?year={{ today[:4] }}">Recurring</a>
-    <span class="ui-muted">·</span>
-    <a class="ui-muted" href="/expenses/transactions">Transactions</a>
-    <span class="ui-muted">·</span>
-    <a class="ui-muted" href="/expenses/rules">Rules</a>
-  </div>
+  {% include "partials/expenses/_subnav.html" %}
 
   {% if ok %}
     <div class="alert alert--ok" role="status">{{ ok }}</div>
@@ -33,7 +25,7 @@
     <div class="alert alert--warn" role="alert">{{ error }}</div>
   {% endif %}
 
-  {% if not rules_exists %}
+  {% if show_rules_callout and not rules_exists %}
     <details class="alert alert--warn">
       <summary>Rules file missing</summary>
       <div class="muted" style="margin-top:6px">
@@ -48,4 +40,3 @@
     </details>
   {% endif %}
 </div>
-

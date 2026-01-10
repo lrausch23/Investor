@@ -1,6 +1,6 @@
 {% extends "layout.html" %}
 {% block content %}
-  <h1>Expense Transactions</h1>
+  {% include "partials/expenses/_header.html" %}
   <form method="get" action="/expenses/transactions" class="box">
     <div class="grid3">
       <label>Year <input name="year" value="{{ year or '' }}" size="6" /></label>

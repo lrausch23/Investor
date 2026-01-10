@@ -1,6 +1,6 @@
 {% extends "layout.html" %}
 {% block content %}
-  <h1>Expense Reports</h1>
+  {% include "partials/expenses/_header.html" %}
   <form method="get" action="/expenses/reports" class="box">
     <label>Year <input name="year" value="{{ year }}" size="6" /></label>
     <label>Month (optional) <input name="month" value="{{ month or '' }}" size="4" placeholder="1-12" /></label>

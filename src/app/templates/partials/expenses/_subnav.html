@@ -1,0 +1,26 @@
+{% set nav_year = expenses_nav_year or (today[:4] if today else "") %}
+
+<nav class="ui-tabs" aria-label="Expenses">
+  {% set items = [
+    {"key": "statements", "label": "Statements", "href": "/expenses"},
+    {"key": "reports", "label": "Reports", "href": ("/expenses/reports?year=" ~ nav_year) if nav_year else "/expenses/reports"},
+    {"key": "recurring", "label": "Recurring", "href": ("/expenses/recurring?year=" ~ nav_year) if nav_year else "/expenses/recurring"},
+    {"key": "transactions", "label": "Transactions", "href": "/expenses/transactions"},
+    {"key": "rules", "label": "Rules", "href": "/expenses/rules"},
+  ] %}
+
+  {% for it in items %}
+    {% set is_active = (expenses_active_tab or "") == it.key %}
+    <a
+      class="ui-tab{% if is_active %} ui-tab--active{% endif %}"
+      href="{{ it.href }}"
+      {% if is_active %}aria-current="page"{% endif %}
+    >
+      <span>{{ it.label }}</span>
+      {% if it.key == "transactions" and expenses_txn_count is defined and expenses_txn_count is not none %}
+        <span class="ui-tab__count ui-muted">({{ "{:,}".format(expenses_txn_count) }})</span>
+      {% endif %}
+    </a>
+  {% endfor %}
+</nav>
+
