@@ -6,6 +6,7 @@ import io
 import json
 import re
 import shutil
+import urllib.parse
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
@@ -106,6 +107,18 @@ def _scope_account_predicates(scope: str):
     return []
 
 
+_PLACEHOLDER_ACCOUNT_NAMES = {
+    "IB FLEX WEB",
+    "IB FLEX (WEB)",
+    "IB FLEX OFFLINE",
+    "IB FLEX (OFFLINE)",
+}
+
+
+def _exclude_placeholder_accounts(q):
+    return q.filter(~func.upper(Account.name).in_(_PLACEHOLDER_ACCOUNT_NAMES))
+
+
 def _is_internal_transfer_expr():
     """
     SQL predicate to exclude internal sweeps/FX/multi-currency shuttles from cashflow reporting.
@@ -114,16 +127,20 @@ def _is_internal_transfer_expr():
     desc = func.upper(func.coalesce(func.json_extract(Transaction.lot_links_json, "$.description"), ""))
     addl = func.upper(func.coalesce(func.json_extract(Transaction.lot_links_json, "$.additional_detail"), ""))
     raw = func.upper(func.coalesce(func.json_extract(Transaction.lot_links_json, "$.raw_type"), ""))
+    source = func.upper(func.coalesce(func.json_extract(Transaction.lot_links_json, "$.source"), ""))
     txt = desc + " " + addl
-    return or_(
-        # Chase IRA deposit sweep between internal sub-accounts (not investor deposits/withdrawals).
-        func.instr(txt, "DEPOSIT SWEEP") > 0,
-        func.instr(txt, "SHADO") > 0,
-        func.instr(txt, "REC FR SIS") > 0,
-        func.instr(txt, "REC TRSF SIS") > 0,
-        func.instr(txt, "TRSF SIS") > 0,
-        and_(raw == "UNKNOWN", func.instr(txt, "MULTI") > 0, func.instr(txt, "CURRENCY") > 0),
-        and_(func.instr(txt, "FX") > 0, or_(func.instr(txt, "SETTLEMENT") > 0, func.instr(txt, "TRAD") > 0, func.instr(txt, "TRADE") > 0)),
+    return and_(
+        source != "CSV_SUPPLEMENTAL",
+        or_(
+            # Chase IRA deposit sweep between internal sub-accounts (not investor deposits/withdrawals).
+            func.instr(txt, "DEPOSIT SWEEP") > 0,
+            func.instr(txt, "SHADO") > 0,
+            func.instr(txt, "REC FR SIS") > 0,
+            func.instr(txt, "REC TRSF SIS") > 0,
+            func.instr(txt, "TRSF SIS") > 0,
+            and_(raw == "UNKNOWN", func.instr(txt, "MULTI") > 0, func.instr(txt, "CURRENCY") > 0),
+            and_(func.instr(txt, "FX") > 0, or_(func.instr(txt, "SETTLEMENT") > 0, func.instr(txt, "TRAD") > 0, func.instr(txt, "TRADE") > 0)),
+        ),
     )
 
 def _portfolio_options_for_scope(session: Session, *, scope: str) -> list[dict[str, object]]:
@@ -182,6 +199,10 @@ def _parse_period_dates_for_performance(
         start_date = dt.date(int(year), 1, 1)
         end_date = dt.date(int(year), 12, 31)
         return start_date, end_date, f"Calendar year {year}"
+    if p == "ytd":
+        start_date = dt.date(int(year), 1, 1)
+        end_date = today if int(year) == int(today.year) else dt.date(int(year), 12, 31)
+        return start_date, end_date, f"YTD ({year})"
     if p in {"1y", "3y", "5y"}:
         years = int(p[0])
         end_date = today
@@ -193,7 +214,7 @@ def _parse_period_dates_for_performance(
         if end_date < start_date:
             raise HTTPException(status_code=400, detail="End date must be >= start date.")
         return start_date, end_date, f"{start_date.isoformat()} → {end_date.isoformat()}"
-    # Default: YTD.
+    # Default: YTD (current year).
     start_date = dt.date(today.year, 1, 1)
     end_date = today
     return start_date, end_date, f"YTD ({today.year})"
@@ -207,13 +228,14 @@ def _account_options_for_scope(session: Session, *, scope: str, portfolio_id: in
         .filter(*_scope_account_predicates(scope))
         .order_by(Account.name.asc(), Account.id.asc())
     )
+    q = _exclude_placeholder_accounts(q)
     if portfolio_id is not None:
         q = q.join(ExternalAccountMap, ExternalAccountMap.account_id == Account.id).filter(
             ExternalAccountMap.connection_id == int(portfolio_id)
         )
     out: list[dict[str, object]] = []
     for aid, aname, tp_name, tp_type in q.all():
-        out.append({"id": int(aid), "name": f"{aname} — {tp_name} ({tp_type})"})
+        out.append({"id": int(aid), "name": f"{aname}"})
     return out
 
 
@@ -254,6 +276,8 @@ def _available_year_options(
     tq = tq.filter(*_scope_account_predicates(scope))
     if kind == "withdrawals":
         tq = tq.filter(Transaction.type == "TRANSFER", Transaction.amount < 0)
+    elif kind == "cash_out":
+        tq = tq.filter(Transaction.type.in_(["TRANSFER", "FEE", "WITHHOLDING", "OTHER"]))
     tmin, tmax = tq.one()
     for x in (tmin, tmax):
         y = _year_from_any(x)
@@ -657,7 +681,7 @@ def reports_home(
     account_id = int(account_id_raw) if account_id_raw.isdigit() else None
 
     year_raw = (request.query_params.get("year") or "").strip()
-    year_options = _available_year_options(session, scope=scope, today=today, kind="withdrawals")
+    year_options = _available_year_options(session, scope=scope, today=today, kind="cash_out")
     year = int(year_raw) if year_raw.isdigit() else (today.year if today.year in year_options else year_options[0])
     if year not in year_options:
         year = year_options[0]
@@ -680,12 +704,19 @@ def reports_home(
     # WITHHOLDING is stored as positive (credit), but economically a cash out.
     is_withholding = Transaction.type == "WITHHOLDING"
 
-    q = (
+    # Aggregate cashflow totals per account. We outer-join this onto the account list so that
+    # accounts in scope still show up even if they have $0 cashflow activity in the selected period.
+    tx_source = func.upper(func.coalesce(func.json_extract(Transaction.lot_links_json, "$.source"), ""))
+    is_csv = tx_source == "CSV_SUPPLEMENTAL"
+    is_csv_withdrawal = and_(is_csv, is_withdrawal)
+    is_csv_fee = and_(is_csv, is_fee)
+    is_csv_withholding = and_(is_csv, is_withholding)
+    is_csv_other = and_(is_csv, is_other_cash_out)
+    is_csv_cash_out = or_(is_csv_withdrawal, is_csv_fee, is_csv_withholding, is_csv_other)
+
+    agg_subq = (
         session.query(
-            Account.id.label("account_id"),
-            Account.name.label("account_name"),
-            TaxpayerEntity.name.label("taxpayer_name"),
-            TaxpayerEntity.type.label("taxpayer_type"),
+            Transaction.account_id.label("account_id"),
             func.sum(case((is_deposit, 1), else_=0)).label("deposit_count"),
             func.sum(case((is_deposit, Transaction.amount), else_=0.0)).label("deposit_total"),
             func.sum(case((is_withdrawal, 1), else_=0)).label("withdrawal_count"),
@@ -696,26 +727,70 @@ def reports_home(
             func.sum(case((is_withholding, func.abs(Transaction.amount)), else_=0.0)).label("withholding_total"),
             func.sum(case((is_other_cash_out, 1), else_=0)).label("other_count"),
             func.sum(case((is_other_cash_out, func.abs(Transaction.amount)), else_=0.0)).label("other_total"),
+            func.sum(
+                case(
+                    (is_csv_withdrawal, func.abs(Transaction.amount)),
+                    (is_csv_fee, func.abs(Transaction.amount)),
+                    (is_csv_withholding, func.abs(Transaction.amount)),
+                    (is_csv_other, func.abs(Transaction.amount)),
+                    else_=0.0,
+                )
+            ).label("csv_total"),
+            func.sum(case((is_csv_cash_out, 1), else_=0)).label("csv_count"),
         )
-        .join(Transaction, Transaction.account_id == Account.id)
+        .select_from(Transaction)
+        .join(Account, Account.id == Transaction.account_id)
+        .join(TaxpayerEntity, TaxpayerEntity.id == Account.taxpayer_entity_id)
         .outerjoin(ExternalTransactionMap, ExternalTransactionMap.transaction_id == Transaction.id)
         .outerjoin(ExternalConnection, ExternalConnection.id == ExternalTransactionMap.connection_id)
-        .join(TaxpayerEntity, TaxpayerEntity.id == Account.taxpayer_entity_id)
         .filter(
             Transaction.date >= start_date,
             Transaction.date <= end_date,
             Transaction.type.in_(["TRANSFER", "FEE", "WITHHOLDING", "OTHER"]),
         )
+        .filter(~func.upper(Account.name).in_(_PLACEHOLDER_ACCOUNT_NAMES))
         .filter(
             or_(
+                is_csv,
                 ExternalTransactionMap.connection_id.is_(None),
                 ExternalTransactionMap.connection_id.in_(sorted(preferred_conn_ids)),
             )
         )
-        .group_by(Account.id, Account.name, TaxpayerEntity.name, TaxpayerEntity.type)
-    ).filter(*_scope_account_predicates(scope))
+        .filter(*_scope_account_predicates(scope))
+        .group_by(Transaction.account_id)
+        .subquery()
+    )
 
-    rows = q.order_by(Account.name.asc()).all()
+    rows = (
+        session.query(
+            Account.id.label("account_id"),
+            Account.name.label("account_name"),
+            TaxpayerEntity.name.label("taxpayer_name"),
+            TaxpayerEntity.type.label("taxpayer_type"),
+            func.coalesce(agg_subq.c.deposit_count, 0).label("deposit_count"),
+            func.coalesce(agg_subq.c.deposit_total, 0.0).label("deposit_total"),
+            func.coalesce(agg_subq.c.withdrawal_count, 0).label("withdrawal_count"),
+            func.coalesce(agg_subq.c.withdrawal_total, 0.0).label("withdrawal_total"),
+            func.coalesce(agg_subq.c.fee_count, 0).label("fee_count"),
+            func.coalesce(agg_subq.c.fee_total, 0.0).label("fee_total"),
+            func.coalesce(agg_subq.c.withholding_count, 0).label("withholding_count"),
+            func.coalesce(agg_subq.c.withholding_total, 0.0).label("withholding_total"),
+            func.coalesce(agg_subq.c.other_count, 0).label("other_count"),
+            func.coalesce(agg_subq.c.other_total, 0.0).label("other_total"),
+            func.coalesce(agg_subq.c.csv_total, 0.0).label("csv_total"),
+            func.coalesce(agg_subq.c.csv_count, 0).label("csv_count"),
+        )
+        .select_from(Account)
+        .join(TaxpayerEntity, TaxpayerEntity.id == Account.taxpayer_entity_id)
+        .outerjoin(agg_subq, agg_subq.c.account_id == Account.id)
+        .filter(*_scope_account_predicates(scope))
+        .filter(~func.upper(Account.name).in_(_PLACEHOLDER_ACCOUNT_NAMES))
+        .order_by(Account.name.asc())
+        .all()
+    )
+
+    tx_source = func.upper(func.coalesce(func.json_extract(Transaction.lot_links_json, "$.source"), ""))
+    is_csv = tx_source == "CSV_SUPPLEMENTAL"
 
     cq = (
         session.query(
@@ -740,8 +815,10 @@ def reports_home(
             Transaction.date <= end_date,
             Transaction.type.in_(["TRANSFER", "FEE", "WITHHOLDING", "OTHER"]),
         )
+        .filter(~func.upper(Account.name).in_(_PLACEHOLDER_ACCOUNT_NAMES))
         .filter(
             or_(
+                is_csv,
                 ExternalTransactionMap.connection_id.is_(None),
                 ExternalTransactionMap.connection_id.in_(sorted(preferred_conn_ids)),
             )
@@ -773,6 +850,8 @@ def reports_home(
             .filter(Account.id == account_id)
             .one_or_none()
         )
+        if selected_account and str(selected_account.name or "").strip().upper() in _PLACEHOLDER_ACCOUNT_NAMES:
+            selected_account = None
         if selected_account is not None:
             if scope == "trust" and (selected_account.taxpayer_entity.type != "TRUST" or selected_account.account_type == "IRA"):
                 selected_account = None
@@ -780,9 +859,9 @@ def reports_home(
                 selected_account = None
             elif scope == "ira" and selected_account.account_type != "IRA":
                 selected_account = None
-        if selected_account is not None:
-            detail_rows = (
-                session.query(Transaction, ExternalTransactionMap, ExternalConnection)
+    if selected_account is not None:
+        detail_rows = (
+            session.query(Transaction, ExternalTransactionMap, ExternalConnection)
                 .outerjoin(
                     ExternalTransactionMap,
                     ExternalTransactionMap.transaction_id == Transaction.id,
@@ -798,6 +877,7 @@ def reports_home(
                 )
                 .filter(
                     or_(
+                        is_csv,
                         ExternalTransactionMap.connection_id.is_(None),
                         ExternalTransactionMap.connection_id.in_(sorted(preferred_conn_ids)),
                     )
@@ -877,13 +957,19 @@ def reports_performance(
     error_msg = request.query_params.get("error")
     refresh_benchmark = str(request.query_params.get("refresh_benchmark") or "").strip().lower() in {"1", "true", "yes", "on"}
     bench_provider = (request.query_params.get("bench_provider") or "auto").strip().lower()
-    compare_prior = str(request.query_params.get("compare") or "").strip().lower() in {"1", "true", "yes", "on"}
+    # Prior-period comparison is disabled for now; keep in code for a future opt-in UI.
+    compare_prior = False
 
     year_raw = (request.query_params.get("year") or "").strip()
     year_options = _available_year_options(session, scope=scope, today=today, kind="performance")
-    year = int(year_raw) if year_raw.isdigit() else (today.year if today.year in year_options else year_options[0])
-    if year not in year_options:
-        year = year_options[0]
+    year: int | None = int(year_raw) if year_raw.isdigit() else None
+    if period == "ytd":
+        year = int(today.year)
+    else:
+        if year is None:
+            year = today.year if today.year in year_options else year_options[0]
+        if year not in year_options:
+            year = year_options[0]
 
     custom_start = (request.query_params.get("start") or "").strip()
     custom_end = (request.query_params.get("end") or "").strip()

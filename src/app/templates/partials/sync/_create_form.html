@@ -18,6 +18,8 @@
       <span>Provider</span>
       <select name="connection_kind" id="create_kind" data-create-kind>
         <option value="IB_FLEX_WEB" selected>IB Flex (Web Service)</option>
+        <option value="CHASE_PLAID">Chase (Plaid · Automated)</option>
+        <option value="AMEX_PLAID">American Express (Plaid · Automated)</option>
         <option value="CHASE_OFFLINE">Chase (Offline CSV)</option>
         <option value="RJ_OFFLINE">Raymond James (Offline QFX/OFX)</option>
       </select>
@@ -71,6 +73,38 @@
         <input id="create_offline_dir" name="data_dir" placeholder="e.g., ~/Downloads/Exports" autocomplete="off"/>
         <span class="ui-muted">Drop exports into this folder and run sync. You can also upload files from the connection detail page.</span>
       </label>
+    </fieldset>
+
+    <fieldset data-create-section="CHASE_PLAID" class="sync-create-section" hidden>
+      <legend>Plaid (Chase)</legend>
+      <div class="ui-muted">
+        Creates a Chase connection that links via Plaid and can sync automatically. After creating, click
+        <b>Credentials</b> to connect through Plaid Link (OAuth).
+      </div>
+      <details class="ui-disclosure" style="margin-top:8px">
+        <summary>Requirements</summary>
+        <div class="ui-muted" style="margin-top:6px">
+          Set <code>PLAID_CLIENT_ID</code>, <code>PLAID_SECRET</code>, <code>PLAID_ENV</code> (sandbox/production), and enable
+          <code>NETWORK_ENABLED=1</code>. If <code>ALLOWED_OUTBOUND_HOSTS</code> is set, ensure it includes the Plaid host
+          (e.g., <code>sandbox.plaid.com</code>).
+        </div>
+      </details>
+    </fieldset>
+
+    <fieldset data-create-section="AMEX_PLAID" class="sync-create-section" hidden>
+      <legend>Plaid (American Express)</legend>
+      <div class="ui-muted">
+        Creates an American Express connection that links via Plaid and syncs credit card transactions automatically.
+        After creating, click <b>Credentials</b> to connect through Plaid Link (OAuth).
+      </div>
+      <details class="ui-disclosure" style="margin-top:8px">
+        <summary>Requirements</summary>
+        <div class="ui-muted" style="margin-top:6px">
+          Set <code>PLAID_CLIENT_ID</code>, <code>PLAID_SECRET</code>, <code>PLAID_ENV</code> (sandbox/production), and enable
+          <code>NETWORK_ENABLED=1</code>. If <code>ALLOWED_OUTBOUND_HOSTS</code> is set, ensure it includes the Plaid host
+          (e.g., <code>sandbox.plaid.com</code>).
+        </div>
+      </details>
     </fieldset>
 
     <label for="create_note">

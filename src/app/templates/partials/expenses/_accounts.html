@@ -9,7 +9,9 @@
             <th>Institution</th>
             <th>Name</th>
             <th>Type</th>
+            <th>Scope</th>
             <th>Last4</th>
+            <th class="num">Balance</th>
           </tr>
         </thead>
         <tbody>
@@ -18,7 +20,19 @@
               <td>{{ a.institution }}</td>
               <td><a href="/expenses/transactions?account_id={{ a.id }}">{{ a.name }}</a></td>
               <td class="ui-muted">{{ a.type }}</td>
+              <td>
+                <form method="post" action="/expenses/accounts/scope">
+                  <input type="hidden" name="account_id" value="{{ a.id }}"/>
+                  <select name="scope" class="cashbills-control__input" onchange="this.form.submit()" aria-label="Account scope">
+                    <option value="PERSONAL" {% if (a.scope or "PERSONAL") == "PERSONAL" %}selected{% endif %}>Personal</option>
+                    <option value="FAMILY" {% if (a.scope or "") == "FAMILY" %}selected{% endif %}>Family</option>
+                    <option value="BUSINESS" {% if (a.scope or "") == "BUSINESS" %}selected{% endif %}>Business</option>
+                  </select>
+                </form>
+              </td>
               <td class="ui-muted">{{ a.last4_masked or "" }}</td>
+              {% set bal = account_balances.get(a.id) if account_balances else None %}
+              <td class="num ui-tabular-nums">{% if bal and bal.balance_current is not none %}{{ bal.balance_current|usd }}{% else %}—{% endif %}</td>
             </tr>
           {% endfor %}
         </tbody>
@@ -28,4 +42,3 @@
     <div class="ui-muted" style="margin-top:8px">No expense accounts yet. Import a statement to create one.</div>
   {% endif %}
 </section>
-

@@ -1,4 +1,4 @@
-{% if is_offline_files or is_ib_flex_web %}
+{% if is_offline_files or is_ib_flex_web or is_chase_plaid %}
   <details class="ui-disclosure" style="margin-top:12px" {% if files_count and files_count > 0 %}{% else %}{% endif %}>
     <summary>
       Statement files
@@ -37,8 +37,8 @@
         <div class="ui-section-title">Upload</div>
         <form method="post" action="/sync/connections/{{ conn.id }}/upload" enctype="multipart/form-data" class="form-compact">
           <label>
-            <span>Statement file</span>
-            <input type="file" name="upload"/>
+            <span>Statement files</span>
+            <input type="file" name="upload" multiple/>
           </label>
           <label>
             <span>Audit note (optional)</span>
@@ -48,7 +48,7 @@
         </form>
         <div class="ui-muted" style="margin-top:10px">
           Parsed file types:
-          <code>.csv</code>, <code>.tsv</code>, <code>.txt</code>, <code>.xml</code>{% if is_rj_offline %}, <code>.qfx</code>, <code>.ofx</code>{% endif %}{% if is_rj_offline or is_chase_offline %}, <code>.pdf</code>{% endif %}.
+          <code>.csv</code>, <code>.tsv</code>, <code>.txt</code>, <code>.xml</code>{% if is_rj_offline %}, <code>.qfx</code>, <code>.ofx</code>{% endif %}{% if is_rj_offline or is_chase_offline or is_chase_plaid %}, <code>.pdf</code>{% endif %}.
         </div>
       </div>
     </div>

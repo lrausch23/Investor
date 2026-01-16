@@ -32,6 +32,7 @@
 	            <th class="num">Qty</th>
 	            <th class="col-price num">Price</th>
 	            <th class="num">Market value</th>
+	            <th class="num" title="Share of positions market value (excludes cash)">Portfolio %</th>
 	            <th class="col-initial-cost num">Initial cost</th>
 	            <th class="num">P&amp;L</th>
 	            <th class="num">P&amp;L %</th>
@@ -95,6 +96,13 @@
               {% if p.latest_price is none %}—{% else %}{{ (p.latest_price or 0.0)|usd }}{% endif %}
             </td>
             <td class="num">{{ (p.market_value or 0.0)|usd }}</td>
+            <td class="num ui-tabular-nums">
+              {% if view.total_market_value and (view.total_market_value|float) > 0 and p.market_value is not none %}
+                {{ "%.2f"|format(((p.market_value|float) / (view.total_market_value|float)) * 100.0) }}%
+              {% else %}
+                <span class="ui-muted">—</span>
+              {% endif %}
+            </td>
             <td class="ui-muted num col-initial-cost">
               {% if p.cost_basis_total is none %}—{% else %}{{ (p.cost_basis_total or 0.0)|usd }}{% endif %}
             </td>
@@ -137,6 +145,7 @@
 	          <td></td>
           <td class="col-price"></td>
           <td class="num"><b>{{ view.total_market_value|usd }}</b></td>
+          <td class="num ui-tabular-nums"><b>{% if view.total_market_value and (view.total_market_value|float) > 0 %}100.00%{% else %}—{% endif %}</b></td>
           <td class="ui-muted num col-initial-cost"><b>{% if view.total_initial_cost is none %}—{% else %}{{ view.total_initial_cost|usd }}{% endif %}</b></td>
           <td class="ui-muted num"><b>{% if view.total_pnl_amount is none %}—{% else %}{{ view.total_pnl_amount|usd }}{% endif %}</b></td>
           <td class="ui-muted num"><b>{% if view.avg_pnl_pct is none %}—{% else %}{{ "%.2f"|format(view.avg_pnl_pct * 100.0) }}%{% endif %}</b></td>

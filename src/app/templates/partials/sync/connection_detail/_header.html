@@ -42,6 +42,9 @@
   {% if error_msg %}
     <div class="alert alert--warn" role="alert">{{ error_msg }}</div>
   {% endif %}
+  {% if ok_msg %}
+    <div class="alert alert--ok" role="status">{{ ok_msg }}</div>
+  {% endif %}
   {% if test_ok is not none and test_msg %}
     {% if test_ok == "1" %}
       <div class="alert alert--ok" role="status">Test connection: OK — {{ test_msg }}</div>
@@ -50,4 +53,3 @@
     {% endif %}
   {% endif %}
 </div>
-

@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session, joinedload
 
 from src.app.auth import auth_banner_message, require_actor
 from src.app.db import db_session
-from src.db.models import Account, ExpenseAccount, ExpenseImportBatch, ExpenseTransaction
+from src.db.models import Account, ExpenseAccount, ExpenseAccountBalance, ExpenseImportBatch, ExpenseTransaction
 from src.investor.expenses.categorize import apply_rules_to_db, load_rules, write_starter_rules
 from src.investor.expenses.categories import ensure_category, list_categories
 from src.investor.expenses.config import load_expenses_config
@@ -139,6 +139,15 @@ def expenses_home(
     error = request.query_params.get("error")
     ok = request.query_params.get("ok")
     accounts = session.query(ExpenseAccount).order_by(ExpenseAccount.institution.asc(), ExpenseAccount.name.asc()).all()
+    balances = (
+        session.query(ExpenseAccountBalance)
+        .order_by(ExpenseAccountBalance.as_of_date.desc(), ExpenseAccountBalance.id.desc())
+        .all()
+    )
+    balances_by_account: dict[int, ExpenseAccountBalance] = {}
+    for b in balances:
+        if b.expense_account_id not in balances_by_account:
+            balances_by_account[b.expense_account_id] = b
     batches = session.query(ExpenseImportBatch).order_by(ExpenseImportBatch.imported_at.desc()).limit(25).all()
     txn_count = int(session.query(func.count(ExpenseTransaction.id)).scalar() or 0)
     rj_accounts = session.query(Account).filter(Account.broker == "RJ").order_by(Account.name.asc()).all()
@@ -216,6 +225,7 @@ def expenses_home(
             "cfg_path": cfg_path,
             "enabled_formats": cfg.provider_formats,
             "accounts": accounts,
+            "account_balances": balances_by_account,
             "batches": batches,
             "batch_rel_by_id": batch_rel_by_id,
             "txn_count": txn_count,
@@ -1468,6 +1478,28 @@ def expenses_purge(
             "accounts": accounts,
         },
     )
+
+
+@router.post("/accounts/scope")
+def expenses_account_scope_update(
+    session: Session = Depends(db_session),
+    actor: str = Depends(require_actor),
+    account_id: str = Form(...),
+    scope: str = Form(...),
+):
+    aid = _parse_int(account_id) or 0
+    if not aid:
+        return RedirectResponse(url="/expenses?error=Missing%20account", status_code=303)
+    scope_norm = (scope or "").strip().upper()
+    allowed = {"PERSONAL", "FAMILY", "BUSINESS"}
+    if scope_norm not in allowed:
+        return RedirectResponse(url="/expenses?error=Invalid%20scope", status_code=303)
+    acct = session.query(ExpenseAccount).filter(ExpenseAccount.id == aid).one_or_none()
+    if acct is None:
+        return RedirectResponse(url="/expenses?error=Account%20not%20found", status_code=303)
+    acct.scope = scope_norm
+    session.commit()
+    return RedirectResponse(url="/expenses?ok=Updated%20account%20scope", status_code=303)
 
 
 @router.post("/purge/account")

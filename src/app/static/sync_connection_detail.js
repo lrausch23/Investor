@@ -40,6 +40,19 @@
     });
   };
 
+  const initDeleteConfirm = () => {
+    const forms = Array.from(root.querySelectorAll("form[data-confirm-delete]"));
+    forms.forEach((form) => {
+      form.addEventListener("submit", (e) => {
+        const name = form.getAttribute("data-conn-name") || "this connection";
+        const ok = window.confirm(
+          `Delete connection "${name}"?\n\nThis removes the connection, its stored credentials (if any), and its sync run history. It does not delete already-imported transactions/holdings data.`
+        );
+        if (!ok) e.preventDefault();
+      });
+    });
+  };
+
   const initDropdowns = () => {
     const dropdowns = Array.from(root.querySelectorAll("details.dropdown"));
     if (dropdowns.length === 0) return;
@@ -116,6 +129,7 @@
   });
 
   initDisableConfirm();
+  initDeleteConfirm();
   initDropdowns();
   initSyncModeToggles();
 })();

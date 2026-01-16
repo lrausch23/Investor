@@ -5,9 +5,13 @@
     {% set fetched = last_run.coverage_json.get("txn_count") or (last_run.coverage_json.get("new_inserted", 0) + last_run.coverage_json.get("duplicates_skipped", 0) + last_run.coverage_json.get("parse_fail_count", 0)) %}
     <div class="sync-run-summary">
       <div class="sync-run-summary__row">
-        <span class="ui-badge {% if last_run.status == 'SUCCESS' %}ui-badge--safe{% elif last_run.status == 'PARTIAL' %}ui-badge--risk{% else %}ui-badge--bad{% endif %}">
-          {{ last_run.status }}
-        </span>
+        {% if not last_run.finished_at %}
+          <span class="ui-badge ui-badge--outline">RUNNING</span>
+        {% else %}
+          <span class="ui-badge {% if last_run.status == 'SUCCESS' %}ui-badge--safe{% elif last_run.status == 'PARTIAL' %}ui-badge--risk{% else %}ui-badge--bad{% endif %}">
+            {{ last_run.status }}
+          </span>
+        {% endif %}
         <span class="ui-badge ui-badge--outline">Mode: {{ last_run.mode }}</span>
         {% if last_run.started_at %}
           <span class="ui-muted">Started: {{ last_run.started_at|local_dt }}</span>
@@ -78,7 +82,7 @@
               <tr>
                 <td>{{ r.id }}</td>
                 <td class="ui-muted">{{ r.started_at|local_dt if r.started_at else "—" }}</td>
-                <td>{{ r.status }}</td>
+                <td>{% if not r.finished_at %}RUNNING{% else %}{{ r.status }}{% endif %}</td>
                 <td>{{ r.mode }}</td>
                 <td class="ui-muted">{{ r.effective_start_date }} → {{ r.effective_end_date }}</td>
                 <td class="num">{{ fetched_r }}</td>

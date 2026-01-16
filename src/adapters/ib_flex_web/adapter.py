@@ -815,7 +815,12 @@ class IBFlexWebAdapter(BrokerAdapter):
                     break
         if not names:
             # Fallback name (single account); sync runner will still map transactions into this account if needed.
-            return [{"provider_account_id": "IBFLEX-1", "name": "IB Flex Web", "account_type": "TAXABLE"}]
+            self._warn(
+                connection,
+                "IB Flex Web could not infer account names from reports; skipping placeholder account creation. "
+                "Provide a report with account headers or use numeric Flex Query IDs that include account metadata.",
+            )
+            return []
         out: list[dict[str, Any]] = []
         for name in sorted(names):
             out.append({"provider_account_id": f"IBFLEX:{name}", "name": name, "account_type": "TAXABLE"})

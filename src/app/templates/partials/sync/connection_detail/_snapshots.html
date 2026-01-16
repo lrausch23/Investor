@@ -48,11 +48,57 @@
     </div>
 
     <div>
-      <div class="ui-section-title" style="margin-top:10px; margin-bottom:6px">Recent synced transactions</div>
+      <div class="ui-section-title" id="recent-synced-transactions" style="margin-top:10px; margin-bottom:6px">Synced transactions</div>
       {% if recent_txns and recent_txns|length > 0 %}
-        <div class="ui-muted">Latest {{ recent_txns|length }} transactions imported by this connection.</div>
+        <div class="ui-muted">
+          Coverage: {{ tx_stats.get("min") or "—" }} → {{ tx_stats.get("max") or "—" }} · Total: {{ tx_total or (tx_stats.get("count") or 0) }}
+          <span class="ui-muted">·</span>
+          Page {{ tx_page or 1 }} of {{ tx_pages or 1 }} ({{ tx_page_size or 50 }}/page).
+          <span class="ui-muted">·</span>
+          <a href="/sync/connections/{{ conn.id }}?tx_page=1#recent-synced-transactions">Newest</a>
+          <span class="ui-muted">·</span>
+          <a href="/sync/connections/{{ conn.id }}?tx_page={{ tx_pages or 1 }}#recent-synced-transactions">Oldest</a>
+          {% set prev_page = (tx_page|int) - 1 %}
+          {% set next_page = (tx_page|int) + 1 %}
+          {% if prev_page >= 1 %}
+            <span class="ui-muted">·</span>
+            <a href="/sync/connections/{{ conn.id }}?tx_page={{ prev_page }}#recent-synced-transactions">Prev</a>
+          {% endif %}
+          {% if (tx_pages or 1) > (tx_page|int) %}
+            <span class="ui-muted">·</span>
+            <a href="/sync/connections/{{ conn.id }}?tx_page={{ next_page }}#recent-synced-transactions">Next</a>
+          {% endif %}
+          <span class="ui-muted">·</span>
+          <a href="/holdings/transactions?connection_id={{ conn.id }}&page=1">Open Holdings → Transactions</a>
+        </div>
+        {% if is_chase_plaid and plaid_enable_investments %}
+          <form method="post" action="/sync/connections/{{ conn.id }}/plaid/investments_audit" style="margin-top:8px">
+            <button class="btn btn--secondary" type="submit">Verify Plaid investments (24 months)</button>
+            <span class="ui-muted" style="margin-left:8px">Compares Plaid eligible USD investment txns vs DB imported.</span>
+          </form>
+          <form method="post" action="/sync/connections/{{ conn.id }}/plaid/investments_reconcile" style="margin-top:8px" onsubmit="return confirm('Reconcile duplicates? This will delete duplicate investment transactions that Plaid no longer reports for the last ~24 months.');">
+            <button class="btn btn--secondary" type="submit">Reconcile duplicates (keep Plaid current)</button>
+            <span class="ui-muted" style="margin-left:8px">Fixes double-counting caused by Plaid transaction ID churn.</span>
+          </form>
+          <form method="post" action="/sync/connections/{{ conn.id }}/plaid/fix_investment_dividends" style="margin-top:8px" onsubmit="return confirm('Fix dividends? This will reclassify Plaid investment cash dividends that were previously imported as fees.');">
+            <button class="btn btn--secondary" type="submit">Fix investment dividends (FEE→DIV)</button>
+            <span class="ui-muted" style="margin-left:8px">Repairs cash dividends misclassified as fees in older imports.</span>
+          </form>
+          <form method="post" action="/sync/connections/{{ conn.id }}/plaid/fix_investment_sweeps" style="margin-top:8px" onsubmit="return confirm('Undo sweep conversion? This will restore DEPOSIT SWEEP INTRA-DAY rows back to BUY/SELL mechanics (removes bogus cash-out rows).');">
+            <button class="btn btn--secondary" type="submit">Undo sweep cashflow conversion (TRANSFER→BUY/SELL)</button>
+            <span class="ui-muted" style="margin-left:8px">Restores internal sweep mechanics so Cash Out is not distorted by large sweep movements.</span>
+          </form>
+        {% endif %}
+        {# Only warn if we're meaningfully short of a 24m window (avoid false positives when there were simply no older txns). #}
+        {% if is_chase_plaid and plaid_enable_investments and plaid_24m_warn_start and tx_stats.get("min") and (tx_stats.get("min") > plaid_24m_warn_start) %}
+          <div class="ui-muted" style="margin-top:6px">
+            Note: expected ~24 months back to {{ plaid_24m_start }}, but earliest imported investment txn is {{ tx_stats.get("min") }}.
+            Plaid/Chase may not provide older investment history for this item.
+            Try <b>Backfill investments (24 months)</b> in Actions to re-attempt.
+          </div>
+        {% endif %}
         <details class="ui-disclosure" style="margin-top:10px">
-          <summary>View transactions</summary>
+          <summary>View this page ({{ recent_txns|length }})</summary>
           <div class="table-wrap" style="margin-top:10px">
             <table>
               <thead>
@@ -75,7 +121,7 @@
           </div>
           <div class="ui-muted" style="margin-top:8px">
             These are imported into the main <code>Transaction</code> table.
-            See <a href="/holdings/transactions?connection_id={{ conn.id }}">Holdings → Transactions (filtered)</a>.
+            See <a href="/holdings/transactions?connection_id={{ conn.id }}&page=1">Holdings → Transactions (filtered)</a>.
           </div>
         </details>
       {% else %}
@@ -84,4 +130,3 @@
     </div>
   </div>
 </section>
-

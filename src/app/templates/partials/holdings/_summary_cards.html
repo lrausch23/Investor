@@ -31,7 +31,19 @@
       {% set ret_tone = "positive" if (ns.total_return|float) >= 0 else "negative" %}
     {% endif %}
     {% set ret_value = "—" if ns.total_return is none else ("%.2f"|format((ns.total_return|float) * 100.0) ~ "%") %}
-    {{ kpi_card("Total Return", ret_value, "Gain ÷ cost", ret_tone, testid="kpi-total-return") }}
+    {% set ret_sub = "Gain ÷ cost" %}
+    {% if view.as_of %}
+      {% set ret_sub = ret_sub ~ " · As of " ~ view.as_of.date().isoformat() %}
+    {% endif %}
+    {# YTD shown here is a simple value change since the YTD baseline snapshot (not cashflow-adjusted). #}
+    {% set ytd_simple = none %}
+    {% if view.ytd_start_value is not none and (view.ytd_start_value|float) > 0 %}
+      {% set ytd_simple = ((view.total_value|float) - (view.ytd_start_value|float)) / (view.ytd_start_value|float) %}
+    {% endif %}
+    {% if ytd_simple is not none %}
+      {% set ret_sub = ret_sub ~ " · YTD: " ~ ("%.2f"|format((ytd_simple|float) * 100.0) ~ "%") %}
+    {% endif %}
+    {{ kpi_card("Total Return", ret_value, ret_sub, ret_tone, testid="kpi-total-return") }}
   </div>
 
   {% if view.data_sources and view.data_sources|length > 0 %}

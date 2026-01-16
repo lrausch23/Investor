@@ -16,5 +16,33 @@
       </label>
       <button class="btn" type="submit">Purge imported data</button>
     </form>
+
+    {% if is_chase_plaid %}
+      <hr style="margin:14px 0; border:none; border-top:1px solid #e5e7eb"/>
+      <div class="ui-section-title">Replace legacy Chase sources</div>
+      <div class="ui-muted" style="margin-top:6px">
+        Use this if you previously imported Chase data via CSV files or the (legacy) Yodlee connector and now want Plaid to be the only Chase source.
+        This deletes legacy Chase connector data (including cash balances/lots) and disables those connections. Plaid data is kept.
+      </div>
+      <form method="post" action="/sync/connections/{{ conn.id }}/purge-chase-legacy" class="form-compact" style="margin-top:10px">
+        <label>
+          <span>Type <code>PURGE CHASE</code> to confirm</span>
+          <input name="confirm" size="16" placeholder="PURGE CHASE" autocomplete="off"/>
+        </label>
+        <label style="display:flex;gap:8px;align-items:center">
+          <input type="checkbox" name="purge_expenses" value="1" checked/>
+          <span>Also purge Chase expense CSV imports (non-Plaid)</span>
+        </label>
+        <label style="display:flex;gap:8px;align-items:center">
+          <input type="checkbox" name="delete_legacy_accounts" value="1" checked/>
+          <span>Delete legacy Chase accounts not mapped to Plaid</span>
+        </label>
+        <label>
+          <span>Audit note</span>
+          <input name="note" placeholder="Why are you purging legacy Chase sources?"/>
+        </label>
+        <button class="btn" type="submit">Purge legacy Chase (CSV/Yodlee)</button>
+      </form>
+    {% endif %}
   </details>
 </section>

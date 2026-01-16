@@ -9,8 +9,11 @@
     <tr><td>Health</td><td><b>{{ health.label }}</b> <span class="ui-muted">— {{ health.reason }}</span></td></tr>
     <tr><td>Coverage</td><td><b>{{ coverage_u }}</b></td></tr>
     <tr><td>Credentials</td><td>{{ creds_status }}</td></tr>
-    {% if is_offline_files or is_ib_flex_web %}
+    {% if is_offline_files or is_ib_flex_web or is_chase_plaid %}
       <tr><td>Data directory</td><td><code>{{ data_dir }}</code></td></tr>
+    {% endif %}
+    {% if is_plaid %}
+      <tr><td>Plaid env</td><td><code>{{ plaid_env }}</code></td></tr>
     {% endif %}
     {% if is_ib_flex_web %}
       <tr><td>Flex Query ID</td><td><code>{{ query_id_display }}</code></td></tr>
@@ -25,6 +28,18 @@
       <tr><td>Holdings as-of</td><td>{{ conn.holdings_last_asof|local_dt if conn.holdings_last_asof else "—" }}</td></tr>
       <tr><td>Last error</td><td class="ui-muted">{{ conn.last_error_json or "—" }}</td></tr>
       <tr><td>Withdrawals / distributions (YTD)</td><td>{{ withdrawals_ytd|usd }} <span class="ui-muted">({{ withdrawals_count_ytd }} txn(s))</span></td></tr>
+      {% if is_chase_plaid %}
+        <tr>
+          <td>Plaid history</td>
+          <td class="ui-muted">
+            Bank/credit: {% if plaid_initial_backfill_done %}<b>Complete</b>{% else %}<b>In progress</b>{% endif %}
+            {% if plaid_transactions_update_status %}· <code title="Plaid /transactions/sync status">{{ plaid_transactions_update_status }}</code>{% endif %}
+            <br/>
+            Investments: {% if plaid_investments_backfill_done %}<b>Backfilled</b>{% else %}<b>Pending</b>{% endif %}
+            <span class="ui-muted">· First sync can backfill up to ~24 months.</span>
+          </td>
+        </tr>
+      {% endif %}
       {% if not is_offline_files %}
         {% if is_chase_yodlee %}
           <tr><td>YODLEE_ACCESS_TOKEN</td><td>{{ token_masked }}</td></tr>
@@ -46,18 +61,23 @@
     {% if not is_offline_files %}
       <a class="btn" href="/sync/connections/{{ conn.id }}/auth">Edit credentials</a>
     {% endif %}
-    <a class="btn" href="/sync/connections/{{ conn.id }}">Open detail view</a>
+    <a class="btn btn--secondary" href="/sync/connections">Back to connections</a>
   </div>
 
   <details class="ui-disclosure" style="margin-top:10px">
     <summary>Settings</summary>
     <div class="form-compact" style="margin-top:10px">
-      {% if is_offline_files or is_ib_flex_web %}
+      {% if is_offline_files or is_ib_flex_web or is_plaid %}
         <form method="post" action="/sync/connections/{{ conn.id }}/settings" class="form-compact">
-          <label>
-            <span>Data directory</span>
-            <input name="data_dir" value="{{ data_dir }}" autocomplete="off"/>
-          </label>
+          {% if is_offline_files or is_ib_flex_web or is_chase_plaid %}
+            <label>
+              <span>Data directory</span>
+              <input name="data_dir" value="{{ data_dir }}" autocomplete="off"/>
+            </label>
+          {% else %}
+            <input type="hidden" name="data_dir" value=""/>
+          {% endif %}
+
           {% if is_ib_flex_web %}
             <label>
               <span>Extra Flex Query IDs</span>
@@ -66,6 +86,34 @@
             </label>
           {% else %}
             <input type="hidden" name="extra_query_ids" value=""/>
+          {% endif %}
+
+          {% if is_plaid %}
+            <label>
+              <span>Plaid env</span>
+              <select name="plaid_env">
+                <option value="sandbox" {% if (plaid_env or "") == "sandbox" %}selected{% endif %}>sandbox</option>
+                <option value="production" {% if (plaid_env or "") == "production" %}selected{% endif %}>production</option>
+              </select>
+              <span class="ui-muted">Use sandbox for testing; use production for real Plaid OAuth.</span>
+            </label>
+            {% if is_chase_plaid %}
+              <div class="form-row" style="display:flex;gap:10px;align-items:flex-start">
+                <span style="min-width:120px">Investments</span>
+                <div>
+                  <input type="hidden" name="plaid_enable_investments" value="0"/>
+                  <label style="display:flex;gap:8px;align-items:center">
+                    <input type="checkbox" name="plaid_enable_investments" value="1" {% if plaid_enable_investments %}checked{% endif %}/>
+                    <span>Enable investment holdings + investment transactions</span>
+                  </label>
+                  <div class="ui-muted">Requires re-linking via Credentials to grant the investments product. First sync backfills up to ~24 months.</div>
+                </div>
+              </div>
+            {% else %}
+              <input type="hidden" name="plaid_enable_investments" value="0"/>
+            {% endif %}
+          {% else %}
+            <input type="hidden" name="plaid_env" value=""/>
           {% endif %}
           <label>
             <span>Audit note (optional)</span>
@@ -79,4 +127,3 @@
     </div>
   </details>
 </section>
-

@@ -131,6 +131,8 @@ a:focus-visible, button:focus-visible, summary:focus-visible, input:focus-visibl
 .btn--primary { background: #111827; border-color: #111827; color: #fff; }
 .btn--secondary { background: #f3f4f6; }
 .btn--sm { padding: 6px 10px; border-radius: 9px; font-size: 0.92em; }
+.btn--link { border: 0; background: transparent; color: #2563eb; padding: 0; font: inherit; text-decoration: underline; cursor: pointer; }
+.btn--link:hover { color: #1d4ed8; }
 
 .table-toolbar { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
 .dropdown { position: relative; }
@@ -218,6 +220,116 @@ a:focus-visible, button:focus-visible, summary:focus-visible, input:focus-visibl
 .sync-conn-details-row td { padding: 10px 10px; border-top: 0; }
 .table-wrap tbody tr.sync-conn-details-row:hover td { background: inherit; }
 .sync-conn-details__grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; align-items: start; }
+
+/* --- Cash & Bills dashboard --- */
+.cashbills-header { position: sticky; top: var(--top-nav-height); z-index: 1200; background: #fff; padding: 6px 0 10px; border-bottom: 1px solid #e5e7eb; }
+.cashbills-controls { display: flex; align-items: flex-end; gap: 10px; flex-wrap: wrap; }
+.cashbills-control { display: grid; gap: 4px; }
+.cashbills-control__label { font-size: 12px; color: var(--ui-muted); }
+.cashbills-control__input { border: 1px solid #d1d5db; border-radius: 10px; padding: 6px 10px; background: #fff; min-width: 140px; }
+.cashbills-control--date { min-width: 170px; }
+.cash-bills-page .container { max-width: 1720px; width: 100%; margin: 0 auto; padding-left: 24px; padding-right: 24px; }
+.cash-bills-main { display: grid; grid-template-columns: minmax(0, 2.2fr) minmax(0, 1.2fr); gap: 24px; align-items: start; margin-top: 12px; }
+.cash-bills-left, .cash-bills-right { min-width: 0; overflow: hidden; }
+.cash-bills-left { display: flex; flex-direction: column; gap: 16px; }
+.cash-bills-right { display: flex; flex-direction: column; gap: 16px; }
+.cashbills-section-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; flex-wrap: wrap; margin-bottom: 8px; }
+.cashbills-filters { display: grid; gap: 8px; justify-items: flex-end; }
+.cashbills-filters--top { display: flex; flex-wrap: wrap; gap: 8px 12px; justify-content: flex-start; align-items: center; margin: 8px 0 16px; }
+.chip-group { display: flex; gap: 6px; flex-wrap: wrap; }
+.ui-chip { border: 1px solid #d1d5db; background: #fff; color: #111827; padding: 4px 10px; border-radius: 999px; font-size: 0.82rem; cursor: pointer; }
+.ui-chip.is-active { background: #111827; color: #fff; border-color: #111827; }
+.cashbills-table { margin-top: 6px; }
+.cashbills-card-name { font-weight: 600; }
+.cashbills-finance-meta { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.cashbills-finance-meta .btn--link { padding: 0; font-size: 0.85em; }
+.cashbills-coverage { display: grid; gap: 6px; margin-top: 6px; }
+.cashbills-coverage__row { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+.cashbills-coverage__net { font-weight: 700; }
+.cashbills-coverage__divider { height: 1px; background: #e5e7eb; margin: 6px 0; }
+.cash-bills-page .table-wrapper { width: 100%; overflow-x: auto; }
+.cash-bills-page .data-table { width: 100%; min-width: 0; table-layout: fixed; }
+.data-table th, .data-table td { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cash-bills-page .bills-table { min-width: 0; }
+.cash-bills-page .bills-table th { white-space: nowrap; text-overflow: clip; overflow: visible; }
+.bills-table th:nth-child(2),
+.bills-table td:nth-child(2) { white-space: normal; }
+.bills-table th:nth-child(6),
+.bills-table td:nth-child(6) { white-space: normal; }
+.bills-table td:nth-child(2) .card-cell {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  word-break: break-word;
+}
+.bills-table th:nth-child(3),
+.bills-table td:nth-child(3),
+.bills-table th:nth-child(4),
+.bills-table td:nth-child(4),
+.bills-table th:nth-child(5),
+.bills-table td:nth-child(5) { text-align: right; }
+.cash-bills-page .bills-table th.status-col,
+.cash-bills-page .bills-table td.status-col { text-align: center; }
+.cashbills-cash-table { min-width: 0; }
+.cashbills-cash-table th:nth-child(1),
+.cashbills-cash-table td:nth-child(1) { white-space: normal; }
+.cashbills-cash-table th:nth-child(2),
+.cashbills-cash-table td:nth-child(2),
+.cashbills-cash-table th:nth-child(3),
+.cashbills-cash-table td:nth-child(3) { text-align: right; }
+.cashbills-finance-detail-table th,
+.cashbills-finance-detail-table td { white-space: nowrap; }
+.cashbills-finance-detail-table th:nth-child(2),
+.cashbills-finance-detail-table td:nth-child(2) { white-space: normal; }
+.cashbills-finance-detail-table th:nth-child(3),
+.cashbills-finance-detail-table td:nth-child(3) { text-align: right; }
+
+.cashbills-modal { position: fixed; inset: 0; display: none; align-items: center; justify-content: center; background: rgba(15, 23, 42, 0.45); z-index: 2500; }
+.cashbills-modal.is-open { display: flex; }
+.cashbills-modal__dialog { background: #fff; border-radius: 14px; width: min(980px, 94vw); max-height: 90vh; overflow: auto; padding: 16px 18px; box-shadow: 0 20px 45px rgba(15, 23, 42, 0.2); }
+.cashbills-modal__header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.cashbills-modal__actions { display: flex; gap: 8px; align-items: center; }
+.cashbills-modal__tabs { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+.cashbills-modal__filters { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin-top: 10px; }
+.cashbills-modal__filter { display: grid; gap: 4px; font-size: 12px; color: var(--ui-muted); }
+.cashbills-modal__filter select { border: 1px solid #d1d5db; border-radius: 8px; padding: 6px 8px; font-size: 14px; }
+.cashbills-modal__body { margin-top: 12px; }
+.cashbills-modal__table { margin-top: 8px; }
+.cashbills-modal__hint { font-size: 0.92em; color: var(--ui-muted); margin-top: 6px; }
+.cashbills-inline-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: 8px; }
+.cashbills-inline-form label { font-size: 12px; color: var(--ui-muted); display: grid; gap: 4px; }
+.cashbills-inline-form input,
+.cashbills-inline-form select { border: 1px solid #d1d5db; border-radius: 8px; padding: 6px 8px; font-size: 14px; }
+.cashbills-inline-actions { display: flex; gap: 8px; margin-top: 8px; }
+.cashbills-inline-actions .btn { min-width: 84px; }
+.cashbills-bill-status { display: inline-flex; align-items: center; justify-content: center; min-width: 78px; }
+.cashbills-modal__row { border-top: 1px solid #e5e7eb; padding: 10px 0; }
+.cashbills-modal__row:first-child { border-top: 0; }
+.cashbills-modal__grid { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(0, 1.2fr) minmax(0, 2.2fr) repeat(4, minmax(0, 1fr)) 140px; gap: 10px; align-items: center; }
+.cashbills-modal__grid--active { grid-template-columns: minmax(0, 1.6fr) minmax(0, 1.2fr) minmax(0, 2.2fr) repeat(2, minmax(0, 1fr)) 120px 110px 120px; }
+.cashbills-modal__grid--recent { grid-template-columns: 120px minmax(0, 1.2fr) minmax(0, 2fr) 120px minmax(0, 1.2fr) 110px; }
+.cashbills-modal__grid--card { grid-template-columns: minmax(0, 1.4fr) minmax(0, 1.2fr) minmax(0, 2.2fr) minmax(0, 1.3fr) minmax(0, 1fr) repeat(4, minmax(0, 1fr)) 120px; }
+.cashbills-modal__grid--card-active { grid-template-columns: minmax(0, 1.4fr) minmax(0, 1.2fr) minmax(0, 2.2fr) minmax(0, 1.3fr) minmax(0, 1fr) minmax(0, 0.9fr) minmax(0, 1fr) minmax(0, 1.1fr) 110px 120px; }
+.cashbills-modal__grid--card-recent { grid-template-columns: 120px minmax(0, 1.2fr) minmax(0, 2fr) 120px minmax(0, 1.2fr) minmax(0, 1fr) 110px; }
+.cashbills-modal__cell-title { font-weight: 600; }
+.cashbills-modal__cell-muted { font-size: 0.9em; color: var(--ui-muted); }
+.cashbills-modal__cell-wrap { white-space: normal; overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; word-break: break-word; }
+.cashbills-due-meta { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.cashbills-modal__row.is-focus { background: #fffbeb; border-radius: 10px; padding: 10px 8px; }
+.cashbills-modal__actions-row { display: flex; gap: 8px; justify-content: flex-end; }
+.cashbills-modal__toggle { display: inline-flex; align-items: center; gap: 6px; font-size: 0.9em; }
+.cashbills-modal__toggle input { accent-color: #111827; }
+
+.ui-skeleton { position: relative; overflow: hidden; background: #f3f4f6; border-radius: 10px; min-height: 80px; }
+.ui-skeleton::after { content: ""; position: absolute; inset: 0; transform: translateX(-100%); background: linear-gradient(90deg, transparent, rgba(255,255,255,0.5), transparent); animation: skeleton 1.2s infinite; }
+.ui-skeleton--table { min-height: 180px; }
+.ui-skeleton--block { min-height: 90px; }
+@keyframes skeleton { 100% { transform: translateX(100%); } }
+
+@media (max-width: 1100px) {
+  .cash-bills-main { grid-template-columns: 1fr; }
+}
 .sync-create-section { border: 1px solid var(--ui-border); border-radius: var(--ui-radius); padding: 10px 12px; }
 .sync-create-section legend { font-weight: 700; padding: 0 6px; }
 

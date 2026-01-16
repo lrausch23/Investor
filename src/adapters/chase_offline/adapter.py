@@ -331,17 +331,22 @@ def _extract_statement_total_value(text: str) -> float | None:
     keys = (
         "ENDING MARKET VALUE",
         "TOTAL ACCOUNT VALUE",
+        "TOTAL ACCOUNT",
         "TOTAL PORTFOLIO VALUE",
+        "TOTAL PORTFOLIO",
         "TOTAL MARKET VALUE",
         "NET ASSET VALUE",
         "TOTAL ASSETS",
         "TOTAL VALUE",
         "PORTFOLIO TOTAL",
+        "ACCOUNT TOTAL",
         "ENDING BALANCE",
     )
-    noise = ("CHANGE", "GAIN", "LOSS", "RETURN", "YIELD", "PERCENT", "%")
-    money_re = re.compile(r"(?P<amt>\(?\$?\d[\d,]*\.?\d*\)?\*?)")
-    best: tuple[int, float] | None = None  # (score, value)
+    noise = ("CHANGE", "GAIN", "LOSS", "RETURN", "YIELD", "PERCENT", "%", "BEGINNING", "STARTING", "OPENING")
+    # Require comma or decimal to avoid picking up dates/years.
+    money_re = re.compile(r"(?P<amt>\(?\$?(?:\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+\.\d+)\)?\*?)")
+    best: tuple[int, int, float] | None = None  # (score, seq, value)
+    seq = 0
 
     def _score_line(u: str) -> int:
         score = 0
@@ -361,6 +366,8 @@ def _extract_statement_total_value(text: str) -> float | None:
             score += 40
         if any(n in u for n in noise):
             score -= 25
+        if "BEGINNING" in u or "STARTING" in u or "OPENING" in u:
+            score -= 60
         return score
 
     def _consider(u: str, raw_amt: str) -> None:
@@ -374,17 +381,29 @@ def _extract_statement_total_value(text: str) -> float | None:
             score += 10
         if v < 100:
             score -= 10
-        if best is None or score > best[0] or (score == best[0] and v > best[1]):
-            best = (int(score), float(v))
+        if best is None or score > best[0] or (score == best[0] and seq > best[1]):
+            best = (int(score), int(seq), float(v))
 
     for i, raw in enumerate(lines):
         line = str(raw or "").strip()
         if not line:
             continue
-        u = line.upper()
+        combo = line
+        if i + 1 < len(lines):
+            nxt = str(lines[i + 1] or "").strip()
+            if nxt:
+                combo = f"{line} {nxt}"
+        u = combo.upper()
         if not any(k in u for k in keys):
             continue
-        lookahead = [line]
+        amts = [m.group("amt") for m in money_re.finditer(combo)]
+        if len(amts) >= 2:
+            # Statement rows often show beginning and ending values on the same line.
+            # For ending totals, prefer the rightmost value.
+            _consider(u, amts[-1])
+            seq += 1
+            continue
+        lookahead = [combo]
         for j in range(1, 6):
             if i + j < len(lines):
                 nxt = str(lines[i + j] or "").strip()
@@ -394,27 +413,129 @@ def _extract_statement_total_value(text: str) -> float | None:
             bu = block_line.upper()
             for m in money_re.finditer(block_line):
                 _consider(bu, m.group("amt"))
+                seq += 1
 
-    return best[1] if best is not None else None
+    return best[2] if best is not None else None
+
+
+def _extract_statement_begin_value(text: str) -> float | None:
+    """
+    Extract a best-effort beginning balance / beginning market value from Chase statement PDF text.
+    """
+    lines = (text or "").splitlines()
+    keys = (
+        "BEGINNING MARKET VALUE",
+        "BEGINNING ACCOUNT VALUE",
+        "BEGINNING BALANCE",
+        "BEGINNING VALUE",
+        "STARTING VALUE",
+        "STARTING BALANCE",
+        "OPENING BALANCE",
+        "OPENING VALUE",
+        "BEGINNING TOTAL",
+        "STARTING TOTAL",
+    )
+    noise = ("CHANGE", "GAIN", "LOSS", "RETURN", "YIELD", "PERCENT", "%")
+    money_re = re.compile(r"(?P<amt>\(?\$?(?:\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+\.\d+)\)?\*?)")
+    best: tuple[int, int, float] | None = None  # (score, seq, value)
+    seq = 0
+
+    def _score_line(u: str) -> int:
+        score = 0
+        if "BEGINNING MARKET VALUE" in u:
+            score += 110
+        if "BEGINNING ACCOUNT VALUE" in u:
+            score += 100
+        if "BEGINNING BALANCE" in u:
+            score += 90
+        if "STARTING VALUE" in u:
+            score += 80
+        if "OPENING BALANCE" in u:
+            score += 70
+        if "BEGINNING VALUE" in u:
+            score += 60
+        if "STARTING BALANCE" in u:
+            score += 60
+        if "OPENING VALUE" in u:
+            score += 50
+        if "BEGINNING TOTAL" in u or "STARTING TOTAL" in u:
+            score += 40
+        if any(n in u for n in noise):
+            score -= 25
+        return score
+
+    def _consider(u: str, raw_amt: str) -> None:
+        nonlocal best
+        v = _as_float(raw_amt)
+        if v is None or v <= 0:
+            return
+        score = _score_line(u)
+        s = str(raw_amt or "")
+        if "," in s or v >= 1000:
+            score += 10
+        if v < 100:
+            score -= 10
+        if best is None or score > best[0] or (score == best[0] and seq < best[1]):
+            best = (int(score), int(seq), float(v))
+
+    for i, raw in enumerate(lines):
+        line = str(raw or "").strip()
+        if not line:
+            continue
+        combo = line
+        if i + 1 < len(lines):
+            nxt = str(lines[i + 1] or "").strip()
+            if nxt:
+                combo = f"{line} {nxt}"
+        u = combo.upper()
+        if not any(k in u for k in keys):
+            continue
+        amts = [m.group("amt") for m in money_re.finditer(combo)]
+        if len(amts) >= 2:
+            # For beginning totals, prefer the leftmost value.
+            _consider(u, amts[0])
+            seq += 1
+            continue
+        lookahead = [combo]
+        for j in range(1, 6):
+            if i + j < len(lines):
+                nxt = str(lines[i + j] or "").strip()
+                if nxt:
+                    lookahead.append(nxt)
+        for block_line in lookahead:
+            bu = block_line.upper()
+            for m in money_re.finditer(block_line):
+                _consider(bu, m.group("amt"))
+                seq += 1
+
+    return best[2] if best is not None else None
 
 
 def _parse_chase_statement_pdf(path: Path) -> dict[str, Any]:
     text = _pdf_to_text(path)
     start_d, end_d = _extract_statement_period(text)
     if end_d is None:
-        # Fallback: use the latest explicit date in the text.
-        dates: list[dt.date] = []
-        for m in re.finditer(r"(?<!\d)(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})(?!\d)", text or ""):
-            try:
-                mo = int(m.group(1))
-                da = int(m.group(2))
-                y = int(m.group(3))
-                if y < 100:
-                    y = 2000 + y
-                dates.append(dt.date(y, mo, da))
-            except Exception:
-                continue
-        end_d = max(dates) if dates else None
+        # Prefer filename date (more reliable than scanning text which can contain CUSIPs).
+        name_date = date_from_filename(path.name)
+        if name_date is not None:
+            end_d = name_date
+        else:
+            # Fallback: use the latest explicit date in the text (with sanity checks).
+            dates: list[dt.date] = []
+            today = dt.date.today()
+            for m in re.finditer(r"(?<!\d)(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})(?!\d)", text or ""):
+                try:
+                    mo = int(m.group(1))
+                    da = int(m.group(2))
+                    y = int(m.group(3))
+                    if y < 100:
+                        y = 2000 + y
+                    if y < 2000 or y > today.year + 1:
+                        continue
+                    dates.append(dt.date(y, mo, da))
+                except Exception:
+                    continue
+            end_d = max(dates) if dates else None
     if end_d is None:
         raise ProviderError(f"Chase statement '{path.name}' is missing a parsable period end date.")
 
@@ -422,8 +543,9 @@ def _parse_chase_statement_pdf(path: Path) -> dict[str, Any]:
     if total is None:
         raise ProviderError(f"Chase statement '{path.name}' is missing a parsable ending total value.")
 
+    begin_total = _extract_statement_begin_value(text)
     as_of_dt = end_of_day_utc(end_d)
-    out: dict[str, Any] = {
+    end_snap: dict[str, Any] = {
         "as_of": as_of_dt.isoformat(),
         "items": [
             {
@@ -439,10 +561,34 @@ def _parse_chase_statement_pdf(path: Path) -> dict[str, Any]:
         "source_file": path.name,
         "statement_total_value": float(total),
         "statement_period_end": end_d.isoformat(),
+        "balance_kind": "END",
     }
     if start_d is not None:
-        out["statement_period_start"] = start_d.isoformat()
-    return out
+        end_snap["statement_period_start"] = start_d.isoformat()
+
+    if begin_total is not None and start_d is not None and start_d != end_d:
+        begin_snap: dict[str, Any] = {
+            "as_of": end_of_day_utc(start_d).isoformat(),
+            "items": [
+                {
+                    "provider_account_id": "CHASE:IRA",
+                    "symbol": "TOTAL",
+                    "qty": None,
+                    "market_value": float(begin_total),
+                    "is_total": True,
+                    "source": "Chase Statement PDF",
+                    "source_file": path.name,
+                }
+            ],
+            "source_file": path.name,
+            "statement_total_value": float(begin_total),
+            "statement_period_start": start_d.isoformat(),
+            "statement_period_end": end_d.isoformat(),
+            "balance_kind": "BEGIN",
+        }
+        return {"snapshots": [begin_snap, end_snap], "source_file": path.name}
+
+    return end_snap
 
 
 def _looks_like_chase_performance_report(text: str) -> bool:

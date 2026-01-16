@@ -5,7 +5,7 @@
   {% set report_breadcrumbs = [{"label": "Reports", "href": "/reports"}, {"label": "Performance", "href": None}] %}
   {% set report_title = "Performance" %}
   {% set report_badge = "Report" %}
-  {% set report_context = "<b>Scope:</b> " ~ scope_label ~ " <span class='ui-muted'>·</span> <b>Period:</b> " ~ period_label ~ " <span class='ui-muted'>·</span> <b>Frequency:</b> " ~ ("Monthly" if freq == "month_end" else "Daily") ~ " <span class='ui-muted'>·</span> <b>Benchmark:</b> " ~ (benchmark_symbol or "SPY") %}
+  {% set report_context = "<b>Period:</b> " ~ period_label ~ " <span class='ui-muted'>·</span> <b>Frequency:</b> " ~ ("Monthly" if freq == "month_end" else "Daily") ~ " <span class='ui-muted'>·</span> <b>Benchmark:</b> " ~ (benchmark_symbol or "SPY") %}
   {% include "partials/reports/_header.html" %}
 
   {% set primary = report.combined if report.combined else (report.rows[0] if report.rows and report.rows|length > 0 else None) %}
@@ -14,13 +14,7 @@
     <div class="ui-section-title">Filters</div>
     <form method="get" action="/reports/performance" id="perfFiltersForm">
       <div class="report-filters-grid">
-        <label>Scope<br/>
-          <select name="scope">
-            <option value="household" {% if scope == "household" %}selected{% endif %}>Household</option>
-            <option value="trust" {% if scope == "trust" %}selected{% endif %}>Trust only</option>
-            <option value="ira" {% if scope == "ira" %}selected{% endif %}>IRA only</option>
-          </select>
-        </label>
+        <input type="hidden" name="scope" value="{{ scope }}"/>
 
         <label>Account<br/>
           <select name="account_id">
@@ -34,21 +28,10 @@
         <label>Date range<br/>
           <select name="period" id="perfPeriodSel">
             <option value="ytd" {% if period == "ytd" %}selected{% endif %}>YTD</option>
-            <option value="1y" {% if period == "1y" %}selected{% endif %}>Last 1y</option>
-            <option value="3y" {% if period == "3y" %}selected{% endif %}>Last 3y</option>
-            <option value="5y" {% if period == "5y" %}selected{% endif %}>Last 5y</option>
             <option value="year" {% if period == "year" %}selected{% endif %}>Calendar year</option>
             <option value="custom" {% if period == "custom" %}selected{% endif %}>Custom</option>
           </select>
         </label>
-
-        <div>
-          <label style="display:flex; gap:8px; align-items:center">
-            <input type="checkbox" name="compare" value="1" {% if compare_prior %}checked{% endif %} />
-            Compare to prior period
-          </label>
-          <div class="ui-muted" style="margin-top:4px">YTD compares to prior YTD; others compare to the immediately preceding window.</div>
-        </div>
 
         <label id="perfYearWrap">Year<br/>
           <select name="year">
@@ -345,10 +328,12 @@
               <th scope="col">Valuation coverage</th>
               <th scope="col" class="num">Begin value</th>
               <th scope="col" class="num">End value</th>
+              <th scope="col" class="num">Δ value</th>
               <th scope="col" class="num">Deposits</th>
               <th scope="col" class="num">Withdrawals</th>
               <th scope="col" class="num">Fees</th>
               <th scope="col" class="num">Withholding</th>
+              <th scope="col" class="num">Income</th>
               <th scope="col" class="num">Other cash out</th>
               <th scope="col" class="num">Total cash out</th>
               <th scope="col" class="num">Gain value</th>
@@ -369,10 +354,12 @@
                 <td class="ui-muted">{{ r.coverage_start or "—" }} → {{ r.coverage_end or "—" }}</td>
                 <td class="num">{{ r.begin_value|usd(0) }}</td>
                 <td class="num">{{ r.end_value|usd(0) }}</td>
+                <td class="num">{{ r.value_change|usd(0) }}</td>
                 <td class="num">{{ r.contributions|usd(0) }}</td>
                 <td class="num">{{ r.withdrawals|usd(0) }}</td>
                 <td class="num">{{ r.fees|usd(0) }}</td>
                 <td class="num">{{ r.withholding|usd(0) }}</td>
+                <td class="num">{{ r.income|usd(0) }}</td>
                 <td class="num">{{ r.other_cash_out|usd(0) }}</td>
                 <td class="num">{{ r.total_cash_out|usd(0) }}</td>
                 <td class="num">{{ r.gain_value|usd(0) }}</td>
@@ -391,10 +378,12 @@
                 <td class="ui-muted">{{ r.coverage_start or "—" }} → {{ r.coverage_end or "—" }} <span class="ui-muted">({{ r.valuation_points }} pts)</span></td>
                 <td class="num">{{ r.begin_value|usd(0) }}</td>
                 <td class="num">{{ r.end_value|usd(0) }}</td>
+                <td class="num">{{ r.value_change|usd(0) }}</td>
                 <td class="num">{{ r.contributions|usd(0) }}</td>
                 <td class="num">{{ r.withdrawals|usd(0) }}</td>
                 <td class="num">{{ r.fees|usd(0) }}</td>
                 <td class="num">{{ r.withholding|usd(0) }}</td>
+                <td class="num">{{ r.income|usd(0) }}</td>
                 <td class="num">{{ r.other_cash_out|usd(0) }}</td>
                 <td class="num">{{ r.total_cash_out|usd(0) }}</td>
                 <td class="num">{{ r.gain_value|usd(0) }}</td>
@@ -407,7 +396,7 @@
               </tr>
               {% if r.warnings and r.warnings|length > 0 %}
                 <tr>
-                  <td colspan="18" class="ui-muted">
+                  <td colspan="20" class="ui-muted">
                     {% for w in r.warnings %}• {{ w }} {% endfor %}
                   </td>
                 </tr>

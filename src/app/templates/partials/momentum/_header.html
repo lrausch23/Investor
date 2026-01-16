@@ -1,0 +1,40 @@
+<div class="holdings-header">
+  <div class="page-title">
+    <div class="page-title__left">
+      <h1>Momentum</h1>
+      <span class="ui-badge ui-badge--neutral">{{ page_badge or "Screener" }}</span>
+    </div>
+    {% if auth_banner_detail %}
+      <details class="inline-alert" role="note">
+        <summary>
+          <span class="inline-alert__icon" aria-hidden="true">&#9888;</span>
+          <span>Running locally. Authentication disabled.</span>
+          <span class="inline-alert__link">Learn more</span>
+        </summary>
+        <div class="muted" style="margin-top:6px">{{ auth_banner_detail }}</div>
+      </details>
+    {% endif %}
+  </div>
+
+  {% if page_context %}
+    <div class="ui-muted selection-line">{{ page_context|safe }}</div>
+  {% endif %}
+
+  {% if ok %}
+    <div class="alert alert--ok" role="status">{{ ok }}</div>
+  {% endif %}
+  {% if error %}
+    <div class="alert alert--warn" role="alert">{{ error }}</div>
+  {% endif %}
+  {% if warnings and warnings|length > 0 %}
+    <details class="alert alert--warn">
+      <summary>Notes ({{ warnings|length }})</summary>
+      <ul class="muted" style="margin:8px 0 0 18px">
+        {% for w in warnings %}
+          <li>{{ w }}</li>
+        {% endfor %}
+      </ul>
+    </details>
+  {% endif %}
+</div>
+

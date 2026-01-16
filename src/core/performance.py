@@ -5,6 +5,7 @@ import datetime as dt
 import math
 import os
 import re
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
@@ -47,6 +48,46 @@ def _is_internal_cash_mechanic_expr():
     )
 
 
+def _is_bank_transfer_like_expr():
+    """
+    SQL predicate to detect bank transfers that may be misclassified as withholding.
+    """
+    desc = func.upper(func.coalesce(func.json_extract(Transaction.lot_links_json, "$.description"), ""))
+    addl = func.upper(func.coalesce(func.json_extract(Transaction.lot_links_json, "$.additional_detail"), ""))
+    raw = func.upper(func.coalesce(func.json_extract(Transaction.lot_links_json, "$.raw_type"), ""))
+    txt = desc + " " + addl
+    return (
+        (raw.in_(["BNK", "BANK", "ACH"]))
+        | (func.instr(txt, "BANKLINK") > 0)
+        | (func.instr(txt, "ACH") > 0)
+        | (func.instr(txt, "WIRE") > 0)
+        | (func.instr(txt, "TRANSFER") > 0)
+        | (func.instr(txt, "WITHDRAW") > 0)
+        | (func.instr(txt, "PUSH") > 0)
+    )
+
+
+def _is_bank_transfer_like_txn(tx: Transaction) -> bool:
+    try:
+        links = tx.lot_links_json or {}
+        if isinstance(links, str):
+            try:
+                links = json.loads(links)
+            except Exception:
+                links = {}
+        if not isinstance(links, dict):
+            links = {}
+        raw = str(links.get("raw_type") or "").upper()
+        desc = str(links.get("description") or "")
+        addl = str(links.get("additional_detail") or "")
+        txt = f"{raw} {desc} {addl}".upper()
+        if raw in {"BNK", "BANK", "ACH"}:
+            return True
+        return any(tok in txt for tok in ("BANKLINK", "ACH", "WIRE", "TRANSFER", "WITHDRAW", "PUSH"))
+    except Exception:
+        return False
+
+
 @dataclass(frozen=True)
 class PerformanceRow:
     portfolio_id: int
@@ -70,6 +111,8 @@ class PerformanceRow:
     withholding: float | None
     other_cash_out: float | None
     total_cash_out: float | None
+    income: float | None
+    value_change: float | None
     gain_value: float | None
     irr: float | None
     xirr: float | None
@@ -769,7 +812,6 @@ def _transfer_flows(
     start_date: dt.date,
     end_date: dt.date,
     account_ids: list[int] | None = None,
-    include_withholding_as_flow: bool = False,
 ) -> list[tuple[dt.date, float]]:
     q = (
         session.query(Transaction, ExternalTransactionMap)
@@ -797,29 +839,33 @@ def _transfer_flows(
     seen: set[str] = set()
     for tx, etm in rows:
         t = str(tx.type or "").upper()
+        links = tx.lot_links_json or {}
+        if isinstance(links, str):
+            try:
+                links = json.loads(links)
+            except Exception:
+                links = {}
+        if not isinstance(links, dict):
+            links = {}
         if t == "TRANSFER":
             k = _flow_key(tx, etm)
             if k and k in seen:
                 continue
             if k:
                 seen.add(k)
-            raw_type = None
-            desc = None
-            try:
-                raw_type = str((tx.lot_links_json or {}).get("raw_type") or "")
-            except Exception:
-                raw_type = None
-            try:
-                links = tx.lot_links_json or {}
-                d0 = str(links.get("description") or "")
-                d1 = str(links.get("additional_detail") or "")
-                desc = " ".join([x for x in [d0.strip(), d1.strip()] if x]).strip()
-            except Exception:
-                desc = None
+            raw_type = str(links.get("raw_type") or "") if links else None
+            d0 = str(links.get("description") or "") if links else ""
+            d1 = str(links.get("additional_detail") or "") if links else ""
+            desc = " ".join([x for x in [d0.strip(), d1.strip()] if x]).strip()
             transfers.append((tx.date, float(tx.amount or 0.0), raw_type, desc))
             continue
-        elif include_withholding_as_flow and t == "WITHHOLDING":
-            pass
+        elif t == "WITHHOLDING" and _is_bank_transfer_like_txn(tx):
+            raw_type = str(links.get("raw_type") or "") if links else None
+            d0 = str(links.get("description") or "") if links else ""
+            d1 = str(links.get("additional_detail") or "") if links else ""
+            desc = " ".join([x for x in [d0.strip(), d1.strip()] if x]).strip()
+            transfers.append((tx.date, -abs(float(tx.amount or 0.0)), raw_type, desc))
+            continue
         else:
             continue
         k = _flow_key(tx, etm)
@@ -834,6 +880,49 @@ def _transfer_flows(
     # Filter internal transfer pairs and append.
     for d, amt in _filter_internal_transfer_pairs(transfers):
         flows.append((d, float(amt)))
+    return flows
+
+
+def _withholding_flows(
+    session: Session,
+    *,
+    connection_id: int,
+    scope: str,
+    start_date: dt.date,
+    end_date: dt.date,
+    account_ids: list[int] | None = None,
+) -> list[tuple[dt.date, float]]:
+    q = (
+        session.query(Transaction)
+        .join(ExternalTransactionMap, ExternalTransactionMap.transaction_id == Transaction.id)
+        .join(Account, Account.id == Transaction.account_id)
+        .join(TaxpayerEntity, TaxpayerEntity.id == Account.taxpayer_entity_id)
+        .filter(
+            ExternalTransactionMap.connection_id == connection_id,
+            Transaction.date >= start_date,
+            Transaction.date <= end_date,
+            Transaction.type == "WITHHOLDING",
+        )
+        .filter(~_is_bank_transfer_like_expr())
+    )
+    if account_ids:
+        q = q.filter(Transaction.account_id.in_([int(x) for x in account_ids]))
+    if scope == "ira":
+        q = q.filter(Account.account_type == "IRA")
+    elif scope == "trust":
+        q = q.filter(TaxpayerEntity.type == "TRUST", Account.account_type != "IRA")
+    elif scope == "personal":
+        q = q.filter(TaxpayerEntity.type == "PERSONAL", Account.account_type != "IRA")
+    rows = q.order_by(Transaction.date.asc(), Transaction.id.asc()).all()
+    flows: list[tuple[dt.date, float]] = []
+    seen: set[str] = set()
+    for tx in rows:
+        k = _flow_key(tx, None)
+        if k and k in seen:
+            continue
+        if k:
+            seen.add(k)
+        flows.append((tx.date, -abs(float(tx.amount or 0.0))))
     return flows
 
 
@@ -978,7 +1067,7 @@ def build_performance_report(
         rf_annual = float(os.environ.get("RISK_FREE_RATE_ANNUAL", "0.0"))
     except Exception:
         rf_annual = 0.0
-    include_withholding = str(os.environ.get("PERF_INCLUDE_WITHHOLDING_AS_FLOW", "0")).strip().lower() in {"1", "true", "yes", "on"}
+    include_withholding = str(os.environ.get("PERF_INCLUDE_WITHHOLDING_AS_FLOW", "1")).strip().lower() in {"1", "true", "yes", "on"}
 
     # Optional charting series (does not affect any performance calculations).
     series_curves_by_portfolio: dict[int, list[tuple[dt.date, float]]] = {}
@@ -1044,16 +1133,30 @@ def build_performance_report(
 
         begin_pt: tuple[dt.date, float] | None = None
         end_pt: tuple[dt.date, float] | None = None
+        used_fallback_baseline = False
+        used_fallback_end = False
         if baseline_candidates:
             # Prefer last valuation on/before start_date; otherwise first valuation after start_date.
             before = [p for p in baseline_candidates if p[0] <= start_date]
             after = [p for p in baseline_candidates if p[0] > start_date]
             begin_pt = max(before, key=lambda p: p[0]) if before else min(after, key=lambda p: p[0])
+        else:
+            # Fallback: if no baseline within grace window, use earliest available valuation in period window.
+            fallback_candidates = [p for p in vals_for_anchors if start_date <= p[0] <= end_date]
+            if fallback_candidates:
+                begin_pt = min(fallback_candidates, key=lambda p: p[0])
+                used_fallback_baseline = True
         if end_candidates:
             # Prefer first valuation on/after end_date; otherwise last valuation before end_date.
             after = [p for p in end_candidates if p[0] >= end_date]
             before = [p for p in end_candidates if p[0] < end_date]
             end_pt = min(after, key=lambda p: p[0]) if after else max(before, key=lambda p: p[0])
+        else:
+            # Fallback: if no end snapshot within grace, use latest available valuation in period window.
+            fallback_candidates = [p for p in vals_for_anchors if start_date <= p[0] <= end_date]
+            if fallback_candidates:
+                end_pt = max(fallback_candidates, key=lambda p: p[0])
+                used_fallback_end = True
 
         begin_d = begin_pt[0] if begin_pt else None
         end_d = end_pt[0] if end_pt else None
@@ -1074,9 +1177,20 @@ def build_performance_report(
             start_date=flow_start,
             end_date=flow_end,
             account_ids=acct_ids or None,
-            include_withholding_as_flow=bool(include_withholding),
         )
         transfer_flows_by_portfolio[int(pid)] = list(flows or [])
+        flows_for_returns: list[tuple[dt.date, float]] = list(flows or [])
+        if include_withholding:
+            flows_for_returns.extend(
+                _withholding_flows(
+                    session,
+                    connection_id=pid,
+                    scope=scope,
+                    start_date=flow_start,
+                    end_date=flow_end,
+                    account_ids=acct_ids or None,
+                )
+            )
 
         # Valuation series used for return calculations (bounded by chosen begin/end valuation dates).
         vals_ds: list[tuple[dt.date, float]] = []
@@ -1092,11 +1206,12 @@ def build_performance_report(
         if flows:
             for _d, amt in flows:
                 a = float(amt or 0.0)
-                net_flow += a
                 if a >= 0:
                     contrib += a
                 else:
                     withdraw += (-a)
+        if flows_for_returns:
+            net_flow = sum(float(a or 0.0) for _d, a in flows_for_returns)
 
         # Cash-out categories that should be reflected as performance drag (NOT treated as investor flows).
         def _cash_out_sum(*, txn_type: str, only_negative: bool = False, exclude_internal: bool = False) -> float | None:
@@ -1115,6 +1230,8 @@ def build_performance_report(
             )
             if only_negative:
                 q = q.filter(Transaction.amount < 0)
+            if txn_type == "WITHHOLDING":
+                q = q.filter(~_is_bank_transfer_like_expr())
             if exclude_internal:
                 q = q.filter(~_is_internal_cash_mechanic_expr())
             if acct_ids:
@@ -1134,11 +1251,78 @@ def build_performance_report(
                 return None
             return out if out != 0 else 0.0
 
+        def _income_sum() -> float | None:
+            q = (
+                session.query(func.sum(Transaction.amount))
+                .select_from(Transaction)
+                .join(ExternalTransactionMap, ExternalTransactionMap.transaction_id == Transaction.id)
+                .join(Account, Account.id == Transaction.account_id)
+                .join(TaxpayerEntity, TaxpayerEntity.id == Account.taxpayer_entity_id)
+                .filter(
+                    ExternalTransactionMap.connection_id == pid,
+                    Transaction.date >= flow_start,
+                    Transaction.date <= flow_end,
+                    Transaction.type.in_(["DIV", "INT"]),
+                )
+            )
+            if acct_ids:
+                q = q.filter(Transaction.account_id.in_(acct_ids))
+            if scope == "ira":
+                q = q.filter(Account.account_type == "IRA")
+            elif scope == "trust":
+                q = q.filter(TaxpayerEntity.type == "TRUST", Account.account_type != "IRA")
+            elif scope == "personal":
+                q = q.filter(TaxpayerEntity.type == "PERSONAL", Account.account_type != "IRA")
+            v = q.scalar()
+            if v is None:
+                return None
+            try:
+                out = float(v or 0.0)
+            except Exception:
+                return None
+            return out if out != 0 else 0.0
+
+        def _withholding_split() -> tuple[float, float]:
+            q = (
+                session.query(Transaction)
+                .select_from(Transaction)
+                .join(ExternalTransactionMap, ExternalTransactionMap.transaction_id == Transaction.id)
+                .join(Account, Account.id == Transaction.account_id)
+                .join(TaxpayerEntity, TaxpayerEntity.id == Account.taxpayer_entity_id)
+                .filter(
+                    ExternalTransactionMap.connection_id == pid,
+                    Transaction.date >= flow_start,
+                    Transaction.date <= flow_end,
+                    Transaction.type == "WITHHOLDING",
+                )
+            )
+            if acct_ids:
+                q = q.filter(Transaction.account_id.in_(acct_ids))
+            if scope == "ira":
+                q = q.filter(Account.account_type == "IRA")
+            elif scope == "trust":
+                q = q.filter(TaxpayerEntity.type == "TRUST", Account.account_type != "IRA")
+            elif scope == "personal":
+                q = q.filter(TaxpayerEntity.type == "PERSONAL", Account.account_type != "IRA")
+            total = 0.0
+            banklink = 0.0
+            for tx in q.all():
+                amt = abs(float(tx.amount or 0.0))
+                if amt <= 0:
+                    continue
+                if _is_bank_transfer_like_txn(tx):
+                    banklink += amt
+                else:
+                    total += amt
+            return float(total), float(banklink)
+
         fees_out = float(_cash_out_sum(txn_type="FEE", only_negative=True) or 0.0)
-        withholding_out = float(_cash_out_sum(txn_type="WITHHOLDING", only_negative=False) or 0.0)
+        withholding_out, _banklink_withholding = _withholding_split()
         other_cash_out = float(_cash_out_sum(txn_type="OTHER", only_negative=True, exclude_internal=True) or 0.0)
+        income_out = float(_income_sum() or 0.0)
 
         total_cash_out = float(withdraw) + float(fees_out) + float(withholding_out) + float(other_cash_out)
+        value_change = float(end_v) - float(begin_v) if (begin_v is not None and end_v is not None) else None
 
         gain_value = None
         if begin_v is not None and end_v is not None and has_baseline and has_end:
@@ -1192,6 +1376,14 @@ def build_performance_report(
                 acct_warn.append(
                     "Tip (IB): run a one-day FULL sync with end date near period start (e.g., 12/31 prior year) to backfill a baseline holdings snapshot."
                 )
+        if used_fallback_baseline and begin_d is not None:
+            acct_warn.append(
+                f"No baseline snapshot near {start_date}; using first available valuation on {begin_d} for returns."
+            )
+        if used_fallback_end and end_d is not None:
+            acct_warn.append(
+                f"No end snapshot near {end_date}; using latest available valuation on {end_d} for returns."
+            )
         if has_baseline and begin_d is not None and begin_d != start_date:
             acct_warn.append(f"Using begin snapshot at {begin_d} (target {start_date}).")
         if has_end and end_d is not None and end_d != end_date:
@@ -1222,7 +1414,7 @@ def build_performance_report(
             and end_v >= 0
         ):
             cfs: list[tuple[dt.date, float]] = [(begin_d, -float(begin_v))]
-            for d, amt in flows:
+            for d, amt in flows_for_returns:
                 cfs.append((d, -float(amt)))
             cfs.append((end_d, float(end_v)))
             irr = xirr(cfs)
@@ -1232,7 +1424,7 @@ def build_performance_report(
         twr = None
         subrets: list[float] = []
         if has_baseline and has_end and len(vals_ds) >= 2:
-            twr, subrets, twr_warn = twr_from_series(values=vals_ds, flows=flows)
+            twr, subrets, twr_warn = twr_from_series(values=vals_ds, flows=flows_for_returns)
             acct_warn.extend(twr_warn)
 
         sharpe = None
@@ -1294,6 +1486,8 @@ def build_performance_report(
                 withholding=withholding_out,
                 other_cash_out=other_cash_out,
                 total_cash_out=total_cash_out,
+                income=income_out,
+                value_change=value_change,
                 gain_value=gain_value,
                 irr=irr,
                 xirr=irr,
@@ -1390,22 +1584,33 @@ def build_performance_report(
         else:
             combined_ds = _downsample(combined_vals, frequency=frequency)
         combined_flows: list[tuple[dt.date, float]] = []
+        combined_flows_for_returns: list[tuple[dt.date, float]] = []
         for pid in baseline_portfolio_ids:
-            combined_flows.extend(
-                _transfer_flows(
-                    session,
-                    connection_id=pid,
-                    scope=scope,
-                    start_date=start_date,
-                    end_date=end_date,
-                    account_ids=acct_ids or None,
-                    include_withholding_as_flow=bool(include_withholding),
-                )
+            flows = _transfer_flows(
+                session,
+                connection_id=pid,
+                scope=scope,
+                start_date=start_date,
+                end_date=end_date,
+                account_ids=acct_ids or None,
             )
+            combined_flows.extend(flows)
+            combined_flows_for_returns.extend(flows)
+            if include_withholding:
+                combined_flows_for_returns.extend(
+                    _withholding_flows(
+                        session,
+                        connection_id=pid,
+                        scope=scope,
+                        start_date=start_date,
+                        end_date=end_date,
+                        account_ids=acct_ids or None,
+                    )
+                )
         combined_twr = None
         combined_subrets: list[float] = []
         if len(combined_ds) >= 2:
-            combined_twr, combined_subrets, cw = twr_from_series(values=combined_ds, flows=combined_flows)
+            combined_twr, combined_subrets, cw = twr_from_series(values=combined_ds, flows=combined_flows_for_returns)
             combined_warn.extend(cw)
         elif combined_ds:
             combined_warn.append("Combined TWR needs at least 2 valuation points in the period.")
@@ -1415,19 +1620,22 @@ def build_performance_report(
         if combined_flows:
             for _d, amt in combined_flows:
                 a = float(amt or 0.0)
-                combined_net_flow += a
                 if a >= 0:
                     combined_contrib += a
                 else:
                     combined_withdraw += (-a)
+        if combined_flows_for_returns:
+            combined_net_flow = sum(float(a or 0.0) for _d, a in combined_flows_for_returns)
 
         combined_fees = 0.0
         combined_withholding = 0.0
         combined_other_cash_out = 0.0
+        combined_income = 0.0
         if baseline_portfolio_ids:
             fee_sum = 0.0
             wh_sum = 0.0
             other_sum = 0.0
+            income_sum = 0.0
             for r in rows_out:
                 if int(r.portfolio_id) not in baseline_portfolio_ids:
                     continue
@@ -1437,11 +1645,17 @@ def build_performance_report(
                     wh_sum += float(r.withholding or 0.0)
                 if r.other_cash_out is not None:
                     other_sum += float(r.other_cash_out or 0.0)
+                if r.income is not None:
+                    income_sum += float(r.income or 0.0)
             combined_fees = float(fee_sum)
             combined_withholding = float(wh_sum)
             combined_other_cash_out = float(other_sum)
+            combined_income = float(income_sum)
 
         combined_total_cash_out = float(combined_withdraw) + float(combined_fees) + float(combined_withholding) + float(combined_other_cash_out)
+        combined_value_change = None
+        if combined_begin_v is not None and combined_end_v is not None:
+            combined_value_change = float(combined_end_v) - float(combined_begin_v)
 
         combined_gain = None
         if combined_begin_v is not None and combined_end_v is not None:
@@ -1456,7 +1670,7 @@ def build_performance_report(
             and combined_begin_d != combined_end_d
         ):
             cfs = [(combined_begin_d, -float(combined_begin_v))]
-            for d, amt in combined_flows:
+            for d, amt in combined_flows_for_returns:
                 cfs.append((d, -float(amt)))
             cfs.append((combined_end_d, float(combined_end_v)))
             combined_irr = xirr(cfs)
@@ -1507,6 +1721,8 @@ def build_performance_report(
                 withholding=combined_withholding,
                 other_cash_out=combined_other_cash_out,
                 total_cash_out=combined_total_cash_out,
+                income=combined_income,
+                value_change=combined_value_change,
                 gain_value=combined_gain,
                 irr=combined_irr,
                 xirr=combined_irr,

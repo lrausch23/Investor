@@ -130,6 +130,13 @@ def ensure_sqlite_schema(engine: Engine) -> None:
         if "cardholder_name" not in cols:
             _add_column(engine, "expense_transactions", "cardholder_name VARCHAR(200)")
 
+    if "expense_accounts" in existing_tables:
+        cols = _table_columns(engine, "expense_accounts")
+        if "provider_account_id" not in cols:
+            _add_column(engine, "expense_accounts", "provider_account_id VARCHAR(200)")
+        if "scope" not in cols:
+            _add_column(engine, "expense_accounts", "scope VARCHAR(20) NOT NULL DEFAULT 'PERSONAL'")
+
     if "bullion_holdings" in existing_tables:
         cols = _table_columns(engine, "bullion_holdings")
         if "cost_basis_total" not in cols:
@@ -145,3 +152,187 @@ def ensure_sqlite_schema(engine: Engine) -> None:
         ]:
             if name not in cols:
                 _add_column(engine, "external_file_ingests", ddl)
+
+    if "expense_account_balances" not in existing_tables:
+        try:
+            with engine.begin() as conn:
+                conn.execute(
+                    text(
+                        """
+                        CREATE TABLE expense_account_balances (
+                            id INTEGER PRIMARY KEY,
+                            expense_account_id INTEGER NOT NULL,
+                            as_of_date DATETIME NOT NULL,
+                            balance_current NUMERIC(20,2),
+                            balance_available NUMERIC(20,2),
+                            currency VARCHAR(8) NOT NULL DEFAULT 'USD',
+                            source VARCHAR(50) NOT NULL DEFAULT 'PLAID',
+                            created_at DATETIME NOT NULL,
+                            FOREIGN KEY(expense_account_id) REFERENCES expense_accounts(id)
+                        )
+                        """
+                    )
+                )
+                conn.execute(
+                    text(
+                        "CREATE INDEX ix_expense_account_balance_account ON expense_account_balances(expense_account_id)"
+                    )
+                )
+        except Exception:
+            pass
+
+    if "recurring_bill" not in existing_tables:
+        try:
+            with engine.begin() as conn:
+                conn.execute(
+                    text(
+                        """
+                        CREATE TABLE recurring_bill (
+                            id INTEGER PRIMARY KEY,
+                            scope VARCHAR(20) NOT NULL DEFAULT 'PERSONAL',
+                            name VARCHAR(200) NOT NULL,
+                            source_account_id INTEGER,
+                            cadence VARCHAR(20) NOT NULL DEFAULT 'MONTHLY',
+                            amount_mode VARCHAR(20) NOT NULL DEFAULT 'VARIABLE',
+                            amount_expected NUMERIC(20,2),
+                            amount_min NUMERIC(20,2),
+                            amount_max NUMERIC(20,2),
+                            due_day_of_month INTEGER,
+                            is_active BOOLEAN NOT NULL DEFAULT 1,
+                            is_user_confirmed BOOLEAN NOT NULL DEFAULT 0,
+                            autodetect_confidence NUMERIC(6,3),
+                            created_at DATETIME NOT NULL,
+                            updated_at DATETIME NOT NULL,
+                            FOREIGN KEY(source_account_id) REFERENCES expense_accounts(id)
+                        )
+                        """
+                    )
+                )
+                conn.execute(text("CREATE INDEX ix_recurring_bill_scope ON recurring_bill(scope)"))
+        except Exception:
+            pass
+
+    if "recurring_bill_rule" not in existing_tables:
+        try:
+            with engine.begin() as conn:
+                conn.execute(
+                    text(
+                        """
+                        CREATE TABLE recurring_bill_rule (
+                            id INTEGER PRIMARY KEY,
+                            recurring_bill_id INTEGER NOT NULL,
+                            rule_type VARCHAR(40) NOT NULL,
+                            rule_value VARCHAR(200) NOT NULL,
+                            priority INTEGER NOT NULL DEFAULT 0,
+                            FOREIGN KEY(recurring_bill_id) REFERENCES recurring_bill(id)
+                        )
+                        """
+                    )
+                )
+                conn.execute(text("CREATE INDEX ix_recurring_bill_rule_bill ON recurring_bill_rule(recurring_bill_id)"))
+        except Exception:
+            pass
+
+    if "recurring_bill_ignore" not in existing_tables:
+        try:
+            with engine.begin() as conn:
+                conn.execute(
+                    text(
+                        """
+                        CREATE TABLE recurring_bill_ignore (
+                            id INTEGER PRIMARY KEY,
+                            scope VARCHAR(20) NOT NULL,
+                            rule_type VARCHAR(40) NOT NULL,
+                            rule_value VARCHAR(200) NOT NULL,
+                            created_at DATETIME NOT NULL
+                        )
+                        """
+                    )
+                )
+                conn.execute(
+                    text(
+                        "CREATE UNIQUE INDEX ux_recurring_bill_ignore_scope_rule ON recurring_bill_ignore(scope, rule_type, rule_value)"
+                    )
+                )
+        except Exception:
+            pass
+
+    if "recurring_card_charge" not in existing_tables:
+        try:
+            with engine.begin() as conn:
+                conn.execute(
+                    text(
+                        """
+                        CREATE TABLE recurring_card_charge (
+                            id INTEGER PRIMARY KEY,
+                            scope VARCHAR(20) NOT NULL DEFAULT 'PERSONAL',
+                            name VARCHAR(200) NOT NULL,
+                            source_account_id INTEGER,
+                            cadence VARCHAR(20) NOT NULL DEFAULT 'MONTHLY',
+                            amount_mode VARCHAR(20) NOT NULL DEFAULT 'VARIABLE',
+                            amount_expected NUMERIC(20,2),
+                            amount_min NUMERIC(20,2),
+                            amount_max NUMERIC(20,2),
+                            due_day_of_month INTEGER,
+                            is_active BOOLEAN NOT NULL DEFAULT 1,
+                            is_user_confirmed BOOLEAN NOT NULL DEFAULT 0,
+                            autodetect_confidence NUMERIC(6,3),
+                            created_at DATETIME NOT NULL,
+                            updated_at DATETIME NOT NULL,
+                            FOREIGN KEY(source_account_id) REFERENCES expense_accounts(id)
+                        )
+                        """
+                    )
+                )
+                conn.execute(text("CREATE INDEX ix_recurring_card_charge_scope ON recurring_card_charge(scope)"))
+        except Exception:
+            pass
+
+    if "recurring_card_charge_rule" not in existing_tables:
+        try:
+            with engine.begin() as conn:
+                conn.execute(
+                    text(
+                        """
+                        CREATE TABLE recurring_card_charge_rule (
+                            id INTEGER PRIMARY KEY,
+                            recurring_card_charge_id INTEGER NOT NULL,
+                            rule_type VARCHAR(40) NOT NULL,
+                            rule_value VARCHAR(200) NOT NULL,
+                            priority INTEGER NOT NULL DEFAULT 0,
+                            FOREIGN KEY(recurring_card_charge_id) REFERENCES recurring_card_charge(id)
+                        )
+                        """
+                    )
+                )
+                conn.execute(
+                    text(
+                        "CREATE INDEX ix_recurring_card_charge_rule_charge ON recurring_card_charge_rule(recurring_card_charge_id)"
+                    )
+                )
+        except Exception:
+            pass
+
+    if "recurring_card_charge_ignore" not in existing_tables:
+        try:
+            with engine.begin() as conn:
+                conn.execute(
+                    text(
+                        """
+                        CREATE TABLE recurring_card_charge_ignore (
+                            id INTEGER PRIMARY KEY,
+                            scope VARCHAR(20) NOT NULL,
+                            rule_type VARCHAR(40) NOT NULL,
+                            rule_value VARCHAR(200) NOT NULL,
+                            created_at DATETIME NOT NULL
+                        )
+                        """
+                    )
+                )
+                conn.execute(
+                    text(
+                        "CREATE UNIQUE INDEX ux_recurring_card_charge_ignore_scope_rule ON recurring_card_charge_ignore(scope, rule_type, rule_value)"
+                    )
+                )
+        except Exception:
+            pass

@@ -62,7 +62,21 @@
     <button type="submit">Add transaction</button>
   </form>
 
-  <h2>Recent transactions</h2>
+  <h2>Transactions</h2>
+  <div class="muted">
+    Coverage: {{ min_date or "—" }} → {{ max_date or "—" }} · Total: {{ total or 0 }}
+    · Page {{ page or 1 }} of {{ pages or 1 }} ({{ page_size or 50 }}/page)
+    {% set prev_page = (page|int) - 1 %}
+    {% set next_page = (page|int) + 1 %}
+    {% if prev_page >= 1 %}
+      · <a href="/holdings/transactions?source={{ source }}{% if connection_id %}&connection_id={{ connection_id }}{% endif %}&page={{ prev_page }}">Prev</a>
+    {% endif %}
+    {% if (pages or 1) > (page|int) %}
+      · <a href="/holdings/transactions?source={{ source }}{% if connection_id %}&connection_id={{ connection_id }}{% endif %}&page={{ next_page }}">Next</a>
+    {% endif %}
+    · <a href="/holdings/transactions?source={{ source }}{% if connection_id %}&connection_id={{ connection_id }}{% endif %}&page=1">Newest</a>
+    · <a href="/holdings/transactions?source={{ source }}{% if connection_id %}&connection_id={{ connection_id }}{% endif %}&page={{ pages or 1 }}">Oldest</a>
+  </div>
   <table>
     <tr><th>Date</th><th>Account</th><th>Type</th><th>Ticker</th><th>Qty</th><th>Amount</th><th>Source</th><th>Provider txn id</th><th>Lot links</th></tr>
     {% for t, m, c in rows %}

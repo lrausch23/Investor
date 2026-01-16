@@ -7,6 +7,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import JSONResponse, RedirectResponse
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from src.app.auth import auth_banner_message, require_actor
@@ -1002,7 +1003,24 @@ def transactions_list(
     elif source == "imported":
         q = q.filter(ExternalTransactionMap.id.is_not(None))
 
-    rows = q.order_by(Transaction.date.desc(), Transaction.id.desc()).limit(300).all()
+    page_raw = (request.query_params.get("page") or "").strip()
+    page = 1
+    try:
+        if page_raw.isdigit():
+            page = max(1, int(page_raw))
+    except Exception:
+        page = 1
+    page_size = 50
+
+    total = int(q.with_entities(func.count(Transaction.id)).scalar() or 0)
+    pages = max(1, int((total + page_size - 1) // page_size))
+    if page > pages:
+        page = pages
+    offset = int((page - 1) * page_size)
+
+    rows = q.order_by(Transaction.date.desc(), Transaction.id.desc()).limit(page_size).offset(offset).all()
+
+    min_date, max_date = q.with_entities(func.min(Transaction.date), func.max(Transaction.date)).one()
     from src.app.main import templates
 
     return templates.TemplateResponse(
@@ -1017,6 +1035,12 @@ def transactions_list(
             "connections": connections,
             "source": source,
             "connection_id": connection_id,
+            "page": page,
+            "pages": pages,
+            "page_size": page_size,
+            "total": total,
+            "min_date": min_date,
+            "max_date": max_date,
             "today": dt.date.today().isoformat(),
         },
     )

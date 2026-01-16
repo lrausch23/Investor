@@ -1,51 +1,118 @@
 {% extends "layout.html" %}
 {% block content %}
-  <h1>Edit Auth: {{ conn.name }}</h1>
-  <p><a href="/sync/connections/{{ conn.id }}">← Back</a></p>
+  <div class="holdings-header">
+    <div class="page-title">
+      <div class="page-title__left">
+        <h1>Credentials</h1>
+        <span class="ui-badge ui-badge--neutral">{{ conn.name }}</span>
+      </div>
+      <a class="btn btn--secondary" href="/sync/connections/{{ conn.id }}">Back</a>
+    </div>
+  </div>
 
   {% if not secret_key_ok %}
-    <div class="banner banner--warn">APP_SECRET_KEY is not set. Saving credentials to DB is disabled.</div>
+    <div class="alert alert--warn" role="alert" style="margin-top:10px">
+      APP_SECRET_KEY is not set. Saving credentials to DB is disabled.
+    </div>
   {% endif %}
 
-  <h2>Current</h2>
-  <table>
-    <tr><th>Key</th><th>Value</th></tr>
-    {% if connector == "CHASE_YODLEE" %}
-      <tr><td>YODLEE_ACCESS_TOKEN</td><td>{{ token_masked }}</td></tr>
-      <tr><td>YODLEE_REFRESH_TOKEN</td><td>{{ query_id_masked }}</td></tr>
-      <tr><td>yodlee_base_url</td><td class="muted">{{ yodlee_base_url or "env YODLEE_BASE_URL" }}</td></tr>
-      <tr><td>yodlee_api_version</td><td class="muted">{{ yodlee_api_version or "env YODLEE_API_VERSION" }}</td></tr>
-    {% else %}
-      <tr><td>{{ cred_token_key }}</td><td>{{ token_masked }}</td></tr>
-      <tr><td>{{ cred_qid_key }}</td><td>{{ query_id_display }}</td></tr>
-    {% endif %}
-  </table>
+  <section class="ui-card" aria-label="Current credentials" style="margin-top:12px">
+    <div class="ui-section-title">Current</div>
+    <table class="kv" style="margin-top:10px">
+      {% if connector in ["CHASE_PLAID", "AMEX_PLAID"] %}
+        <tr><td>PLAID_ACCESS_TOKEN</td><td>{{ token_masked }}</td></tr>
+        <tr><td>PLAID_ITEM_ID</td><td>{{ query_id_display }}</td></tr>
+        <tr>
+          <td>Plaid env</td>
+          <td>
+            <form method="post" action="/sync/connections/{{ conn.id }}/settings" class="form-compact" style="display:flex;gap:8px;align-items:center">
+              <label class="sr-only" for="plaid_env_{{ conn.id }}">Plaid environment</label>
+              <select id="plaid_env_{{ conn.id }}" name="plaid_env">
+                <option value="sandbox" {% if (plaid_env or "")|lower == "sandbox" %}selected{% endif %}>sandbox</option>
+                <option value="production" {% if (plaid_env or "")|lower == "production" %}selected{% endif %}>production</option>
+              </select>
+              <input type="hidden" name="plaid_enable_investments" value="{% if plaid_enable_investments and connector == "CHASE_PLAID" %}1{% else %}0{% endif %}"/>
+              <input type="hidden" name="note" value="Updated Plaid env"/>
+              <button class="btn btn--secondary" type="submit">Save</button>
+            </form>
+          </td>
+        </tr>
+      {% elif connector == "CHASE_YODLEE" %}
+        <tr><td>YODLEE_ACCESS_TOKEN</td><td>{{ token_masked }}</td></tr>
+        <tr><td>YODLEE_REFRESH_TOKEN</td><td>{{ query_id_masked }}</td></tr>
+        <tr><td>yodlee_base_url</td><td class="ui-muted">{{ yodlee_base_url or "env YODLEE_BASE_URL" }}</td></tr>
+        <tr><td>yodlee_api_version</td><td class="ui-muted">{{ yodlee_api_version or "env YODLEE_API_VERSION" }}</td></tr>
+      {% else %}
+        <tr><td>{{ cred_token_key }}</td><td>{{ token_masked }}</td></tr>
+        <tr><td>{{ cred_qid_key }}</td><td>{{ query_id_display }}</td></tr>
+      {% endif %}
+    </table>
+  </section>
 
-  <h2>Update</h2>
-  <form method="post" action="/sync/connections/{{ conn.id }}/auth">
-    {% if connector == "CHASE_YODLEE" %}
-      <div class="grid2">
-        <label>Yodlee access token<br/><input name="token" type="password" placeholder="paste access token (not Chase credentials)"/></label>
-        <label>Yodlee refresh token (optional)<br/><input name="refresh_token" type="password" placeholder="paste refresh token"/></label>
+  <section class="ui-card" aria-label="Update credentials" style="margin-top:12px">
+    <div class="ui-section-title">Update</div>
+    {% if connector in ["CHASE_PLAID", "AMEX_PLAID"] %}
+      <div class="ui-muted">Connect or re-link this Plaid item (OAuth). First sync can backfill up to ~24 months of history (institution-dependent).</div>
+      {% if plaid_insecure_skip_verify|default(false) %}
+        <div class="alert alert--warn" role="alert" style="margin-top:10px">
+          TLS verification is disabled for Plaid (<code>PLAID_INSECURE_SKIP_VERIFY</code> is set). Do not use this with real credentials on an untrusted network.
+        </div>
+      {% endif %}
+      <div style="margin-top:10px">
+        <button class="btn btn--primary" type="button" data-plaid-connect data-connection-id="{{ conn.id }}" {% if not secret_key_ok %}disabled{% endif %}>
+          Connect / Re-link via Plaid
+        </button>
+        <a class="btn btn--secondary" href="/sync/connections/{{ conn.id }}">Back</a>
       </div>
-      <div class="grid2" style="margin-top:6px">
-        <label>Yodlee base URL (optional)<br/><input name="yodlee_base_url" type="text" size="80" value="{{ yodlee_base_url }}" placeholder="defaults to env YODLEE_BASE_URL"/></label>
-        <label>Yodlee API version (optional)<br/><input name="yodlee_api_version" type="text" size="40" value="{{ yodlee_api_version }}" placeholder="e.g. 1.1"/></label>
+      <div class="ui-muted" style="margin-top:10px">
+        Requires <code>PLAID_CLIENT_ID</code>, <code>PLAID_SECRET</code>, <code>PLAID_ENV</code>, and <code>NETWORK_ENABLED=1</code>.
       </div>
-      <input type="hidden" name="query_id" value=""/>
-      <div class="muted">Live calls require <code>NETWORK_ENABLED=1</code> and a Yodlee host allowlisted in <code>ALLOWED_OUTBOUND_HOSTS</code>.</div>
+      <details class="ui-disclosure" style="margin-top:8px">
+        <summary>Network allowlist</summary>
+        <div class="ui-muted" style="margin-top:6px">
+          If <code>ALLOWED_OUTBOUND_HOSTS</code> is set, ensure it includes the Plaid host for your environment
+          (e.g., <code>sandbox.plaid.com</code> or <code>production.plaid.com</code>).
+        </div>
+      </details>
+      <div class="alert alert--warn" role="alert" style="margin-top:10px" data-plaid-error hidden></div>
+      <div class="alert alert--ok" role="status" style="margin-top:10px" data-plaid-ok hidden></div>
+      <script src="https://cdn.plaid.com/link/v2/stable/link-initialize.js"></script>
+      <script src="/static/sync_plaid.js"></script>
     {% else %}
-      <div class="grid2">
-        <label>Token<br/><input name="token" type="password" placeholder="paste token"/></label>
-        <label>Flex Query ID (numeric) or name<br/><input name="query_id" type="text" size="80" placeholder="e.g. 1354277"/></label>
-      </div>
+      <form method="post" action="/sync/connections/{{ conn.id }}/auth" class="form-compact" style="margin-top:10px">
+        {% if connector == "CHASE_YODLEE" %}
+          <label>Yodlee access token
+            <input name="token" type="password" placeholder="paste access token (not Chase credentials)" autocomplete="new-password"/>
+          </label>
+          <label>Yodlee refresh token (optional)
+            <input name="refresh_token" type="password" placeholder="paste refresh token" autocomplete="new-password"/>
+          </label>
+          <label>Yodlee base URL (optional)
+            <input name="yodlee_base_url" type="text" value="{{ yodlee_base_url }}" placeholder="defaults to env YODLEE_BASE_URL"/>
+          </label>
+          <label>Yodlee API version (optional)
+            <input name="yodlee_api_version" type="text" value="{{ yodlee_api_version }}" placeholder="e.g. 1.1"/>
+          </label>
+          <input type="hidden" name="query_id" value=""/>
+          <div class="ui-muted">Live calls require <code>NETWORK_ENABLED=1</code> and a Yodlee host allowlisted in <code>ALLOWED_OUTBOUND_HOSTS</code>.</div>
+        {% else %}
+          <label>Token
+            <input name="token" type="password" placeholder="paste token" autocomplete="new-password"/>
+          </label>
+          <label>Flex Query ID (numeric) or name
+            <input name="query_id" type="text" placeholder="e.g. 1354277"/>
+          </label>
+        {% endif %}
+        {% if connector == "IB_FLEX_WEB" %}
+          <div class="ui-muted">Query can be the Flex Query <b>name</b> from IB Portal (Reports → Flex Queries), or the numeric id if available.</div>
+          <div class="ui-muted">Flex Web Service is IP restricted; ensure your server IP is allowlisted in IB Portal.</div>
+        {% endif %}
+        <div class="ui-muted">Values are encrypted at rest using Fernet derived from <code>APP_SECRET_KEY</code>.</div>
+        <label>Audit note (optional)
+          <input name="note" placeholder="Why this changed"/>
+        </label>
+        <button class="btn" type="submit" {% if not secret_key_ok %}disabled{% endif %}>Save</button>
+      </form>
     {% endif %}
-    {% if connector == "IB_FLEX_WEB" %}
-      <div class="muted">Query can be the Flex Query <b>name</b> from IB Portal (Reports → Flex Queries), or the numeric id if available.</div>
-      <div class="muted">Flex Web Service is IP restricted; ensure your server IP is allowlisted in IB Portal.</div>
-    {% endif %}
-    <div class="muted">Values are encrypted at rest using Fernet derived from `APP_SECRET_KEY`.</div>
-    <label>Audit note <input name="note" size="60"/></label><br/>
-    <button type="submit" {% if not secret_key_ok %}disabled{% endif %}>Save</button>
-  </form>
+  </section>
 {% endblock %}

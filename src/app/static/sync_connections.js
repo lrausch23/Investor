@@ -19,8 +19,12 @@
     const nameInput = root.querySelector("#create_name");
     const secIb = root.querySelector('[data-create-section="IB_FLEX_WEB"]');
     const secOffline = root.querySelector('[data-create-section="OFFLINE"]');
+    const secPlaid = root.querySelector('[data-create-section="CHASE_PLAID"]');
+    const secPlaidAmex = root.querySelector('[data-create-section="AMEX_PLAID"]');
 
     const suggestedNameForKind = (kind) => {
+      if (kind === "CHASE_PLAID") return "Chase (Plaid)";
+      if (kind === "AMEX_PLAID") return "Amex (Plaid)";
       if (kind === "CHASE_OFFLINE") return "Chase (Offline)";
       if (kind === "RJ_OFFLINE") return "RJ (Offline)";
       return "IB Flex (Web)";
@@ -29,8 +33,11 @@
     const apply = () => {
       const kind = (kindSel.value || "").trim().toUpperCase();
       const isIb = kind === "IB_FLEX_WEB";
+      const isPlaid = kind === "CHASE_PLAID" || kind === "AMEX_PLAID";
       setSectionEnabled(secIb, isIb);
-      setSectionEnabled(secOffline, !isIb);
+      setSectionEnabled(secOffline, !isIb && !isPlaid);
+      setSectionEnabled(secPlaid, kind === "CHASE_PLAID");
+      setSectionEnabled(secPlaidAmex, kind === "AMEX_PLAID");
 
       if (nameInput) {
         const prevSuggested = nameInput.getAttribute("data-suggested-name") || "";
@@ -115,6 +122,19 @@
     });
   };
 
+  const initDeleteConfirm = () => {
+    const forms = Array.from(root.querySelectorAll("form[data-confirm-delete]"));
+    forms.forEach((form) => {
+      form.addEventListener("submit", (e) => {
+        const name = form.getAttribute("data-conn-name") || "this connection";
+        const ok = window.confirm(
+          `Delete connection "${name}"?\n\nThis removes the connection, its stored credentials (if any), and its sync run history. It does not delete already-imported transactions/holdings data.`
+        );
+        if (!ok) e.preventDefault();
+      });
+    });
+  };
+
   const initDropdowns = () => {
     const dropdowns = Array.from(root.querySelectorAll("details.dropdown"));
     if (dropdowns.length === 0) return;
@@ -186,6 +206,7 @@
   initCreateForm();
   initRowDetails();
   initDisableConfirm();
+  initDeleteConfirm();
   initDropdowns();
   initSyncModeToggles();
 })();

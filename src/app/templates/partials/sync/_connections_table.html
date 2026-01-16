@@ -54,6 +54,8 @@
               {% set connector_label = "Chase (Offline)" %}
             {% elif connector == "RJ_OFFLINE" %}
               {% set connector_label = "RJ (Offline)" %}
+            {% elif connector == "AMEX_PLAID" %}
+              {% set connector_label = "Amex (Plaid)" %}
             {% elif connector == "CHASE_YODLEE" %}
               {% set connector_label = "Chase (Yodlee)" %}
             {% elif connector == "IB_FLEX_OFFLINE" %}
@@ -146,6 +148,12 @@
                         <input type="hidden" name="note" value="Disabled from Connections list"/>
                         <button class="dropdown__danger" type="submit" role="menuitem">Disable</button>
                       </form>
+                      {% if status_u == "DISABLED" %}
+                        <form method="post" action="/sync/connections/{{ c.id }}/delete" data-confirm-delete data-conn-name="{{ c.name|e }}">
+                          <input type="hidden" name="note" value="Deleted from Connections list"/>
+                          <button class="dropdown__danger" type="submit" role="menuitem">Delete</button>
+                        </form>
+                      {% endif %}
                     </div>
                   </details>
                 </div>

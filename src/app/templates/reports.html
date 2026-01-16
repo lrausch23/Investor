@@ -4,7 +4,7 @@
   {% set report_breadcrumbs = [{"label": "Reports", "href": "/reports"}, {"label": "Cash Out", "href": None}] %}
   {% set report_title = "Cash Out" %}
   {% set report_badge = "Report" %}
-  {% set report_context = "<b>Scope:</b> " ~ scope_label ~ " <span class='ui-muted'>·</span> <b>Period:</b> " ~ period_label ~ " <span class='ui-muted'>·</span> <b>View:</b> " ~ ("Per account" if view == "accounts" else "Combined") %}
+  {% set report_context = "<b>Period:</b> " ~ period_label ~ " <span class='ui-muted'>·</span> <b>View:</b> " ~ ("Per account" if view == "accounts" else "Combined") %}
   {% include "partials/reports/_header.html" %}
 
   <div class="ui-kpi-grid">
@@ -23,15 +23,8 @@
   <div class="ui-card" style="margin-top:10px">
     <div class="ui-section-title">Filters</div>
     <form method="get" action="/reports">
+      <input type="hidden" name="scope" value="{{ scope }}"/>
       <div class="report-filters-grid">
-        <label>Scope<br/>
-          <select name="scope">
-            <option value="household" {% if scope == "household" %}selected{% endif %}>Household</option>
-            <option value="trust" {% if scope == "trust" %}selected{% endif %}>Trust only</option>
-            <option value="personal" {% if scope == "personal" %}selected{% endif %}>Personal only (non-IRA)</option>
-            <option value="ira" {% if scope == "ira" %}selected{% endif %}>IRA only</option>
-          </select>
-        </label>
         <label>Date range<br/>
           <select name="period" id="period_sel" onchange="toggleYear()">
             <option value="ytd" {% if period == "ytd" %}selected{% endif %}>YTD</option>
@@ -66,9 +59,6 @@
           <div style="margin-top:6px">
             Net cash out = Total cash out − Deposits.
           </div>
-          <div style="margin-top:6px">
-            Scope note: <b>Personal only</b> excludes IRA accounts; use <b>IRA only</b> for IRA accounts.
-          </div>
         </div>
       </details>
     </form>
@@ -86,7 +76,7 @@
   {% if view == "combined" %}
     {% if rows and rows|length > 0 %}
       <div class="ui-card">
-        <div class="ui-section-title">Accounts in scope</div>
+        <div class="ui-section-title">Accounts</div>
         <div class="ui-muted">Select an account for transaction-level details.</div>
         <div class="table-wrap" style="margin-top:10px">
           <table>
@@ -130,6 +120,7 @@
                 <th scope="col" class="num">Fees</th>
                 <th scope="col" class="num">Taxes withheld</th>
                 <th scope="col" class="num">Other cash out</th>
+                <th scope="col" class="num">CSV</th>
                 <th scope="col" class="num">Total cash out</th>
                 <th scope="col" class="num">Net cash out</th>
                 <th scope="col" class="num">Actions</th>
@@ -155,6 +146,15 @@
                   <td class="num ui-muted">{{ (r.fee_total or 0.0)|usd(2) }} <span class="ui-muted">({{ r.fee_count or 0 }})</span></td>
                   <td class="num ui-muted">{{ (r.withholding_total or 0.0)|usd(2) }} <span class="ui-muted">({{ r.withholding_count or 0 }})</span></td>
                   <td class="num ui-muted">{{ (r.other_total or 0.0)|usd(2) }} <span class="ui-muted">({{ r.other_count or 0 }})</span></td>
+                  <td class="num ui-muted">
+                    {% if (r.csv_count or 0) > 0 %}
+                      <span class="ui-badge ui-badge--neutral">CSV</span>
+                      <span class="ui-tabular-nums">{{ (r.csv_total or 0.0)|usd(2) }}</span>
+                      <span class="ui-muted">({{ r.csv_count or 0 }})</span>
+                    {% else %}
+                      —
+                    {% endif %}
+                  </td>
                   <td class="num">
                     {% if not show_overall %}
                       {% set tot = ((r.withdrawal_total or 0.0)|float) + ((r.fee_total or 0.0)|float) + ((r.withholding_total or 0.0)|float) + ((r.other_total or 0.0)|float) %}
@@ -221,7 +221,17 @@
                   {% endif %}
                   <td class="ui-muted">{{ (t.lot_links_json.get("description") if t.lot_links_json else "") or "" }}</td>
                   <td class="ui-muted">{{ (t.lot_links_json.get("additional_detail") if t.lot_links_json else "") or "" }}</td>
-                  <td class="ui-muted">{% if c %}#{{ c.id }} — {{ c.name }}{% else %}Manual{% endif %}</td>
+                  <td class="ui-muted">
+                    {% set src = (t.lot_links_json.get("source") if t.lot_links_json else "") %}
+                    {% if src == "CSV_SUPPLEMENTAL" %}
+                      <span class="ui-badge ui-badge--neutral">CSV</span>
+                      {% if c %}<span class="ui-muted">#{{ c.id }} — {{ c.name }}</span>{% endif %}
+                    {% elif c %}
+                      #{{ c.id }} — {{ c.name }}
+                    {% else %}
+                      Manual
+                    {% endif %}
+                  </td>
                   <td class="ui-muted">{{ m.provider_txn_id if m else "" }}</td>
                 </tr>
               {% endfor %}

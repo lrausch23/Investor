@@ -68,6 +68,115 @@
     <button class="btn btn--primary" type="submit" {% if status_u != "ACTIVE" %}disabled{% endif %}>Sync now</button>
   </form>
 
+  {% if is_chase_plaid and plaid_enable_investments and plaid_24m_start %}
+    <form method="post" action="/sync/connections/{{ conn.id }}/run" class="form-compact" style="margin-top:10px">
+      <input type="hidden" name="mode" value="INCREMENTAL"/>
+      <input type="hidden" name="start_date" value="{{ plaid_24m_start }}"/>
+      <input type="hidden" name="end_date" value=""/>
+      <input type="hidden" name="overlap_days" value="0"/>
+      <input type="hidden" name="store_payloads" value=""/>
+      <input type="hidden" name="reprocess_files" value=""/>
+      <input type="hidden" name="note" value="Plaid investment transactions 24m backfill"/>
+      <button class="btn btn--secondary" type="submit" {% if status_u != "ACTIVE" %}disabled{% endif %}>
+        Backfill investments (24 months)
+      </button>
+      <div class="ui-muted" style="margin-top:6px">
+        Re-fetches investment transactions back to {{ plaid_24m_start }} (Plaid/Chase dependent). Bank/credit history remains cursor-based.
+      </div>
+    </form>
+  {% endif %}
+
+  {% if is_amex_plaid and amex_23m_start %}
+    <form method="post" action="/sync/connections/{{ conn.id }}/plaid/backfill_transactions" class="form-compact" style="margin-top:10px">
+      <input type="hidden" name="note" value="Plaid AMEX 23m backfill"/>
+      <button class="btn btn--secondary" type="submit" {% if status_u != "ACTIVE" %}disabled{% endif %}>
+        Backfill card transactions (23 months)
+      </button>
+      <div class="ui-muted" style="margin-top:6px">
+        Re-fetches up to ~23 months of Amex card transactions (clears Plaid cursor). Earliest target: {{ amex_23m_start }}.
+      </div>
+    </form>
+  {% endif %}
+
+  {% if is_chase_plaid and plaid_enable_investments %}
+    {% set last_ingest = supplemental_ingests[0] if supplemental_ingests and supplemental_ingests|length > 0 else None %}
+    <details class="ui-disclosure" style="margin-top:12px" {% if last_ingest and (last_ingest.metadata_json.get("unmatched", 0) or 0) > 0 %}open{% endif %}>
+      <summary>Supplemental cashflows (CSV)</summary>
+      <form method="post" action="/sync/connections/{{ conn.id }}/plaid/supplemental_cashflows" enctype="multipart/form-data" class="form-compact" style="margin-top:10px">
+        <input type="hidden" name="return_to" value="/sync/connections/{{ conn.id }}"/>
+        <label>
+          <span>CSV file(s)</span>
+          <input type="file" name="upload" accept=".csv,.tsv,.txt" multiple required/>
+        </label>
+        <div class="ui-muted" style="margin-top:6px">
+          Required columns: Date, Amount, Type (or Flow). Optional: Description, Account, AccountLast4.
+        </div>
+        <button class="btn btn--secondary" type="submit" {% if status_u != "ACTIVE" %}disabled{% endif %} style="margin-top:8px">
+          Import supplemental cashflows
+        </button>
+      </form>
+      {% if supplemental_summary and supplemental_summary.files %}
+        <form method="post" action="/sync/connections/{{ conn.id }}/plaid/supplemental_cashflows/reprocess" class="form-compact" style="margin-top:8px">
+          <input type="hidden" name="return_to" value="/sync/connections/{{ conn.id }}"/>
+          <button class="btn btn--secondary btn--sm" type="submit" {% if status_u != "ACTIVE" %}disabled{% endif %}>
+            Reprocess existing files
+          </button>
+          <div class="ui-muted" style="margin-top:6px">Rebuilds supplemental cashflows from stored CSV files.</div>
+        </form>
+      {% endif %}
+      {% if supplemental_summary and supplemental_summary.files %}
+        <div class="ui-muted" style="margin-top:8px">
+          Summary: files {{ supplemental_summary.files }} · inserted {{ supplemental_summary.inserted }}
+          · ignored {{ supplemental_summary.ignored }} · unmatched {{ supplemental_summary.unmatched }}
+        </div>
+      {% endif %}
+      {% if last_ingest %}
+        <div class="ui-muted" style="margin-top:8px">
+          Last import: {{ last_ingest.imported_at|local_dt }} · rows {{ last_ingest.metadata_json.get("rows", 0) }}
+          · inserted {{ last_ingest.metadata_json.get("inserted", 0) }}
+          · unmatched {{ last_ingest.metadata_json.get("unmatched", 0) }}
+          · ignored {{ last_ingest.metadata_json.get("ignored", 0) }}
+        </div>
+        {% if last_ingest.metadata_json.get("unmatched_sample") %}
+          <details class="ui-disclosure" style="margin-top:8px" open>
+            <summary>Unmatched sample (debug)</summary>
+            <div class="ui-muted" style="margin-top:6px">
+              Delimiter: <code>{{ last_ingest.metadata_json.get("delimiter") }}</code>
+              · Headers: {{ (last_ingest.metadata_json.get("header_fields") or [])|join(", ") }}
+            </div>
+            {% if last_ingest.metadata_json.get("candidate_accounts") %}
+              <div class="ui-muted" style="margin-top:6px">
+                Candidate accounts:
+                {% for c in last_ingest.metadata_json.get("candidate_accounts", []) %}
+                  <span style="margin-right:8px">{{ c.get("name") }}{% if c.get("last4") %} ({{ c.get("last4") }}){% endif %}</span>
+                {% endfor %}
+              </div>
+            {% endif %}
+            <div class="table-wrap" style="margin-top:8px">
+              <table>
+                <thead>
+                  <tr><th>Date</th><th>Account name</th><th>Account number</th><th>Type</th><th>Amount</th><th>Last4 matches</th></tr>
+                </thead>
+                <tbody>
+                  {% for r in last_ingest.metadata_json.get("unmatched_sample", []) %}
+                    <tr>
+                      <td class="ui-muted">{{ r.get("date") }}</td>
+                      <td class="ui-muted">{{ r.get("account_name") }}</td>
+                      <td class="ui-muted">{{ r.get("account_number") }}</td>
+                      <td class="ui-muted">{{ r.get("type_raw") }}</td>
+                      <td class="ui-muted">{{ r.get("amount") }}</td>
+                      <td class="ui-muted">{{ r.get("candidates_for_last4") }}</td>
+                    </tr>
+                  {% endfor %}
+                </tbody>
+              </table>
+            </div>
+          </details>
+        {% endif %}
+      {% endif %}
+    </details>
+  {% endif %}
+
   <div style="display:flex; gap:10px; flex-wrap:wrap; margin-top:10px">
     <form method="post" action="/sync/connections/{{ conn.id }}/test">
       <button class="btn btn--secondary" type="submit" {% if status_u != "ACTIVE" %}disabled{% endif %}>Test connection</button>
@@ -82,10 +191,17 @@
         {% if not is_offline_files %}
           <a class="dropdown__item" href="/sync/connections/{{ conn.id }}/auth" role="menuitem">Edit credentials</a>
         {% endif %}
-        <form method="post" action="/sync/connections/{{ conn.id }}/disable" data-confirm-disable data-conn-name="{{ conn.name|e }}">
-          <input type="hidden" name="note" value="Disabled from connection detail page"/>
-          <button class="dropdown__danger" type="submit" role="menuitem">Disable connection</button>
-        </form>
+        {% if status_u != "DISABLED" %}
+          <form method="post" action="/sync/connections/{{ conn.id }}/disable" data-confirm-disable data-conn-name="{{ conn.name|e }}">
+            <input type="hidden" name="note" value="Disabled from connection detail page"/>
+            <button class="dropdown__danger" type="submit" role="menuitem">Disable connection</button>
+          </form>
+        {% else %}
+          <form method="post" action="/sync/connections/{{ conn.id }}/delete" data-confirm-delete data-conn-name="{{ conn.name|e }}">
+            <input type="hidden" name="note" value="Deleted from connection detail page"/>
+            <button class="dropdown__danger" type="submit" role="menuitem">Delete connection</button>
+          </form>
+        {% endif %}
       </div>
     </details>
   </div>

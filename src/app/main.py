@@ -8,10 +8,13 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from src.app.routes.audit import router as audit_router
+from src.app.routes.cash_bills import api_router as cash_bills_api_router
+from src.app.routes.cash_bills import router as cash_bills_router
 from src.app.routes.dashboard import router as dashboard_router
 from src.app.routes.holdings import router as holdings_router
 from src.app.routes.imports import router as imports_router
 from src.app.routes.expenses import router as expenses_router
+from src.app.routes.momentum import router as momentum_router
 from src.app.routes.planner import router as planner_router
 from src.app.routes.plans import router as plans_router
 from src.app.routes.policy import router as policy_router
@@ -58,9 +61,12 @@ def create_app() -> FastAPI:
     app.include_router(holdings_router)
     app.include_router(imports_router)
     app.include_router(expenses_router)
+    app.include_router(momentum_router)
     app.include_router(planner_router)
     app.include_router(plans_router)
     app.include_router(audit_router)
+    app.include_router(cash_bills_router)
+    app.include_router(cash_bills_api_router)
     app.include_router(reports_router)
     app.include_router(tax_router)
     app.include_router(taxlots_router)

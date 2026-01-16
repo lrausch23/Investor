@@ -1,0 +1,263 @@
+{% extends "layout.html" %}
+{% block content %}
+  {% from "partials/ui/components.html" import kpi_card %}
+
+  {% set page_context = "<b>Universe:</b> " ~ universe ~ " <span class='ui-muted'>·</span> <b>As of:</b> " ~ end ~ " <span class='ui-muted'>·</span> <b>Prices:</b> " ~ (price_provider|upper) %}
+  {% include "partials/momentum/_header.html" %}
+
+  <div class="ui-kpi-grid" aria-label="Momentum summary" style="margin-top:10px">
+    {{ kpi_card("Universe size", "{:,}".format(universe_count), subtext="Tickers selected", tone="neutral") }}
+    {{ kpi_card("Stocks scored", "{:,}".format(rows_used), subtext="With usable price data", tone="neutral") }}
+    {{ kpi_card("Period", period|upper, subtext=("Start " ~ start ~ " → " ~ end), tone="neutral") }}
+    {{ kpi_card("Benchmark", benchmark|upper, subtext="Used for sector relative view", tone="neutral") }}
+  </div>
+
+  <div class="holdings-grid" style="margin-top:10px">
+    <div class="holdings-main">
+      <section class="ui-card">
+        <div class="table-toolbar">
+          <div>
+            <div class="ui-section-title">Sector leadership</div>
+            <div class="ui-muted" style="margin-top:2px">Equal-weight returns per sector (MVP). Breadth shows % above SMA200.</div>
+          </div>
+          <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap">
+            <a class="btn btn--secondary" href="/momentum/export/sectors.csv?universe={{ universe }}&period={{ period }}&as_of={{ as_of }}&start={{ start }}&end={{ end }}&benchmark={{ benchmark }}&price_provider={{ price_provider }}{% if liquid_only %}&liquid_only=1{% endif %}{% if custom_list %}&custom_list={{ custom_list|urlencode }}{% endif %}">Export CSV</a>
+          </div>
+        </div>
+
+        {% if sector_rows and sector_rows|length > 0 %}
+          <div class="table-wrap" role="region" aria-label="Sector leaderboard table" data-mom-sort-table data-mom-table="sectors">
+            <table>
+              <thead>
+                <tr>
+                  <th scope="col" data-sort="text">Sector</th>
+                  <th scope="col" class="num" data-sort="num">YTD%</th>
+                  <th scope="col" class="num" data-sort="num">3M%</th>
+                  <th scope="col" class="num" data-sort="num">1M%</th>
+                  <th scope="col" class="num" data-sort="num">Breadth</th>
+                  <th scope="col">Top leaders</th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for r in sector_rows %}
+                  <tr>
+                    <td class="nowrap">
+                      <a href="/momentum/sector/{{ r.sector|urlencode }}?universe={{ universe }}&period={{ period }}&as_of={{ as_of }}&start={{ start }}&end={{ end }}&benchmark={{ benchmark }}&price_provider={{ price_provider }}{% if liquid_only %}&liquid_only=1{% endif %}{% if custom_list %}&custom_list={{ custom_list|urlencode }}{% endif %}">
+                        {{ r.sector }}
+                      </a>
+                    </td>
+                    <td class="num ui-tabular-nums" data-sort-val="{{ r.ytd if r.ytd is not none else '' }}">{{ fmt_pct(r.ytd) }}</td>
+                    <td class="num ui-tabular-nums" data-sort-val="{{ r.ret_3m if r.ret_3m is not none else '' }}">{{ fmt_pct(r.ret_3m) }}</td>
+                    <td class="num ui-tabular-nums" data-sort-val="{{ r.ret_1m if r.ret_1m is not none else '' }}">{{ fmt_pct(r.ret_1m) }}</td>
+                    <td class="num ui-tabular-nums" data-sort-val="{{ r.breadth_above_sma200 if r.breadth_above_sma200 is not none else '' }}">
+                      {% if r.breadth_above_sma200 is none %}—{% else %}{{ (r.breadth_above_sma200*100.0)|round(0)|int }}%{% endif %}
+                    </td>
+                    <td class="nowrap">{{ r.leaders|join(", ") }}</td>
+                  </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        {% else %}
+          <div class="ui-muted" style="margin-top:8px">No sector data available.</div>
+        {% endif %}
+      </section>
+
+      <section class="ui-card" style="margin-top:14px">
+        <div class="table-toolbar">
+          <div>
+            <div class="ui-section-title">Stock leadership</div>
+            <div class="ui-muted" style="margin-top:2px">Ranked by YTD return; columns include uptrend confirmation signals.</div>
+          </div>
+          <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap">
+            <a class="btn btn--secondary" href="/momentum/export/stocks.csv?universe={{ universe }}&period={{ period }}&as_of={{ as_of }}&start={{ start }}&end={{ end }}&price_provider={{ price_provider }}{% if liquid_only %}&liquid_only=1{% endif %}{% if q %}&q={{ q|urlencode }}{% endif %}{% if custom_list %}&custom_list={{ custom_list|urlencode }}{% endif %}">Export CSV</a>
+          </div>
+        </div>
+
+        {% if stock_rows and stock_rows|length > 0 %}
+          <div class="table-wrap" role="region" aria-label="Stock leaderboard table" data-mom-sort-table data-mom-table="stocks">
+            <table>
+              <thead>
+                <tr>
+                  <th scope="col" data-sort="text">Ticker</th>
+                  <th scope="col" data-sort="text">Sector</th>
+                  <th scope="col" class="num" data-sort="num">YTD%</th>
+                  <th scope="col" class="num" data-sort="num">3M%</th>
+                  <th scope="col" class="num" data-sort="num">1M%</th>
+                  <th scope="col" class="num" data-sort="num">Close</th>
+                  <th scope="col" data-sort="text">AboveSMA200</th>
+                  <th scope="col" data-sort="text">SMA50&gt;SMA200</th>
+                  <th scope="col" class="num" data-sort="num">SMA50Slope20d</th>
+                  <th scope="col" data-sort="text">Uptrend</th>
+                  <th scope="col" class="num" data-sort="num">DistTo52wHigh%</th>
+                  <th scope="col" class="num" data-sort="num">Avg$Vol20d</th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for r in stock_rows %}
+                  <tr data-mom-row data-search="{{ (r.ticker ~ ' ' ~ r.sector)|lower }}">
+                    <td class="nowrap">{{ r.ticker }}</td>
+                    <td class="nowrap">{{ r.sector }}</td>
+                    <td class="num ui-tabular-nums" data-sort-val="{{ r.ytd if r.ytd is not none else '' }}">{{ fmt_pct(r.ytd) }}</td>
+                    <td class="num ui-tabular-nums" data-sort-val="{{ r.ret_3m if r.ret_3m is not none else '' }}">{{ fmt_pct(r.ret_3m) }}</td>
+                    <td class="num ui-tabular-nums" data-sort-val="{{ r.ret_1m if r.ret_1m is not none else '' }}">{{ fmt_pct(r.ret_1m) }}</td>
+                    <td class="num ui-tabular-nums" data-sort-val="{{ r.close if r.close is not none else '' }}">{% if r.close is none %}—{% else %}{{ "%.2f"|format(r.close) }}{% endif %}</td>
+                    <td class="nowrap">
+                      {% if r.above_sma200 is none %}—{% elif r.above_sma200 %}<span class="ui-badge ui-badge--safe">Yes</span>{% else %}<span class="ui-badge ui-badge--neutral">No</span>{% endif %}
+                    </td>
+                    <td class="nowrap">
+                      {% if r.sma50_gt_sma200 is none %}—{% elif r.sma50_gt_sma200 %}<span class="ui-badge ui-badge--safe">Yes</span>{% else %}<span class="ui-badge ui-badge--neutral">No</span>{% endif %}
+                    </td>
+                    <td class="num ui-tabular-nums" data-sort-val="{{ r.sma50_slope_20d if r.sma50_slope_20d is not none else '' }}">
+                      {% if r.sma50_slope_20d is none %}—{% else %}{{ "%.4f"|format(r.sma50_slope_20d) }}{% endif %}
+                    </td>
+                    <td class="nowrap">
+                      {% if r.uptrend is none %}—{% elif r.uptrend %}<span class="ui-badge ui-badge--safe">Uptrend</span>{% else %}<span class="ui-badge ui-badge--neutral">—</span>{% endif %}
+                    </td>
+                    <td class="num ui-tabular-nums" data-sort-val="{{ r.dist_52w_high if r.dist_52w_high is not none else '' }}">{{ fmt_pct(r.dist_52w_high) }}</td>
+                    <td class="num ui-tabular-nums" data-sort-val="{{ r.avg_dvol_20d if r.avg_dvol_20d is not none else '' }}">{% if r.avg_dvol_20d is none %}—{% else %}{{ r.avg_dvol_20d|usd(0) }}{% endif %}</td>
+                  </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        {% else %}
+          <div class="ui-muted" style="margin-top:8px">No stock data available.</div>
+        {% endif %}
+      </section>
+    </div>
+
+    <aside class="holdings-aside">
+      <section class="ui-card">
+        <div class="ui-section-title">Controls</div>
+        <form method="get" action="/momentum" data-mom-controls style="display:grid; gap:10px; margin-top:8px">
+          <label>
+            Universe
+            <select name="universe" id="momUniverseSel">
+              {% for u in universe_options %}
+                <option value="{{ u.key }}" {% if universe==u.key %}selected{% endif %}>{{ u.label }}</option>
+              {% endfor %}
+            </select>
+          </label>
+
+          <label id="momCustomListWrap" style="{% if universe != 'custom' %}display:none{% endif %}">
+            Custom tickers
+            <textarea name="custom_list" rows="3" placeholder="AAPL, MSFT, NVDA">{{ custom_list }}</textarea>
+          </label>
+
+          <label>
+            Date range
+            <select name="period" id="momPeriodSel">
+              <option value="ytd" {% if period=='ytd' %}selected{% endif %}>YTD</option>
+              <option value="1m" {% if period=='1m' %}selected{% endif %}>Last 1M</option>
+              <option value="3m" {% if period=='3m' %}selected{% endif %}>Last 3M</option>
+              <option value="6m" {% if period=='6m' %}selected{% endif %}>Last 6M</option>
+              <option value="1y" {% if period=='1y' %}selected{% endif %}>Last 1Y</option>
+              <option value="custom" {% if period=='custom' %}selected{% endif %}>Custom</option>
+            </select>
+          </label>
+
+          <label id="momCustomDatesWrap" style="{% if period != 'custom' %}display:none{% endif %}">
+            Start / End (YYYY-MM-DD)
+            <div class="grid2" style="margin-top:6px">
+              <input name="start" value="{{ start }}" />
+              <input name="end" value="{{ end }}" />
+            </div>
+          </label>
+
+          <label>
+            As-of (optional)
+            <input name="as_of" value="{{ as_of }}" placeholder="{{ today }}" />
+            <div class="ui-muted" style="margin-top:2px">Defaults to today. Useful for backtesting.</div>
+          </label>
+
+          <label>
+            Benchmark
+            <input name="benchmark" value="{{ benchmark }}" placeholder="SPY" />
+          </label>
+
+          <label>
+            Price source
+            <select name="price_provider">
+              <option value="stooq" {% if price_provider=='stooq' %}selected{% endif %}>Stooq (default)</option>
+              <option value="finnhub" {% if price_provider=='finnhub' %}selected{% endif %}>Finnhub</option>
+              <option value="auto" {% if price_provider=='auto' %}selected{% endif %}>Auto (Stooq → Finnhub)</option>
+              <option value="cache" {% if price_provider in ['cache','local'] %}selected{% endif %}>Cache only (no network)</option>
+            </select>
+            <div class="ui-muted" style="margin-top:2px">Prices are cached in <code>price_daily</code> once fetched.</div>
+          </label>
+
+          <label style="display:flex; gap:8px; align-items:center">
+            <input type="checkbox" name="liquid_only" value="1" {% if liquid_only %}checked{% endif %} />
+            Liquidity filter (Avg$Vol20d &ge; $10M)
+          </label>
+
+          <label>
+            Search
+            <input id="momSearchInput" name="q" value="{{ q }}" placeholder="Ticker or sector" />
+          </label>
+
+          <button class="btn btn--primary" type="submit" data-mom-run>Run</button>
+        </form>
+      </section>
+
+      <section class="ui-card" style="margin-top:14px">
+        <div class="ui-section-title">Cache</div>
+        <div class="ui-muted" style="margin-top:4px">Warm daily prices from Stooq so this report runs offline.</div>
+        <form method="post" action="/momentum/warm" style="display:grid; gap:10px; margin-top:10px">
+          <input type="hidden" name="universe" value="{{ universe }}" />
+          <input type="hidden" name="custom_list" value="{{ custom_list }}" />
+          <input type="hidden" name="as_of" value="{{ end }}" />
+          <input type="hidden" name="price_provider" value="{{ price_provider }}" />
+          <input type="hidden" name="return_to" value="/momentum?universe={{ universe }}&period={{ period }}&as_of={{ as_of }}&start={{ start }}&end={{ end }}&benchmark={{ benchmark }}&price_provider={{ price_provider }}{% if liquid_only %}&liquid_only=1{% endif %}{% if q %}&q={{ q|urlencode }}{% endif %}{% if custom_list %}&custom_list={{ custom_list|urlencode }}{% endif %}" />
+          <label>Days back <input name="days" value="420" inputmode="numeric" /></label>
+          <label>Tickers per warm <input name="limit" value="40" inputmode="numeric" /></label>
+          <button class="btn btn--secondary" type="submit">Warm cache</button>
+        </form>
+      </section>
+
+      <details class="accordion" style="margin-top:14px">
+        <summary>Data (universes &amp; sectors)</summary>
+        <div class="ui-muted" style="margin-top:6px">
+          Prices come from <b>Stooq</b> (cached locally). This panel is only for loading <b>universe constituents</b> and optional <b>sector mappings</b>.
+        </div>
+        <div class="ui-card" style="margin-top:10px; padding:10px">
+          <div style="font-weight:600">Load constituents from Stooq</div>
+          <div class="ui-muted" style="margin-top:4px">
+            Fetches tickers for SP500/Nasdaq100 and stores them locally so you can run without uploading a CSV.
+            Sector/industry may remain <i>Unknown</i> unless you upload a mapping CSV.
+          </div>
+          <form method="post" action="/momentum/import/stooq-universe" style="margin-top:10px; display:flex; gap:10px; align-items:center; flex-wrap:wrap">
+            <label style="display:flex; gap:8px; align-items:center">
+              Universe
+              <select name="universe">
+                <option value="SP500">SP500</option>
+                <option value="NASDAQ100">NASDAQ100</option>
+              </select>
+            </label>
+            <button class="btn btn--secondary" type="submit">Fetch from Stooq</button>
+          </form>
+        </div>
+        <form method="post" action="/momentum/import/universe" enctype="multipart/form-data" style="display:grid; gap:10px; margin-top:10px">
+          <label>
+            Universe
+            <select name="universe">
+              <option value="SP500">SP500</option>
+              <option value="NASDAQ100">NASDAQ100</option>
+            </select>
+          </label>
+          <div class="ui-muted" style="margin-top:-4px">
+            Optional: upload a CSV with columns <code>ticker,sector,industry</code> to enrich sector leadership and Sector Detail pages.
+          </div>
+          <label>
+            CSV file
+            <input type="file" name="file" accept=".csv" />
+          </label>
+          <button class="btn btn--secondary" type="submit">Import universe CSV</button>
+        </form>
+      </details>
+    </aside>
+  </div>
+
+  <script src="/static/momentum.js?v={{ static_version or '0' }}"></script>
+{% endblock %}

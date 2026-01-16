@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import ssl
 import time
 import urllib.error
 import urllib.parse
@@ -87,6 +88,12 @@ def allowed_outbound_hosts() -> set[str]:
         "ndcdyn.interactivebrokers.com",
         "gdcdyn.interactivebrokers.com",
         "www.interactivebrokers.com",
+        # Market data (end-of-day) used by holdings refresh and momentum screener.
+        "stooq.com",
+        "finnhub.io",
+        # Plaid API (sync connections, e.g., Chase OAuth + transactions).
+        "sandbox.plaid.com",
+        "production.plaid.com",
     }
 
 
@@ -137,6 +144,8 @@ def http_get(
     timeout_s: float = 30.0,
     max_retries: int = 2,
     backoff_s: float = 0.5,
+    verify_tls: bool = True,
+    raise_for_status: bool = True,
 ) -> HttpResponse:
     """
     Minimal HTTP GET helper with:
@@ -162,7 +171,8 @@ def http_get(
         max_backoff_s = 60.0
     while attempt <= max_retries:
         try:
-            opener = urllib.request.build_opener(_AllowlistRedirectHandler())
+            ctx = ssl.create_default_context() if verify_tls else ssl._create_unverified_context()
+            opener = urllib.request.build_opener(_AllowlistRedirectHandler(), urllib.request.HTTPSHandler(context=ctx))
             req = urllib.request.Request(url, method="GET")
             with opener.open(req, timeout=timeout_s) as resp:
                 status = int(getattr(resp, "status", 200))
@@ -174,6 +184,20 @@ def http_get(
             last_err = e
             status = int(getattr(e, "code", 0) or 0)
             last_status = status
+            if not raise_for_status:
+                try:
+                    content = e.read() or b""
+                except Exception:
+                    content = b""
+                try:
+                    content_type = e.headers.get("Content-Type") if getattr(e, "headers", None) is not None else None
+                except Exception:
+                    content_type = None
+                try:
+                    hdrs = {str(k): str(v) for k, v in dict(e.headers).items()} if getattr(e, "headers", None) is not None else None
+                except Exception:
+                    hdrs = None
+                return HttpResponse(status_code=status, content=content, content_type=content_type, headers=hdrs)
             if status == 429 or status >= 500:
                 time.sleep(min(max_backoff_s, backoff_s * (2**attempt)))
                 attempt += 1
@@ -235,6 +259,8 @@ def http_request(
     timeout_s: float = 30.0,
     max_retries: int = 2,
     backoff_s: float = 0.5,
+    verify_tls: bool = True,
+    raise_for_status: bool = True,
 ) -> HttpResponse:
     """
     Minimal HTTP helper with:
@@ -259,6 +285,7 @@ def http_request(
     last_host: str | None = None
     last_path: str | None = None
     last_body_preview: str | None = None
+    last_reason: str | None = None
     max_backoff_s = 60.0
     try:
         max_backoff_s = float(os.environ.get("HTTP_MAX_BACKOFF_S", "60"))
@@ -266,7 +293,8 @@ def http_request(
         max_backoff_s = 60.0
     while attempt <= max_retries:
         try:
-            opener = urllib.request.build_opener(_AllowlistRedirectHandler())
+            ctx = ssl.create_default_context() if verify_tls else ssl._create_unverified_context()
+            opener = urllib.request.build_opener(_AllowlistRedirectHandler(), urllib.request.HTTPSHandler(context=ctx))
             req = urllib.request.Request(url, data=body, method=m)
             for k, v in (headers or {}).items():
                 if k and v is not None:
@@ -279,8 +307,23 @@ def http_request(
                 return HttpResponse(status_code=status, content=content, content_type=content_type, headers=hdrs)
         except urllib.error.HTTPError as e:
             last_err = e
+            last_reason = None
             status = int(getattr(e, "code", 0) or 0)
             last_status = status
+            if not raise_for_status:
+                try:
+                    content = e.read() or b""
+                except Exception:
+                    content = b""
+                try:
+                    content_type = e.headers.get("Content-Type") if getattr(e, "headers", None) is not None else None
+                except Exception:
+                    content_type = None
+                try:
+                    hdrs = {str(k): str(v) for k, v in dict(e.headers).items()} if getattr(e, "headers", None) is not None else None
+                except Exception:
+                    hdrs = None
+                return HttpResponse(status_code=status, content=content, content_type=content_type, headers=hdrs)
             try:
                 u = urllib.parse.urlparse(url)
                 last_host = (u.hostname or "").lower()
@@ -317,11 +360,25 @@ def http_request(
                 raise ProviderError(f"HTTP error status={status}")
         except urllib.error.URLError as e:
             last_err = e
+            try:
+                last_reason = str(getattr(e, "reason", "") or str(e)).strip() or None
+            except Exception:
+                last_reason = None
+            try:
+                u = urllib.parse.urlparse(url)
+                last_host = (u.hostname or "").lower() or last_host
+                last_path = u.path or last_path
+            except Exception:
+                pass
             time.sleep(min(8.0, backoff_s * (2**attempt)))
             attempt += 1
             continue
         except Exception as e:
             last_err = e
+            try:
+                last_reason = str(e).strip() or None
+            except Exception:
+                last_reason = None
             time.sleep(min(8.0, backoff_s * (2**attempt)))
             attempt += 1
             continue
@@ -336,4 +393,9 @@ def http_request(
                 "Wait a few minutes and retry, or upload the benchmark CSV manually."
             )
         raise ProviderError(f"Network request failed after retries: HTTP error status={last_status}{host}{path}{preview}")
-    raise ProviderError(f"Network request failed after retries: {type(last_err).__name__ if last_err else 'unknown'}")
+    host = f" host={last_host}" if last_host else ""
+    path = f" path={last_path}" if last_path else ""
+    reason = f" reason={last_reason!r}" if last_reason else ""
+    raise ProviderError(
+        f"Network request failed after retries: {type(last_err).__name__ if last_err else 'unknown'}{host}{path}{reason}"
+    )

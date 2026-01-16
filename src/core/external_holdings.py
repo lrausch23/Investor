@@ -587,6 +587,8 @@ def build_holdings_view(
     entered_by_key: dict[tuple[int, str], dt.date] = {}
     # Precompute lot-based cost basis totals per (account, symbol) (preferred over broker snapshot basis).
     lot_basis_by_key: dict[tuple[int, str], float] = {}
+    lot_qty_by_key: dict[tuple[int, str], float] = {}
+    lot_basis_source_by_key: dict[tuple[int, str], str] = {}  # tax_lot|position_lot
     lot_status_by_key: dict[tuple[int, str], str] = {}  # ST|LT|MIXED
     if included_account_ids:
         # Prefer reconstructed TaxLot lots when available, but fall back to PositionLots for any symbols/accounts
@@ -613,6 +615,7 @@ def build_holdings_view(
                 per_key_dates_tax.setdefault(k, []).append(lot.acquired_date)
                 if lot.basis_open is not None:
                     lot_basis_by_key[k] = float(lot_basis_by_key.get(k) or 0.0) + float(lot.basis_open)
+                    lot_basis_source_by_key[k] = "tax_lot"
             for k, dates in per_key_dates_tax.items():
                 entered_by_key[k] = min(dates)
                 has_st = any((today_d - d).days < 365 for d in dates)
@@ -633,6 +636,11 @@ def build_holdings_view(
             per_key_dates_pos.setdefault(k, []).append(lot.acquisition_date)
             basis = float(lot.adjusted_basis_total) if lot.adjusted_basis_total is not None else float(lot.basis_total)
             lot_basis_by_key[k] = float(lot_basis_by_key.get(k) or 0.0) + basis
+            try:
+                lot_qty_by_key[k] = float(lot_qty_by_key.get(k) or 0.0) + float(lot.qty)
+            except Exception:
+                pass
+            lot_basis_source_by_key[k] = "position_lot"
         for k, dates in per_key_dates_pos.items():
             if k not in entered_by_key:
                 entered_by_key[k] = min(dates)
@@ -746,13 +754,40 @@ def build_holdings_view(
         _latest_prices_for_symbols(prices_dir=prices_root, symbols=symbols, as_of=today_d) if prices_root is not None else {}
     )
 
+    basis_mismatch_warned: set[tuple[int, str]] = set()
     for key in sorted(agg.keys(), key=lambda k: (str(agg[k].get("account_name") or ""), str(agg[k].get("symbol") or ""))):
         r = agg[key]
         acct_id = r.get("account_id")
         sym = str(r.get("symbol") or "").upper()
         basis = None
         if acct_id is not None:
-            basis = lot_basis_by_key.get((int(acct_id), sym))
+            k2 = (int(acct_id), sym)
+            basis = lot_basis_by_key.get(k2)
+            # Guardrail: PositionLot rows can be created opportunistically from BUY transactions (MVP),
+            # and do not model sales/closures. In those cases, summing PositionLot basis can vastly
+            # overstate current cost basis. If the summed lot quantity doesn't approximately match the
+            # current position quantity, prefer broker snapshot basis instead.
+            if (
+                basis is not None
+                and lot_basis_source_by_key.get(k2) == "position_lot"
+                and k2 in lot_qty_by_key
+                and r.get("qty") is not None
+            ):
+                try:
+                    pos_qty = float(r.get("qty") or 0.0)
+                    lot_qty = float(lot_qty_by_key.get(k2) or 0.0)
+                    if abs(pos_qty) > 1e-9:
+                        rel = abs(lot_qty - pos_qty) / abs(pos_qty)
+                        if rel > 0.25:
+                            basis = None
+                            if k2 not in basis_mismatch_warned:
+                                basis_mismatch_warned.add(k2)
+                                warnings.append(
+                                    f"Cost basis for {r.get('account_name') or acct_id}:{sym} appears to be from historical BUY lots "
+                                    f"(lot qty {lot_qty:g} vs position qty {pos_qty:g}); using broker snapshot basis."
+                                )
+                except Exception:
+                    pass
         # If no lots basis, fall back to broker snapshot basis only when all contributing rows had it.
         if basis is None and key not in cost_missing_symbols:
             basis = r.get("cost_basis_total")

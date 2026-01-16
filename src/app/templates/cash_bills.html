@@ -1,0 +1,199 @@
+{% extends "layout.html" %}
+{% from "partials/ui/components.html" import kpi_card %}
+
+{% block content %}
+  <script>
+    document.body.classList.add("cash-bills-page");
+  </script>
+  <div class="page-title cashbills-header">
+    <div class="page-title__left">
+      <h1>Cash &amp; Bills</h1>
+      <span class="ui-badge ui-badge--neutral">Overview</span>
+    </div>
+    <div class="cashbills-controls" aria-label="Cash & Bills controls">
+      <label class="cashbills-control">
+        <span class="cashbills-control__label">As of</span>
+        <select id="cashBillsAsOf" class="cashbills-control__input">
+          <option value="today">Today</option>
+          <option value="yesterday">Yesterday</option>
+          <option value="custom">Custom</option>
+        </select>
+      </label>
+      <label class="cashbills-control cashbills-control--date" id="cashBillsCustomWrap">
+        <span class="cashbills-control__label">Custom date</span>
+        <input type="date" id="cashBillsCustomDate" class="cashbills-control__input" />
+      </label>
+      <label class="cashbills-control">
+        <span class="cashbills-control__label">Scope</span>
+        <select id="cashBillsScope" class="cashbills-control__input">
+          <option value="all">All accounts</option>
+          <option value="personal" selected>Personal</option>
+          <option value="family">Family</option>
+          <option value="business">Business</option>
+        </select>
+      </label>
+      <button class="btn btn--secondary" id="cashBillsRefresh" type="button">Refresh</button>
+    </div>
+  </div>
+
+  <div class="selection-line ui-muted" id="cashBillsContext">As of — · Scope: All accounts</div>
+
+  {% if auth_banner_detail %}
+    <details class="inline-alert" id="cashBillsAuthBanner" style="margin-bottom:12px">
+      <summary>
+        <span class="inline-alert__icon">⚠️</span>
+        <span>Local mode: authentication disabled.</span>
+        <span class="inline-alert__link">Learn more</span>
+        <button class="btn btn--sm" type="button" id="cashBillsDismissBanner">Dismiss</button>
+      </summary>
+      <div style="margin-top:6px">{{ auth_banner_detail }}</div>
+    </details>
+  {% endif %}
+
+  <div id="cashBillsKpis" class="ui-kpi-grid" aria-live="polite"></div>
+
+  <div class="cashbills-filters cashbills-filters--top" aria-label="Bill filters">
+    <div class="chip-group" role="group" aria-label="Range filter" id="cashBillsRangeChips">
+      <button class="ui-chip" data-range="7" aria-pressed="false" type="button">7d</button>
+      <button class="ui-chip" data-range="14" aria-pressed="false" type="button">14d</button>
+      <button class="ui-chip is-active" data-range="30" aria-pressed="true" type="button">30d</button>
+      <button class="ui-chip" data-range="60" aria-pressed="false" type="button">60d</button>
+    </div>
+    <div class="chip-group" role="group" aria-label="Status filter" id="cashBillsStatusChips">
+      <button class="ui-chip is-active" data-status="all" aria-pressed="true" type="button">All</button>
+      <button class="ui-chip" data-status="due_soon" aria-pressed="false" type="button">Due soon</button>
+      <button class="ui-chip" data-status="overdue" aria-pressed="false" type="button">Overdue</button>
+      <button class="ui-chip" data-status="paid" aria-pressed="false" type="button">Paid</button>
+    </div>
+  </div>
+
+  <div class="cash-bills-main">
+    <div class="cash-bills-left" aria-label="Bills">
+      <section class="ui-card" aria-label="Upcoming credit card bills">
+        <div class="cashbills-section-header">
+          <div>
+            <div class="ui-section-title" id="cashBillsBillsTitle">Upcoming card bills</div>
+            <div class="ui-muted" id="cashBillsBillsSummary">—</div>
+          </div>
+        </div>
+        <div id="cashBillsBillsTable" class="cashbills-table"></div>
+      </section>
+
+      <section class="ui-card" aria-label="Monthly credit card charges">
+        <div class="cashbills-section-header">
+          <div>
+            <div class="ui-section-title" id="cashBillsCardRecurringTitle">Monthly card charges</div>
+            <div class="ui-muted" id="cashBillsCardRecurringSummary">—</div>
+          </div>
+          <div class="cashbills-filters">
+            <button class="btn btn--primary" id="cashBillsManageCardCharges" type="button">Manage charges</button>
+          </div>
+        </div>
+        <div id="cashBillsCardRecurringTable" class="cashbills-table"></div>
+      </section>
+
+      <section class="ui-card" aria-label="Monthly checking bills">
+        <div class="cashbills-section-header">
+          <div>
+            <div class="ui-section-title">Monthly bills (checking)</div>
+            <div class="ui-muted" id="cashBillsRecurringSummary">—</div>
+          </div>
+          <div class="cashbills-filters">
+            <button class="btn btn--primary" id="cashBillsManageBills" type="button">Manage bills</button>
+          </div>
+        </div>
+        <div id="cashBillsRecurringTable" class="cashbills-table"></div>
+      </section>
+    </div>
+
+    <aside class="cash-bills-right" aria-label="Cash and coverage">
+      <section class="ui-card" aria-label="Checking accounts">
+        <div class="cashbills-section-header">
+          <div>
+            <div class="ui-section-title">Checking accounts</div>
+            <div class="ui-muted" id="cashBillsCashSummary">—</div>
+          </div>
+        </div>
+        <div id="cashBillsCashTable" class="cashbills-table"></div>
+      </section>
+
+      <section class="ui-card" aria-label="Bill coverage summary">
+        <div class="ui-section-title" id="cashBillsCoverageTitle">Bill coverage</div>
+        <div id="cashBillsCoverage"></div>
+      </section>
+
+      <section class="ui-card" aria-label="Finance charges (monthly)">
+        <div class="cashbills-section-header">
+          <div>
+            <div class="ui-section-title">Finance charges (monthly)</div>
+            <div class="ui-muted" id="cashBillsFinanceSummary">—</div>
+          </div>
+        </div>
+        <div id="cashBillsFinanceTable" class="cashbills-table"></div>
+      </section>
+
+      <section class="ui-card" aria-label="Monthly totals summary">
+        <div class="ui-section-title">Monthly totals</div>
+        <div id="cashBillsMonthlyTotals"></div>
+      </section>
+    </aside>
+  </div>
+
+  <div class="cashbills-modal" id="cashBillsManageCardModal" aria-hidden="true">
+    <div class="cashbills-modal__overlay" data-modal-close="true"></div>
+    <div class="cashbills-modal__dialog" role="dialog" aria-modal="true" aria-labelledby="cashBillsManageCardTitle">
+      <div class="cashbills-modal__header">
+        <h2 id="cashBillsManageCardTitle">Manage card charges</h2>
+        <div class="cashbills-modal__actions">
+          <button class="btn btn--secondary" id="cashBillsCardModalRescan" type="button">Re-scan</button>
+          <button class="btn" id="cashBillsCardModalClose" type="button">Close</button>
+        </div>
+      </div>
+      <div class="cashbills-modal__tabs" id="cashBillsCardModalTabs" role="tablist" aria-label="Card charges tabs">
+        <button class="ui-tab ui-tab--active" data-tab="suggested" aria-pressed="true" type="button">Suggested</button>
+        <button class="ui-tab" data-tab="active" aria-pressed="false" type="button">Active charges</button>
+        <button class="ui-tab" data-tab="recent" aria-pressed="false" type="button">Recent (30d)</button>
+      </div>
+      <div class="cashbills-modal__filters" id="cashBillsCardModalFilters"></div>
+      <div class="cashbills-modal__body" id="cashBillsCardModalContent"></div>
+    </div>
+  </div>
+
+  <div class="cashbills-modal" id="cashBillsManageModal" aria-hidden="true">
+    <div class="cashbills-modal__overlay" data-modal-close="true"></div>
+    <div class="cashbills-modal__dialog" role="dialog" aria-modal="true" aria-labelledby="cashBillsManageTitle">
+      <div class="cashbills-modal__header">
+        <h2 id="cashBillsManageTitle">Manage monthly bills</h2>
+        <div class="cashbills-modal__actions">
+          <button class="btn btn--secondary" id="cashBillsModalRescan" type="button">Re-scan</button>
+          <button class="btn" id="cashBillsModalClose" type="button">Close</button>
+        </div>
+      </div>
+      <div class="cashbills-modal__tabs" id="cashBillsModalTabs" role="tablist" aria-label="Bill management tabs">
+        <button class="ui-tab ui-tab--active" data-tab="suggested" aria-pressed="true" type="button">Suggested</button>
+        <button class="ui-tab" data-tab="active" aria-pressed="false" type="button">Active bills</button>
+        <button class="ui-tab" data-tab="recent" aria-pressed="false" type="button">Recent (30d)</button>
+      </div>
+      <div class="cashbills-modal__body" id="cashBillsModalContent"></div>
+    </div>
+  </div>
+
+  <div class="cashbills-modal" id="cashBillsFinanceModal" aria-hidden="true">
+    <div class="cashbills-modal__overlay" data-modal-close="true"></div>
+    <div class="cashbills-modal__dialog" role="dialog" aria-modal="true" aria-labelledby="cashBillsFinanceTitle">
+      <div class="cashbills-modal__header">
+        <h2 id="cashBillsFinanceTitle">Finance charges</h2>
+        <div class="cashbills-modal__actions">
+          <button class="btn" id="cashBillsFinanceClose" type="button">Close</button>
+        </div>
+      </div>
+      <div class="cashbills-modal__body" id="cashBillsFinanceContent"></div>
+    </div>
+  </div>
+
+  <script>
+    window.__CASH_BILLS_DATA__ = {{ cash_bills_data_json|safe }};
+    window.__CASH_BILLS_CARD_BALANCES__ = {{ cash_bills_card_balances_json|safe }};
+  </script>
+  <script src="/static/cash_bills.js?v={{ static_version or '0' }}"></script>
+{% endblock %}

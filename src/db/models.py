@@ -279,7 +279,25 @@ class ExpenseAccount(Base):
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     last4_masked: Mapped[Optional[str]] = mapped_column(String(8))
     type: Mapped[str] = mapped_column(String(50), nullable=False, default="UNKNOWN")  # CREDIT|BANK|UNKNOWN
+    scope: Mapped[str] = mapped_column(String(20), nullable=False, default="PERSONAL")  # PERSONAL|FAMILY|BUSINESS
+    provider_account_id: Mapped[Optional[str]] = mapped_column(String(200))
     created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=utcnow, nullable=False)
+
+
+class ExpenseAccountBalance(Base):
+    __tablename__ = "expense_account_balances"
+    __table_args__ = (Index("ix_expense_account_balance_account", "expense_account_id"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    expense_account_id: Mapped[int] = mapped_column(ForeignKey("expense_accounts.id"), nullable=False)
+    as_of_date: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=utcnow, nullable=False)
+    balance_current: Mapped[Optional[float]] = mapped_column(Numeric(20, 2))
+    balance_available: Mapped[Optional[float]] = mapped_column(Numeric(20, 2))
+    currency: Mapped[str] = mapped_column(String(8), nullable=False, default="USD")
+    source: Mapped[str] = mapped_column(String(50), nullable=False, default="PLAID")
+    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=utcnow, nullable=False)
+
+    expense_account: Mapped["ExpenseAccount"] = relationship()
 
 
 class ExpenseImportBatch(Base):
@@ -328,7 +346,71 @@ class ExpenseTransaction(Base):
     created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=utcnow, nullable=False)
 
     expense_account: Mapped["ExpenseAccount"] = relationship()
-    import_batch: Mapped["ExpenseImportBatch"] = relationship()
+
+
+# --- Momentum screener (local-first market data + classification) ---
+
+
+class PriceDaily(Base):
+    """
+    Daily OHLCV cache for end-of-day analytics (momentum, benchmarks, etc.).
+
+    - Stored per-ticker, per-date.
+    - Adjusted close is optional; callers should prefer it when present.
+    """
+
+    __tablename__ = "price_daily"
+    __table_args__ = (
+        UniqueConstraint("ticker", "date"),
+        Index("ix_price_daily_ticker_date", "ticker", "date"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    ticker: Mapped[str] = mapped_column(String(32), nullable=False)
+    date: Mapped[dt.date] = mapped_column(Date, nullable=False)
+    adj_close: Mapped[Optional[float]] = mapped_column(Numeric(20, 6))
+    close: Mapped[Optional[float]] = mapped_column(Numeric(20, 6))
+    volume: Mapped[Optional[float]] = mapped_column(Numeric(20, 2))
+    source: Mapped[str] = mapped_column(String(32), nullable=False, default="cache")
+    updated_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=utcnow, nullable=False)
+
+
+class TickerClassification(Base):
+    __tablename__ = "ticker_classification"
+    __table_args__ = (UniqueConstraint("ticker"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    ticker: Mapped[str] = mapped_column(String(32), nullable=False)
+    sector: Mapped[Optional[str]] = mapped_column(String(100))
+    industry: Mapped[Optional[str]] = mapped_column(String(120))
+    as_of_date: Mapped[Optional[dt.date]] = mapped_column(Date)
+    source: Mapped[str] = mapped_column(String(32), nullable=False, default="manual")
+    updated_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=utcnow, nullable=False)
+
+
+class UniverseMembership(Base):
+    __tablename__ = "universe_membership"
+    __table_args__ = (
+        UniqueConstraint("universe", "ticker"),
+        Index("ix_universe_membership_universe", "universe"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    universe: Mapped[str] = mapped_column(String(32), nullable=False)  # SP500|NASDAQ100|CUSTOM
+    ticker: Mapped[str] = mapped_column(String(32), nullable=False)
+    as_of_date: Mapped[Optional[dt.date]] = mapped_column(Date)
+    source: Mapped[str] = mapped_column(String(32), nullable=False, default="manual")
+    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=utcnow, nullable=False)
+
+
+class WatchlistItem(Base):
+    __tablename__ = "watchlist_items"
+    __table_args__ = (UniqueConstraint("ticker"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    ticker: Mapped[str] = mapped_column(String(32), nullable=False)
+    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=utcnow, nullable=False)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
 
 
 class ExpenseRule(Base):
@@ -347,6 +429,97 @@ class ExpenseCategory(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     name: Mapped[str] = mapped_column(String(100), nullable=False, unique=True)
+
+
+class RecurringBill(Base):
+    __tablename__ = "recurring_bill"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    scope: Mapped[str] = mapped_column(String(20), nullable=False, default="PERSONAL")
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    source_account_id: Mapped[Optional[int]] = mapped_column(ForeignKey("expense_accounts.id"))
+    cadence: Mapped[str] = mapped_column(String(20), nullable=False, default="MONTHLY")
+    amount_mode: Mapped[str] = mapped_column(String(20), nullable=False, default="VARIABLE")  # FIXED|RANGE|VARIABLE
+    amount_expected: Mapped[Optional[float]] = mapped_column(Numeric(20, 2))
+    amount_min: Mapped[Optional[float]] = mapped_column(Numeric(20, 2))
+    amount_max: Mapped[Optional[float]] = mapped_column(Numeric(20, 2))
+    due_day_of_month: Mapped[Optional[int]] = mapped_column(Integer)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    is_user_confirmed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    autodetect_confidence: Mapped[Optional[float]] = mapped_column(Numeric(6, 3))
+    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=utcnow, nullable=False)
+    updated_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=utcnow, nullable=False, onupdate=utcnow)
+
+    source_account: Mapped[Optional["ExpenseAccount"]] = relationship()
+
+
+class RecurringBillRule(Base):
+    __tablename__ = "recurring_bill_rule"
+    __table_args__ = (Index("ix_recurring_bill_rule_bill", "recurring_bill_id"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    recurring_bill_id: Mapped[int] = mapped_column(ForeignKey("recurring_bill.id"), nullable=False)
+    rule_type: Mapped[str] = mapped_column(String(40), nullable=False)  # PLAID_MERCHANT_ID|NAME_NORMALIZED
+    rule_value: Mapped[str] = mapped_column(String(200), nullable=False)
+    priority: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    recurring_bill: Mapped["RecurringBill"] = relationship()
+
+
+class RecurringBillIgnore(Base):
+    __tablename__ = "recurring_bill_ignore"
+    __table_args__ = (UniqueConstraint("scope", "rule_type", "rule_value"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    scope: Mapped[str] = mapped_column(String(20), nullable=False)
+    rule_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    rule_value: Mapped[str] = mapped_column(String(200), nullable=False)
+    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=utcnow, nullable=False)
+
+
+class RecurringCardCharge(Base):
+    __tablename__ = "recurring_card_charge"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    scope: Mapped[str] = mapped_column(String(20), nullable=False, default="PERSONAL")
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    source_account_id: Mapped[Optional[int]] = mapped_column(ForeignKey("expense_accounts.id"))
+    cadence: Mapped[str] = mapped_column(String(20), nullable=False, default="MONTHLY")
+    amount_mode: Mapped[str] = mapped_column(String(20), nullable=False, default="VARIABLE")  # FIXED|RANGE|VARIABLE
+    amount_expected: Mapped[Optional[float]] = mapped_column(Numeric(20, 2))
+    amount_min: Mapped[Optional[float]] = mapped_column(Numeric(20, 2))
+    amount_max: Mapped[Optional[float]] = mapped_column(Numeric(20, 2))
+    due_day_of_month: Mapped[Optional[int]] = mapped_column(Integer)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    is_user_confirmed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    autodetect_confidence: Mapped[Optional[float]] = mapped_column(Numeric(6, 3))
+    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=utcnow, nullable=False)
+    updated_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=utcnow, nullable=False, onupdate=utcnow)
+
+    source_account: Mapped[Optional["ExpenseAccount"]] = relationship()
+
+
+class RecurringCardChargeRule(Base):
+    __tablename__ = "recurring_card_charge_rule"
+    __table_args__ = (Index("ix_recurring_card_charge_rule_charge", "recurring_card_charge_id"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    recurring_card_charge_id: Mapped[int] = mapped_column(ForeignKey("recurring_card_charge.id"), nullable=False)
+    rule_type: Mapped[str] = mapped_column(String(40), nullable=False)  # PLAID_MERCHANT_ID|NAME_NORMALIZED
+    rule_value: Mapped[str] = mapped_column(String(200), nullable=False)
+    priority: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    recurring_card_charge: Mapped["RecurringCardCharge"] = relationship()
+
+
+class RecurringCardChargeIgnore(Base):
+    __tablename__ = "recurring_card_charge_ignore"
+    __table_args__ = (UniqueConstraint("scope", "rule_type", "rule_value"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    scope: Mapped[str] = mapped_column(String(20), nullable=False)
+    rule_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    rule_value: Mapped[str] = mapped_column(String(200), nullable=False)
     created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=utcnow, nullable=False)
 
 

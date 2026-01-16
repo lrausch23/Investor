@@ -1,0 +1,167 @@
+{% extends "layout.html" %}
+{% block content %}
+  {% from "partials/ui/components.html" import kpi_card %}
+
+  {% set page_context = "<a class='ui-muted' href='/momentum'>Momentum</a> <span class='ui-muted'>·</span> <b>Sector:</b> " ~ sector ~ " <span class='ui-muted'>·</span> <b>Period:</b> " ~ period|upper ~ " <span class='ui-muted'>·</span> <b>Range:</b> " ~ start ~ " → " ~ end ~ " <span class='ui-muted'>·</span> <b>Benchmark:</b> " ~ (detail.benchmark or benchmark) ~ " <span class='ui-muted'>·</span> <b>Prices:</b> " ~ (price_provider|upper) %}
+  {% include "partials/momentum/_header.html" %}
+
+  <div class="ui-kpi-grid" style="margin-top:10px" aria-label="Sector summary">
+    {{ kpi_card("Members", "{:,}".format(detail.members_count), subtext="Tickers in selection", tone="neutral") }}
+    {{ kpi_card("Members scored", "{:,}".format(detail.members_used), subtext="With usable price data", tone="neutral") }}
+    {{ kpi_card("As of", detail.as_of.isoformat(), subtext="End date", tone="neutral") }}
+    {{ kpi_card("Benchmark", detail.benchmark, subtext="Relative series", tone="neutral") }}
+  </div>
+
+  <div class="holdings-grid" style="margin-top:10px">
+    <div class="holdings-main">
+      <section class="ui-card">
+        <div class="ui-section-title">Relative performance (growth of $1)</div>
+        <div class="ui-muted" style="margin-top:2px">Equal-weight sector index vs benchmark over the selected range.</div>
+        <div class="perf-chart-wrap" style="margin-top:10px">
+          <svg id="momSectorChart" class="perf-chart" role="img" aria-label="Sector vs benchmark growth chart"></svg>
+          <div id="momSectorChartTooltip" class="perf-chart-tooltip" role="status" aria-live="polite" style="display:none"></div>
+        </div>
+        <div id="momSectorChartLegend" class="perf-chart-legend ui-muted" aria-live="polite" style="margin-top:8px"></div>
+        <script type="application/json" id="momSectorChartData">{{ chart_data_json|safe }}</script>
+      </section>
+
+      <section class="ui-card" style="margin-top:14px">
+        <div class="table-toolbar">
+          <div>
+            <div class="ui-section-title">Sector stocks</div>
+            <div class="ui-muted" style="margin-top:2px">Same columns as the dashboard leaderboard.</div>
+          </div>
+          <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap">
+            <form method="post" action="/momentum/sector/{{ sector|urlencode }}/watchlist" style="margin:0; display:flex; gap:8px; align-items:center; flex-wrap:wrap">
+              <input type="hidden" name="tickers" value="{{ detail.stock_rows|map(attribute='ticker')|join(',') }}" />
+              <input type="hidden" name="return_to" value="{{ request.url }}" />
+              <label class="ui-muted" style="display:flex; gap:8px; align-items:center">
+                <span>Add top</span>
+                <input name="top_n" value="10" inputmode="numeric" style="width:70px" />
+                <span>to Watchlist</span>
+              </label>
+              <button class="btn btn--secondary" type="submit">Add</button>
+            </form>
+          </div>
+        </div>
+
+        {% if detail.stock_rows and detail.stock_rows|length > 0 %}
+          <div class="table-wrap" role="region" aria-label="Sector stocks table" data-mom-sort-table data-mom-table="sector-stocks">
+            <table>
+              <thead>
+                <tr>
+                  <th scope="col" data-sort="text">Ticker</th>
+                  <th scope="col" data-sort="text">Sector</th>
+                  <th scope="col" class="num" data-sort="num">YTD%</th>
+                  <th scope="col" class="num" data-sort="num">3M%</th>
+                  <th scope="col" class="num" data-sort="num">1M%</th>
+                  <th scope="col" class="num" data-sort="num">Close</th>
+                  <th scope="col" data-sort="text">AboveSMA200</th>
+                  <th scope="col" data-sort="text">SMA50&gt;SMA200</th>
+                  <th scope="col" class="num" data-sort="num">SMA50Slope20d</th>
+                  <th scope="col" data-sort="text">Uptrend</th>
+                  <th scope="col" class="num" data-sort="num">DistTo52wHigh%</th>
+                  <th scope="col" class="num" data-sort="num">Avg$Vol20d</th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for r in detail.stock_rows %}
+                  <tr>
+                    <td class="nowrap">{{ r.ticker }}</td>
+                    <td class="nowrap">{{ r.sector }}</td>
+                    <td class="num ui-tabular-nums" data-sort-val="{{ r.ytd if r.ytd is not none else '' }}">{{ fmt_pct(r.ytd) }}</td>
+                    <td class="num ui-tabular-nums" data-sort-val="{{ r.ret_3m if r.ret_3m is not none else '' }}">{{ fmt_pct(r.ret_3m) }}</td>
+                    <td class="num ui-tabular-nums" data-sort-val="{{ r.ret_1m if r.ret_1m is not none else '' }}">{{ fmt_pct(r.ret_1m) }}</td>
+                    <td class="num ui-tabular-nums" data-sort-val="{{ r.close if r.close is not none else '' }}">{% if r.close is none %}—{% else %}{{ "%.2f"|format(r.close) }}{% endif %}</td>
+                    <td class="nowrap">
+                      {% if r.above_sma200 is none %}—{% elif r.above_sma200 %}<span class="ui-badge ui-badge--safe">Yes</span>{% else %}<span class="ui-badge ui-badge--neutral">No</span>{% endif %}
+                    </td>
+                    <td class="nowrap">
+                      {% if r.sma50_gt_sma200 is none %}—{% elif r.sma50_gt_sma200 %}<span class="ui-badge ui-badge--safe">Yes</span>{% else %}<span class="ui-badge ui-badge--neutral">No</span>{% endif %}
+                    </td>
+                    <td class="num ui-tabular-nums" data-sort-val="{{ r.sma50_slope_20d if r.sma50_slope_20d is not none else '' }}">
+                      {% if r.sma50_slope_20d is none %}—{% else %}{{ "%.4f"|format(r.sma50_slope_20d) }}{% endif %}
+                    </td>
+                    <td class="nowrap">
+                      {% if r.uptrend is none %}—{% elif r.uptrend %}<span class="ui-badge ui-badge--safe">Uptrend</span>{% else %}<span class="ui-badge ui-badge--neutral">—</span>{% endif %}
+                    </td>
+                    <td class="num ui-tabular-nums" data-sort-val="{{ r.dist_52w_high if r.dist_52w_high is not none else '' }}">{{ fmt_pct(r.dist_52w_high) }}</td>
+                    <td class="num ui-tabular-nums" data-sort-val="{{ r.avg_dvol_20d if r.avg_dvol_20d is not none else '' }}">{% if r.avg_dvol_20d is none %}—{% else %}{{ r.avg_dvol_20d|usd(0) }}{% endif %}</td>
+                  </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        {% else %}
+          <div class="ui-muted" style="margin-top:8px">No stocks available for this sector under current filters.</div>
+        {% endif %}
+      </section>
+    </div>
+
+    <aside class="holdings-aside">
+      <section class="ui-card">
+        <div class="ui-section-title">Controls</div>
+        <form method="get" action="/momentum/sector/{{ sector|urlencode }}" data-mom-controls style="display:grid; gap:10px; margin-top:8px">
+          <label>
+            Universe
+            <select name="universe" id="momUniverseSel">
+              {% for u in universe_options %}
+                <option value="{{ u.key }}" {% if universe==u.key %}selected{% endif %}>{{ u.label }}</option>
+              {% endfor %}
+            </select>
+          </label>
+          <label id="momCustomListWrap" style="{% if universe != 'custom' %}display:none{% endif %}">
+            Custom tickers
+            <textarea name="custom_list" rows="3" placeholder="AAPL, MSFT, NVDA">{{ custom_list }}</textarea>
+          </label>
+          <label>
+            Date range
+            <select name="period" id="momPeriodSel">
+              <option value="ytd" {% if period=='ytd' %}selected{% endif %}>YTD</option>
+              <option value="1m" {% if period=='1m' %}selected{% endif %}>Last 1M</option>
+              <option value="3m" {% if period=='3m' %}selected{% endif %}>Last 3M</option>
+              <option value="6m" {% if period=='6m' %}selected{% endif %}>Last 6M</option>
+              <option value="1y" {% if period=='1y' %}selected{% endif %}>Last 1Y</option>
+              <option value="custom" {% if period=='custom' %}selected{% endif %}>Custom</option>
+            </select>
+          </label>
+          <label id="momCustomDatesWrap" style="{% if period != 'custom' %}display:none{% endif %}">
+            Start / End (YYYY-MM-DD)
+            <div class="grid2" style="margin-top:6px">
+              <input name="start" value="{{ start }}" />
+              <input name="end" value="{{ end }}" />
+            </div>
+          </label>
+          <label>
+            As-of (optional)
+            <input name="as_of" value="{{ as_of }}" placeholder="{{ today }}" />
+          </label>
+          <label>
+            Benchmark
+            <input name="benchmark" value="{{ benchmark }}" placeholder="SPY" />
+          </label>
+          <label>
+            Price source
+            <select name="price_provider">
+              <option value="stooq" {% if price_provider=='stooq' %}selected{% endif %}>Stooq (default)</option>
+              <option value="finnhub" {% if price_provider=='finnhub' %}selected{% endif %}>Finnhub</option>
+              <option value="auto" {% if price_provider=='auto' %}selected{% endif %}>Auto (Stooq → Finnhub)</option>
+              <option value="cache" {% if price_provider in ['cache','local'] %}selected{% endif %}>Cache only (no network)</option>
+            </select>
+          </label>
+          <label style="display:flex; gap:8px; align-items:center">
+            <input type="checkbox" name="liquid_only" value="1" {% if liquid_only %}checked{% endif %} />
+            Liquidity filter (Avg$Vol20d &ge; $10M)
+          </label>
+          <button class="btn btn--primary" type="submit" data-mom-run>Run</button>
+        </form>
+      </section>
+
+      <section class="ui-card" style="margin-top:14px">
+        <a class="btn btn--secondary" href="/momentum?universe={{ universe }}&period={{ period }}&as_of={{ as_of }}&start={{ start }}&end={{ end }}&benchmark={{ benchmark }}&price_provider={{ price_provider }}{% if liquid_only %}&liquid_only=1{% endif %}{% if custom_list %}&custom_list={{ custom_list|urlencode }}{% endif %}">Back to dashboard</a>
+      </section>
+    </aside>
+  </div>
+
+  <script src="/static/momentum.js?v={{ static_version or '0' }}"></script>
+{% endblock %}

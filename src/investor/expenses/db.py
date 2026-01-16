@@ -74,6 +74,7 @@ def get_or_create_account(
     name: str,
     last4_masked: Optional[str],
     account_type: str,
+    scope: Optional[str] = None,
 ) -> ExpenseAccount:
     q = session.query(ExpenseAccount).filter(
         ExpenseAccount.institution == institution, ExpenseAccount.name == name
@@ -88,6 +89,7 @@ def get_or_create_account(
         name=name,
         last4_masked=last4_masked,
         type=account_type,
+        scope=(scope or "PERSONAL"),
     )
     session.add(acct)
     session.flush()
