@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any, Iterable, Optional
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from src.db.models import ExpenseAccount, ExpenseTransaction, RecurringBill, RecurringBillIgnore, RecurringBillRule
@@ -46,6 +47,13 @@ def _normalize_name(value: str) -> str:
     raw = _NON_ALPHA_RE.sub(" ", raw)
     tokens = [t for t in _TOKEN_RE.findall(raw) if t and t not in _STOP_TOKENS]
     return " ".join(tokens).strip()
+
+
+def _last4(value: str | None) -> str:
+    digits = "".join(ch for ch in (value or "") if ch.isdigit())
+    if len(digits) >= 4:
+        return digits[-4:]
+    return digits
 
 
 def _is_checking_account(acct: ExpenseAccount) -> bool:
@@ -209,6 +217,102 @@ def _amount_mode(stats: dict[str, Any]) -> str:
     if cv <= 0.20:
         return "RANGE"
     return "VARIABLE"
+
+
+def _month_list(as_of: dt.date, months: int) -> list[tuple[int, int]]:
+    months_i = max(1, int(months or 6))
+    year = as_of.year
+    month = as_of.month
+    items: list[tuple[int, int]] = []
+    for _ in range(months_i):
+        items.append((year, month))
+        month -= 1
+        if month <= 0:
+            month = 12
+            year -= 1
+    return items
+
+
+def monthly_deposits_summary(
+    *,
+    session: Session,
+    scope: str,
+    as_of: dt.date,
+    months: int = 6,
+    account_id: int | None = None,
+) -> dict[str, Any]:
+    scope_u = _scope_norm(scope)
+    acct_q = session.query(ExpenseAccount).filter(ExpenseAccount.type.in_(["BANK", "CHECKING", "DEPOSITORY"]))
+    if scope_u != "ALL":
+        acct_q = acct_q.filter(ExpenseAccount.scope == scope_u)
+    accounts = acct_q.order_by(ExpenseAccount.institution.asc(), ExpenseAccount.name.asc()).all()
+    account_ids = [a.id for a in accounts if _is_checking_account(a)]
+    if not account_ids:
+        return {
+            "as_of": as_of.isoformat(),
+            "months": months,
+            "accounts": [],
+            "selected_account_id": None,
+            "monthly": [],
+        }
+
+    selected_id = account_id if account_id in account_ids else account_ids[0]
+    months_list = _month_list(as_of, months)
+    start_year, start_month = months_list[-1]
+    start_date = dt.date(int(start_year), int(start_month), 1)
+
+    rows = (
+        session.query(
+            func.strftime("%Y", ExpenseTransaction.posted_date).label("year"),
+            func.strftime("%m", ExpenseTransaction.posted_date).label("month"),
+            func.sum(ExpenseTransaction.amount).label("amount"),
+        )
+        .filter(
+            ExpenseTransaction.expense_account_id == selected_id,
+            ExpenseTransaction.posted_date >= start_date,
+            ExpenseTransaction.posted_date <= as_of,
+            ExpenseTransaction.amount > 0,
+        )
+        .group_by("year", "month")
+        .all()
+    )
+    totals: dict[tuple[int, int], float] = {}
+    for row in rows:
+        try:
+            year = int(row.year)
+            month = int(row.month)
+        except Exception:
+            continue
+        totals[(year, month)] = float(row.amount or 0)
+
+    monthly: list[dict[str, Any]] = []
+    for year, month in months_list:
+        amount = totals.get((year, month), 0.0)
+        if amount == 0:
+            continue
+        monthly.append({"year": int(year), "month": int(month), "amount": float(amount)})
+
+    account_rows: list[dict[str, Any]] = []
+    for acct in accounts:
+        last4 = _last4(acct.last4_masked)
+        label = f"{acct.name} • {last4}" if last4 else acct.name
+        account_rows.append(
+            {
+                "id": int(acct.id),
+                "name": acct.name,
+                "last4": last4,
+                "label": label,
+                "scope": acct.scope or "PERSONAL",
+            }
+        )
+
+    return {
+        "as_of": as_of.isoformat(),
+        "months": months,
+        "accounts": account_rows,
+        "selected_account_id": int(selected_id),
+        "monthly": monthly,
+    }
 
 
 def detect_suggestions(

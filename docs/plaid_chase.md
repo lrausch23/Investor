@@ -6,6 +6,7 @@ This integration (MVP):
 - Links via **Plaid Link** (OAuth-capable institutions like Chase)
 - Stores the Plaid `access_token` encrypted in `data/investor.db` via `external_credentials`
 - Syncs **bank/credit transactions into the Expenses system** (`expense_*` tables) to avoid polluting investment performance math
+- Captures **liabilities snapshots** during sync (used by Cash & Bills for card balances and due dates)
 - Persists Plaid `/transactions/sync` cursor in `external_connections.metadata_json` for incremental runs
 - Optional: can import **investment holdings snapshots** (requires enabling Investments in the connection settings + re-link)
 - Optional: can ingest **investment transactions** (buys/sells/dividends/fees/transfers) into Investor’s `transactions` table for Performance (requires Investments enabled + re-link)
@@ -30,6 +31,9 @@ Create `.env` entries (or a separate file and `source` it):
 Optional:
  - `ALLOWED_OUTBOUND_HOSTS` (if set, must include the Plaid host for your env, e.g. `sandbox.plaid.com` or `production.plaid.com`)
 
+Notes:
+- Plaid no longer supports `development.plaid.com`. Use `sandbox` or `production`.
+
 ## UI workflow
 
 1) Go to `Sync → Connections`
@@ -47,6 +51,19 @@ To sync Chase **investment holdings** into the Holdings page:
 2) Enable `Investment holdings sync`
 3) Go to `Credentials` and re-link via Plaid (this grants the `investments` product)
 4) Run `Sync now`
+
+### Liabilities snapshots (card bills)
+Liabilities are fetched via `/liabilities/get` and stored as **snapshots**. To avoid rate limits:
+- If the last successful liabilities snapshot is **< 24 hours old**, the sync **skips** the API call and reuses stored data.
+- If Plaid returns **429/5xx**, the sync **falls back to the latest stored snapshot** and does not overwrite it.
+
+Cash & Bills reads from the stored snapshots (no live calls on page load).
+
+### Investments endpoints are gated
+Investment endpoints are only called for items that actually include investment accounts. Non‑investment items skip `/investments/holdings/get`.
+
+### American Express
+AMEX credit card connections follow the same Plaid flow. Liabilities snapshots are required to populate statement balances and due dates in Cash & Bills.
 
 ## Replacing legacy Chase CSV/Yodlee data
 

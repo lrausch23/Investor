@@ -645,6 +645,16 @@ class ExternalHoldingSnapshot(Base):
     created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=utcnow, nullable=False)
 
 
+class ExternalLiabilitySnapshot(Base):
+    __tablename__ = "external_liability_snapshots"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    connection_id: Mapped[int] = mapped_column(ForeignKey("external_connections.id"), nullable=False)
+    as_of: Mapped[dt.datetime] = mapped_column(UTCDateTime(), nullable=False)
+    payload_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=utcnow, nullable=False)
+
+
 class ExternalFileIngest(Base):
     __tablename__ = "external_file_ingests"
     __table_args__ = (UniqueConstraint("connection_id", "file_hash"),)

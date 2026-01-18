@@ -731,8 +731,16 @@ class RJOfflineAdapter(BrokerAdapter):
                     ttype = "DIV"
                 elif raw in {"FEES", "FEE", "INVEXPENSE"}:
                     ttype = "FEE"
-                elif raw == "BANKTRN":
-                    ttype = "TRANSFER"
+                elif raw.startswith("BANKTRN"):
+                    joined = " ".join([raw, str(tx.name or ""), str(tx.memo or "")]).upper()
+                    if "WITHHOLD" in joined or "TAX" in joined:
+                        ttype = "WITHHOLDING"
+                    elif "INTEREST" in joined or raw.endswith("_INT"):
+                        ttype = "INT"
+                    elif "FEE" in joined:
+                        ttype = "FEE"
+                    else:
+                        ttype = "TRANSFER"
                 else:
                     joined = " ".join([raw, str(tx.name or ""), str(tx.memo or "")]).upper()
                     if "DIV" in joined:

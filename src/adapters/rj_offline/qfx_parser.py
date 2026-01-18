@@ -335,6 +335,31 @@ def parse_transactions(text: str) -> list[QfxTransaction]:
     if invtranlist and invtranlist.children:
         for raw_type, nodes in invtranlist.children.items():
             for node in nodes:
+                if raw_type == "INVBANKTRAN":
+                    stmt = node.first("STMTTRN") or node
+                    fitid = _first_text(stmt, "FITID")
+                    dt_posted = parse_ofx_date(_first_text(stmt, "DTPOSTED"))
+                    trnamt = _as_float(_first_text(stmt, "TRNAMT"))
+                    name = _first_text(stmt, "NAME")
+                    memo = _first_text(stmt, "MEMO")
+                    trntype = _first_text(stmt, "TRNTYPE")
+                    out.append(
+                        QfxTransaction(
+                            fitid=_clean_text(fitid) or None,
+                            dt_trade=None,
+                            dt_posted=dt_posted,
+                            raw_type=f"BANKTRN_{_clean_text(trntype).upper()}" if trntype else "BANKTRN",
+                            amount=trnamt,
+                            units=None,
+                            unit_price=None,
+                            commission=None,
+                            fees=None,
+                            unique_id=None,
+                            memo=_clean_text(memo) or None,
+                            name=_clean_text(name) or None,
+                        )
+                    )
+                    continue
                 # For investment txns, the core fields live under INVTRAN.
                 invtran = node.first("INVTRAN") or node
                 fitid = _first_text(invtran, "FITID")
@@ -425,4 +450,3 @@ def placeholder_ticker_from_security(sec: QfxSecurity | None, *, unique_id: str 
         return f"CUSIP:{unique_id}"
     # Deterministic placeholder (rare).
     return "RJSEC:" + hashlib.sha256("UNKNOWN".encode("utf-8")).hexdigest()[:12]
-

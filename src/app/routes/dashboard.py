@@ -3,6 +3,7 @@ from __future__ import annotations
 import datetime as dt
 
 from fastapi import APIRouter, Depends, Request
+from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 
 from src.app.auth import auth_banner_message, require_actor
@@ -13,6 +14,11 @@ router = APIRouter()
 
 
 @router.get("/")
+def root():
+    return RedirectResponse(url="/cash-bills", status_code=303)
+
+
+@router.get("/dashboard")
 def dashboard(
     request: Request,
     session: Session = Depends(db_session),

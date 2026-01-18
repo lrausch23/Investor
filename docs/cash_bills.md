@@ -28,6 +28,11 @@
 - Recurring ACH/debit outflows detected from checking.
 - Use **Manage bills** to review suggested bills or edit active ones.
 
+**Monthly totals**
+- Shows combined totals for recurring card charges and checking bills in the selected range.
+- Includes **Monthly cash deposits** for the selected checking account.
+- Use the **View details** action to see the underlying deposit transactions.
+
 **Checking accounts**
 - Available/current balances per checking account.
 
@@ -48,14 +53,16 @@ Each modal has three tabs:
 - **Suggested**: auto‑detected candidates (add or ignore).
 - **Active**: confirmed recurring items (edit or deactivate).
 - **Recent (30d)**: recent transactions to discover new recurring items.
+Manage card charges includes **Card**, **Member**, **Merchant**, and **Description** columns. Card/member labels use the best available data (last‑4, masked account id, or account name).
 
 ## Technical notes
 
 ### Data sources
-- **Card bills**: Plaid liabilities (statement balances, due dates, last payment).
+- **Card bills**: Plaid liabilities snapshots captured during Sync (statement balances, due dates, last payment). Snapshots are cached to avoid repeated live calls.
 - **Checking balances**: Plaid accounts.
 - **Checking transactions**: Plaid transactions (used for recurring bill detection).
 - **Card transactions**: Plaid transactions (used for recurring card charges).
+  - The dashboard reads from stored snapshots to avoid live Plaid calls.
 
 ### Tables
 - `recurring_bill`, `recurring_bill_rule`, `recurring_bill_ignore`
@@ -77,6 +84,8 @@ For a given cycle:
 - **Overdue**: due date passed without payment
 - **Due soon**: due within 7 days
 - **Unknown**: due day not set and cannot be inferred
+
+If a monthly bill has no explicit due day, the UI falls back to the last payment date as the display due date so it can still be scheduled and projected.
 
 ### Projected recurring outflows
 Projected totals are computed for the selected range even if the current cycle is paid:
@@ -104,6 +113,8 @@ These endpoints back the dashboard and modals:
 - `GET /api/cash-bills/card-recurring/recent`
 - `GET /api/cash-bills/card-finance`
 - `GET /api/cash-bills/card-finance/transactions`
+- `GET /api/cash-bills/deposits/summary`
+- `GET /api/cash-bills/deposits/transactions`
 
 ### Notes
 - Unknown due dates appear in tables but are excluded from **due** and **projected** totals.

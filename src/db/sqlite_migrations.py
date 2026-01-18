@@ -153,6 +153,31 @@ def ensure_sqlite_schema(engine: Engine) -> None:
             if name not in cols:
                 _add_column(engine, "external_file_ingests", ddl)
 
+    if "external_liability_snapshots" not in existing_tables:
+        try:
+            with engine.begin() as conn:
+                conn.execute(
+                    text(
+                        """
+                        CREATE TABLE external_liability_snapshots (
+                            id INTEGER PRIMARY KEY,
+                            connection_id INTEGER NOT NULL,
+                            as_of DATETIME NOT NULL,
+                            payload_json JSON NOT NULL,
+                            created_at DATETIME NOT NULL,
+                            FOREIGN KEY(connection_id) REFERENCES external_connections(id)
+                        )
+                        """
+                    )
+                )
+                conn.execute(
+                    text(
+                        "CREATE INDEX ix_external_liability_snapshots_conn ON external_liability_snapshots(connection_id)"
+                    )
+                )
+        except Exception:
+            pass
+
     if "expense_account_balances" not in existing_tables:
         try:
             with engine.begin() as conn:

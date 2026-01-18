@@ -191,6 +191,19 @@
     </div>
   </div>
 
+  <div class="cashbills-modal" id="cashBillsDepositsModal" aria-hidden="true">
+    <div class="cashbills-modal__overlay" data-modal-close="true"></div>
+    <div class="cashbills-modal__dialog" role="dialog" aria-modal="true" aria-labelledby="cashBillsDepositsTitle">
+      <div class="cashbills-modal__header">
+        <h2 id="cashBillsDepositsTitle">Deposits</h2>
+        <div class="cashbills-modal__actions">
+          <button class="btn" id="cashBillsDepositsClose" type="button">Close</button>
+        </div>
+      </div>
+      <div class="cashbills-modal__body" id="cashBillsDepositsContent"></div>
+    </div>
+  </div>
+
   <script>
     window.__CASH_BILLS_DATA__ = {{ cash_bills_data_json|safe }};
     window.__CASH_BILLS_CARD_BALANCES__ = {{ cash_bills_card_balances_json|safe }};

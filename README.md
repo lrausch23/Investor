@@ -16,6 +16,7 @@ This is an MVP: manual entry + CSV upload, plus adapter-based ingestion for offl
 - `docs/benchmarks.md` — Benchmark price cache (cache-first; Stooq default)
 - `docs/cash_bills.md` — Cash & Bills dashboard (credit card bills + monthly recurring outflows)
 - `docs/expenses.md` — Expense analysis (CSV imports, categorization, recurring reports)
+- `docs/plaid_chase.md` — Plaid connections (Chase/AMEX sync, liabilities snapshots)
 - `docs/rj_qfx.md` — Raymond James QFX/OFX (“Quicken Downloads”) imports
 
 ## Quickstart

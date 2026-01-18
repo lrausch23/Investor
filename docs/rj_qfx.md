@@ -17,6 +17,7 @@ In Client Access:
 Notes:
 - Re-importing the same files is safe: transactions dedupe by FITID (or a stable hash fallback).
 - Holdings snapshots are imported from QFX positions and stored as read-only snapshots.
+- Cash withdrawals and tax withholdings are captured from `<INVBANKTRAN><STMTTRN>` records and appear as cash outflows in reports.
 
 ## Import via API
 `POST /api/connectors/rj/qfx-import` (multipart)
@@ -42,4 +43,3 @@ Examples:
 ## Audit / safety
 - Every ingested offline file is copied into `data/external/raw_archive/conn_<id>/` (append-only).
 - The ingest record stores the file SHA256 and best-effort date hints from the QFX header (DTSTART/DTEND).
-

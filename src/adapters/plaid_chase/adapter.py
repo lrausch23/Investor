@@ -891,6 +891,36 @@ class PlaidChaseAdapter(BrokerAdapter):
         access_token = (getattr(connection, "credentials", {}) or {}).get("PLAID_ACCESS_TOKEN") or ""
         if not access_token:
             return {"as_of": (as_of or utcnow()).isoformat(), "items": []}
+        has_investment = False
+        cache = run_settings.get("_plaid_accounts_cache")
+        if isinstance(cache, list):
+            for row in cache:
+                if not isinstance(row, dict):
+                    continue
+                raw_type = _as_str(row.get("raw_type")).lower()
+                if raw_type == "investment":
+                    has_investment = True
+                    break
+        if not has_investment:
+            try:
+                rows = client.get_accounts(access_token=str(access_token))
+                for r in rows:
+                    if _as_str(r.get("type")).lower() == "investment":
+                        has_investment = True
+                        break
+            except PlaidApiError as e:
+                if e.info.is_item_login_required:
+                    raise ProviderError(
+                        "ITEM_LOGIN_REQUIRED: Plaid re-auth required. Re-link the connection via Plaid."
+                    )
+            except Exception:
+                has_investment = False
+        if not has_investment:
+            return {
+                "as_of": (as_of or utcnow()).isoformat(),
+                "items": [],
+                "warnings": ["No investment accounts in item; skipping holdings fetch."],
+            }
         try:
             data = client.investments_holdings_get(access_token=str(access_token))
         except PlaidApiError as e:

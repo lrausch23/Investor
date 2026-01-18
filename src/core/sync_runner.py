@@ -26,6 +26,7 @@ from src.adapters.plaid_chase.adapter import PlaidChaseAdapter
 from src.adapters.plaid_amex.adapter import PlaidAmexAdapter
 from src.adapters.rj_offline.adapter import RJOfflineAdapter
 from src.adapters.yodlee_chase.adapter import YodleeChaseAdapter
+from src.adapters.plaid_chase.client import PlaidApiError, PlaidClient
 from src.db.audit import log_change
 from src.db.models import (
     Account,
@@ -37,6 +38,7 @@ from src.db.models import (
     ExternalCredential,
     ExternalFileIngest,
     ExternalHoldingSnapshot,
+    ExternalLiabilitySnapshot,
     ExternalPayloadSnapshot,
     ExternalTransactionMap,
     ExpenseAccount,
@@ -295,6 +297,71 @@ def _derive_holdings_snapshot_from_transactions(
         }
     ]
     return out
+
+
+def _store_plaid_liabilities_snapshot(
+    session: Session,
+    *,
+    connection: ExternalConnection,
+    run: SyncRun,
+    access_token: str,
+    store_payloads: bool,
+    coverage: dict[str, Any],
+    warnings: list[str],
+) -> None:
+    recent = (
+        session.query(ExternalLiabilitySnapshot)
+        .filter(ExternalLiabilitySnapshot.connection_id == connection.id)
+        .order_by(ExternalLiabilitySnapshot.as_of.desc(), ExternalLiabilitySnapshot.id.desc())
+        .first()
+    )
+    if recent is not None:
+        age = utcnow() - recent.as_of
+        if age <= dt.timedelta(hours=24):
+            coverage["liability_snapshots_skipped_recent"] = int(
+                coverage.get("liability_snapshots_skipped_recent") or 0
+            ) + 1
+            coverage["liability_snapshot_last_asof"] = recent.as_of.isoformat()
+            return
+    if not access_token:
+        warnings.append(f"Liabilities snapshot skipped for {connection.name}: missing access token.")
+        return
+    env = (connection.metadata_json or {}).get("plaid_env") or None
+    client = PlaidClient(env=env)
+    attempted_at = utcnow()
+    coverage["liability_snapshot_attempted_at"] = attempted_at.isoformat()
+    try:
+        payload = client.liabilities_get(access_token=access_token)
+    except PlaidApiError as e:
+        code = (e.info.error_code or "").upper()
+        status = 0
+        if code.startswith("HTTP_"):
+            suffix = code.split("_", 1)[-1]
+            if suffix.isdigit():
+                status = int(suffix)
+        retryable = code in {"HTTP_429", "RATE_LIMIT_EXCEEDED", "CREDITS_EXHAUSTED"} or status >= 500
+        if retryable:
+            if recent is not None:
+                coverage["liability_snapshot_last_asof"] = recent.as_of.isoformat()
+                coverage["liability_snapshot_used_stale"] = int(
+                    coverage.get("liability_snapshot_used_stale") or 0
+                ) + 1
+            warnings.append(f"Liabilities snapshot deferred for {connection.name}: {e.info.error_code}")
+        else:
+            warnings.append(f"Liabilities snapshot failed for {connection.name}: {e.info.error_code}")
+        return
+    except Exception as e:
+        warnings.append(f"Liabilities snapshot failed for {connection.name}: {type(e).__name__}")
+        return
+    as_of = utcnow()
+    session.add(ExternalLiabilitySnapshot(connection_id=connection.id, as_of=as_of, payload_json=payload))
+    coverage["liability_snapshots_imported"] = int(coverage.get("liability_snapshots_imported") or 0) + 1
+    coverage["liability_snapshot_last_asof"] = as_of.isoformat()
+    if store_payloads:
+        session.add(
+            ExternalPayloadSnapshot(sync_run_id=run.id, kind="liabilities", cursor=None, payload_json=payload)
+        )
+        coverage["report_payloads_recorded"] = int(coverage.get("report_payloads_recorded") or 0) + 1
 
 
 @dataclass(frozen=True)
@@ -1296,8 +1363,19 @@ def run_sync(
             return run
 
         connector_u = (conn.connector or "").upper()
-        is_plaid_chase = connector_u == "CHASE_PLAID"
         is_plaid_connector = connector_u in {"CHASE_PLAID", "AMEX_PLAID"}
+        if is_plaid_connector:
+            _store_plaid_liabilities_snapshot(
+                session,
+                connection=conn,
+                run=run,
+                access_token=str(ctx.credentials.get("PLAID_ACCESS_TOKEN") or ""),
+                store_payloads=bool(store_payloads),
+                coverage=coverage,
+                warnings=warnings,
+            )
+
+        is_plaid_chase = connector_u == "CHASE_PLAID"
         is_expenses_connector = is_plaid_connector
 
         account_map: dict[str, int] = {}

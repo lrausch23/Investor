@@ -18,6 +18,7 @@ from src.app.routes.momentum import router as momentum_router
 from src.app.routes.planner import router as planner_router
 from src.app.routes.plans import router as plans_router
 from src.app.routes.policy import router as policy_router
+from src.app.routes.maintenance import router as maintenance_router
 from src.app.routes.reports import router as reports_router
 from src.app.routes.setup import router as setup_router
 from src.app.routes.tax import router as tax_router
@@ -67,6 +68,7 @@ def create_app() -> FastAPI:
     app.include_router(audit_router)
     app.include_router(cash_bills_router)
     app.include_router(cash_bills_api_router)
+    app.include_router(maintenance_router)
     app.include_router(reports_router)
     app.include_router(tax_router)
     app.include_router(taxlots_router)

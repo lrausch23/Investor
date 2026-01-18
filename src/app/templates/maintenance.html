@@ -1,0 +1,30 @@
+{% extends "layout.html" %}
+{% block content %}
+  <div style="margin-bottom:12px">
+    <div>
+      <h1>Maintenance</h1>
+      <div class="ui-muted">Utilities and legacy tools.</div>
+    </div>
+  </div>
+
+  <div class="ui-card">
+    <div class="ui-section-title">Quick links</div>
+    <div class="ui-muted" style="margin-top:6px">Tools that live under Maintenance in the top menu.</div>
+    <div style="margin-top:12px; display:grid; gap:6px;">
+      <a href="/dashboard">Dashboard</a>
+      <a href="/setup">Setup</a>
+      <a href="/holdings/cash">Holdings cash</a>
+      <a href="/holdings/transactions">Holdings transactions</a>
+      <a href="/holdings/lots">Lots</a>
+      <a href="/taxlots/gains?source=auto">Tax lots</a>
+      <a href="/holdings/income">Income</a>
+      <a href="/holdings/assignments">Mappings</a>
+      <a href="/holdings/securities">Securities</a>
+      <a href="/imports">Imports</a>
+      <a href="/planner">Planner</a>
+      <a href="/plans">Plans</a>
+      <a href="/momentum">Momentum</a>
+      <a href="/audit">Audit</a>
+    </div>
+  </div>
+{% endblock %}

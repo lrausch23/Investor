@@ -9,6 +9,9 @@
     status: "all",
     loading: true,
     error: null,
+    billsError: null,
+    billsWarning: null,
+    cashError: null,
     data: null,
     recurringLoading: true,
     recurringError: null,
@@ -32,6 +35,17 @@
     financeModalError: null,
     financeModalRows: [],
     financeModalContext: null,
+    depositsLoading: false,
+    depositsError: null,
+    depositsAccounts: [],
+    depositsMonthly: [],
+    depositsAccountId: null,
+    depositsMonths: 6,
+    depositsModalOpen: false,
+    depositsModalLoading: false,
+    depositsModalError: null,
+    depositsModalRows: [],
+    depositsModalContext: null,
     cardSuggestionsLoading: false,
     cardSuggestionsError: null,
     cardSuggestions: [],
@@ -39,6 +53,7 @@
     cardRecentError: null,
     cardRecentCharges: [],
     cardMemberFilter: "ALL",
+    cardAccountFilter: "ALL",
     cardModalOpen: false,
     cardModalTab: "suggested",
     cardModalEdit: null,
@@ -98,6 +113,10 @@
     financeModalContent: document.getElementById("cashBillsFinanceContent"),
     financeModalClose: document.getElementById("cashBillsFinanceClose"),
     financeModalTitle: document.getElementById("cashBillsFinanceTitle"),
+    depositsModal: document.getElementById("cashBillsDepositsModal"),
+    depositsModalContent: document.getElementById("cashBillsDepositsContent"),
+    depositsModalClose: document.getElementById("cashBillsDepositsClose"),
+    depositsModalTitle: document.getElementById("cashBillsDepositsTitle"),
   };
 
   const currency = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 2 });
@@ -145,6 +164,30 @@
     if (memberLabel === "—") return "—";
     const sourceLine = source ? `<div class="cashbills-modal__cell-muted">${source}</div>` : "";
     return `<div>${memberLabel}</div>${sourceLine}`;
+  };
+
+  const normalizeAccountKey = (value) => {
+    const raw = (value || "").toString().trim();
+    return raw ? raw.toLowerCase() : "";
+  };
+
+  const accountKeyFromRow = (row) => {
+    return (
+      row.source_account_id ||
+      row.account_id ||
+      row.plaid_account_id ||
+      row.source_account_mask ||
+      ""
+    ).toString();
+  };
+
+  const accountLabelFromRow = (row) => {
+    const name = (row.source_account_name || row.account_name || "").trim();
+    const mask = (row.source_account_mask || row.account_mask || "").trim();
+    if (name && mask) return `${name} • ${mask}`;
+    if (name) return name;
+    if (mask) return `Card • ${mask}`;
+    return "";
   };
 
   const formatMerchantLabel = (merchantDisplay, descriptionSample, fallbackName) => {
@@ -196,6 +239,29 @@
     };
   };
 
+  const collectAccountOptions = (rows) => {
+    const options = new Map();
+    let hasUnknown = false;
+    rows.forEach((row) => {
+      const keyRaw = accountKeyFromRow(row);
+      const key = normalizeAccountKey(keyRaw);
+      if (!key) {
+        hasUnknown = true;
+        return;
+      }
+      const label = accountLabelFromRow(row) || `Acct ${formatPlaidAccountId(keyRaw)}`;
+      if (!options.has(key)) {
+        options.set(key, label);
+      }
+    });
+    return {
+      options: Array.from(options.entries())
+        .map(([key, label]) => ({ key, label }))
+        .sort((a, b) => a.label.localeCompare(b.label)),
+      hasUnknown,
+    };
+  };
+
   const matchesMemberFilter = (row) => {
     const filter = state.cardMemberFilter || "ALL";
     if (filter === "ALL") return true;
@@ -206,8 +272,18 @@
     return name === filter;
   };
 
-  const applyMemberFilter = (rows) => {
-    return rows.filter(matchesMemberFilter);
+  const matchesAccountFilter = (row) => {
+    const filter = state.cardAccountFilter || "ALL";
+    if (filter === "ALL") return true;
+    const key = normalizeAccountKey(accountKeyFromRow(row));
+    if (filter === "UNKNOWN") {
+      return !key;
+    }
+    return key === filter;
+  };
+
+  const applyCardFilters = (rows) => {
+    return rows.filter((row) => matchesMemberFilter(row) && matchesAccountFilter(row));
   };
 
   const COPY = {
@@ -267,6 +343,14 @@
       detailLoading: "Loading charge details…",
       detailEmpty: "No finance charges found for this month.",
       detailError: "Couldn’t load charge details.",
+    },
+    deposits: {
+      loading: "Loading deposits…",
+      empty: "No deposits found for this account.",
+      error: "Couldn’t load deposits.",
+      detailLoading: "Loading deposits…",
+      detailEmpty: "No deposits found for this month.",
+      detailError: "Couldn’t load deposit details.",
     },
     empty: {
       bills: "No card bills found for this range.",
@@ -422,6 +506,7 @@
   };
 
   const deriveStatus = (bill, asOfDate) => {
+    if (!bill.due_date) return "unknown";
     if (bill.status === "paid" || isStatementPaid(bill)) return "paid";
     const due = clampDate(bill.due_date);
     if (bill.last_payment_date) {
@@ -454,15 +539,23 @@
 
   const filterBills = (bills, asOfDate, rangeDays, statusFilter) => {
     return bills
-      .map((b) => ({ ...b, __status: deriveStatus(b, asOfDate) }))
+      .map((b) => ({ ...b, __status: b.due_date ? deriveStatus(b, asOfDate) : "unknown" }))
       .filter((b) => {
         const status = normalizeStatus(b.__status);
+        if (!b.due_date) {
+          return statusFilter === "all";
+        }
         const due = clampDate(b.due_date);
         const days = daysBetween(asOfDate, due);
         if (statusFilter !== "all" && status !== statusFilter) return false;
         return withinRange(days, rangeDays, status);
       })
-      .sort((a, b) => (a.due_date > b.due_date ? 1 : -1));
+      .sort((a, b) => {
+        if (!a.due_date && !b.due_date) return 0;
+        if (!a.due_date) return 1;
+        if (!b.due_date) return -1;
+        return a.due_date > b.due_date ? 1 : -1;
+      });
   };
 
   const formatAmountRange = (minVal, maxVal) => {
@@ -563,6 +656,7 @@
     let nextDueAmount = null;
     let nextDueCard = null;
     bills.forEach((b) => {
+      if (!b.due_date) return;
       const status = deriveStatus(b, asOfDate);
       if (status === "paid") return;
       const due = clampDate(b.due_date);
@@ -781,6 +875,18 @@
 
   const renderBills = (rows, asOfDate) => {
     if (!els.billsTable) return;
+    if (state.billsError) {
+      els.billsTable.innerHTML = `
+        <div class="alert alert--warn">
+          <div>${COPY.error.bills}</div>
+          <div class="ui-muted" style="margin-top:4px">${state.billsError}</div>
+          <button class="btn btn--secondary" type="button" id="cashBillsRetryBills">${COPY.error.retry}</button>
+        </div>
+      `;
+      const retry = document.getElementById("cashBillsRetryBills");
+      if (retry) retry.addEventListener("click", () => loadData());
+      return;
+    }
     if (!rows.length) {
       els.billsTable.innerHTML = `
         <div class="ui-muted">${COPY.empty.bills}</div>
@@ -788,16 +894,24 @@
       `;
       return;
     }
+    const warningHtml = state.billsWarning
+      ? `<div class="alert alert--warn" style="margin-bottom:12px"><div>${state.billsWarning}</div></div>`
+      : "";
     const tableRows = rows
       .map((b) => {
-        const due = clampDate(b.due_date);
-        const days = daysBetween(asOfDate, due);
-        const status = normalizeStatus(b.__status || deriveStatus(b, asOfDate));
+        const hasDue = Boolean(b.due_date);
+        const due = hasDue ? clampDate(b.due_date) : null;
+        const days = due ? daysBetween(asOfDate, due) : null;
+        const status = normalizeStatus(hasDue ? (b.__status || deriveStatus(b, asOfDate)) : "unknown");
         const statusLabel = COPY.statuses[status] || status.replace("_", " ");
         const statusClass =
           status === "overdue" ? "ui-badge--bad" : status === "due_soon" ? "ui-badge--risk" : status === "paid" ? "ui-badge--safe" : "ui-badge--neutral";
-        let daysLabel = days === 0 ? "Due today" : days < 0 ? `${Math.abs(days)}d overdue` : `${days}d left`;
-        let daysClass = days < 0 ? "ui-badge--bad" : days <= 7 ? "ui-badge--risk" : "ui-badge--outline";
+        let daysLabel = "—";
+        let daysClass = "ui-badge--outline";
+        if (days != null) {
+          daysLabel = days === 0 ? "Due today" : days < 0 ? `${Math.abs(days)}d overdue` : `${days}d left`;
+          daysClass = days < 0 ? "ui-badge--bad" : days <= 7 ? "ui-badge--risk" : "ui-badge--outline";
+        }
         const dueMeta =
           status === "paid"
             ? `<span class="ui-badge ui-badge--safe">Paid</span>`
@@ -808,7 +922,7 @@
         return `
           <tr>
             <td>
-              <div>${formatDate(b.due_date)}</div>
+              <div>${b.due_date ? formatDate(b.due_date) : "—"}</div>
               <div class="cashbills-due-meta">${dueMeta}</div>
             </td>
             <td>
@@ -828,6 +942,7 @@
       .join("");
 
     els.billsTable.innerHTML = `
+      ${warningHtml}
       <div class="table-wrapper">
         <table class="data-table bills-table">
           <colgroup>
@@ -1141,32 +1256,96 @@
 
   const renderMonthlyTotals = () => {
     if (!els.monthlyTotals) return;
-    if (state.recurringLoading || state.cardRecurringLoading) {
-      els.monthlyTotals.innerHTML = `<div class="ui-muted">—</div>`;
-      return;
-    }
-    if (state.recurringError || state.cardRecurringError) {
-      els.monthlyTotals.innerHTML = `<div class="ui-muted">—</div>`;
-      return;
-    }
+    const totalsReady = !(state.recurringLoading || state.cardRecurringLoading || state.recurringError || state.cardRecurringError);
     const asOfDate = clampDate(state.asOfDate);
     const rangeLabel = `${state.rangeDays} days`;
-    const cardTotal = computeCardRecurringTotalInRange(state.cardRecurringCharges || [], asOfDate, state.rangeDays);
-    const checkingTotal = computeRecurringTotalInRange(state.recurringBills || [], asOfDate, state.rangeDays);
+    const totalsHtml = totalsReady
+      ? (() => {
+          const cardTotal = computeCardRecurringTotalInRange(state.cardRecurringCharges || [], asOfDate, state.rangeDays);
+          const checkingTotal = computeRecurringTotalInRange(state.recurringBills || [], asOfDate, state.rangeDays);
+          return `
+            <div class="ui-muted">Next ${rangeLabel}</div>
+            <div class="cashbills-coverage" style="margin-top:8px">
+              <div class="cashbills-coverage__row">
+                <span>Monthly card charges</span>
+                <span class="ui-tabular-nums">${currency.format(cardTotal)}</span>
+              </div>
+              <div class="cashbills-coverage__row">
+                <span>Monthly bills (checking)</span>
+                <span class="ui-tabular-nums">${currency.format(checkingTotal)}</span>
+              </div>
+            </div>
+            <div class="ui-muted" style="margin-top:6px">Totals include items due/charged in this range.</div>
+          `;
+        })()
+      : `<div class="ui-muted">—</div>`;
+
+    let depositsHtml = "";
+    if (state.depositsLoading) {
+      depositsHtml = `<div class="ui-muted" style="margin-top:12px">${COPY.deposits.loading}</div>`;
+    } else if (state.depositsError) {
+      depositsHtml = `
+        <div class="alert alert--warn" style="margin-top:12px">
+          <div>${COPY.deposits.error}</div>
+          <button class="btn btn--secondary" type="button" id="cashBillsRetryDeposits">${COPY.error.retry}</button>
+        </div>
+      `;
+    } else if (!state.depositsAccounts.length) {
+      depositsHtml = `<div class="ui-muted" style="margin-top:12px">No checking accounts available.</div>`;
+    } else {
+      const selected = state.depositsAccountId || String(state.depositsAccounts[0].id);
+      const options = state.depositsAccounts
+        .map((acct) => {
+          const id = String(acct.id);
+          const label = acct.label || acct.name || `Account ${id}`;
+          return `<option value="${id}" ${id === selected ? "selected" : ""}>${label}</option>`;
+        })
+        .join("");
+      const rows = (state.depositsMonthly || [])
+        .map((row) => {
+          const monthLabel = formatMonthLabel(row.year, row.month);
+          return `
+            <div class="cashbills-coverage__row">
+              <span>${monthLabel}</span>
+              <span class="cashbills-deposit-meta">
+                <span class="ui-tabular-nums">${currency.format(row.amount || 0)}</span>
+                <button class="btn btn--link btn--sm cashbills-deposits-view" type="button" data-deposit-year="${row.year}" data-deposit-month="${row.month}">View</button>
+              </span>
+            </div>
+          `;
+        })
+        .join("");
+      depositsHtml = `
+        <div class="cashbills-monthly-divider"></div>
+        <div class="cashbills-monthly-header">
+          <div class="ui-muted">Monthly cash deposits</div>
+          <select id="cashBillsDepositAccount" class="cashbills-deposit-select">
+            ${options}
+          </select>
+        </div>
+        ${rows ? `<div class="cashbills-coverage" style="margin-top:8px">${rows}</div>` : `<div class="ui-muted" style="margin-top:8px">${COPY.deposits.empty}</div>`}
+        <div class="ui-muted" style="margin-top:6px">Last ${state.depositsMonths || 6} months</div>
+      `;
+    }
+
     els.monthlyTotals.innerHTML = `
-      <div class="ui-muted">Next ${rangeLabel}</div>
-      <div class="cashbills-coverage" style="margin-top:8px">
-        <div class="cashbills-coverage__row">
-          <span>Monthly card charges</span>
-          <span class="ui-tabular-nums">${currency.format(cardTotal)}</span>
-        </div>
-        <div class="cashbills-coverage__row">
-          <span>Monthly bills (checking)</span>
-          <span class="ui-tabular-nums">${currency.format(checkingTotal)}</span>
-        </div>
-      </div>
-      <div class="ui-muted" style="margin-top:6px">Totals include items due/charged in this range.</div>
+      ${totalsHtml}
+      ${depositsHtml}
     `;
+    const retryDeposits = document.getElementById("cashBillsRetryDeposits");
+    if (retryDeposits) {
+      retryDeposits.addEventListener("click", () => refreshDepositSummary(true));
+    }
+    const viewButtons = els.monthlyTotals.querySelectorAll(".cashbills-deposits-view");
+    viewButtons.forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const year = Number(btn.getAttribute("data-deposit-year"));
+        const month = Number(btn.getAttribute("data-deposit-month"));
+        const accountId = Number(state.depositsAccountId || "");
+        if (!year || !month || !accountId) return;
+        openDepositsModal({ year, month, account_id: accountId });
+      });
+    });
   };
 
   const renderFinanceModal = () => {
@@ -1247,6 +1426,79 @@
     `;
   };
 
+  const renderDepositsModal = () => {
+    if (!els.depositsModal) return;
+    els.depositsModal.classList.toggle("is-open", state.depositsModalOpen);
+    els.depositsModal.setAttribute("aria-hidden", state.depositsModalOpen ? "false" : "true");
+    if (!state.depositsModalOpen || !els.depositsModalContent) return;
+
+    const context = state.depositsModalContext || {};
+    const monthLabel = context.year && context.month ? formatMonthLabel(context.year, context.month) : "Deposits";
+    const accountLabel = context.account_label || "Checking account";
+    if (els.depositsModalTitle) {
+      els.depositsModalTitle.textContent = `${monthLabel} · ${accountLabel}`;
+    }
+
+    if (state.depositsModalLoading) {
+      els.depositsModalContent.innerHTML = `<div class="ui-muted">${COPY.deposits.detailLoading}</div>`;
+      return;
+    }
+    if (state.depositsModalError) {
+      els.depositsModalContent.innerHTML = `
+        <div class="alert alert--warn">
+          <div>${COPY.deposits.detailError}</div>
+          <button class="btn btn--secondary" type="button" id="cashBillsDepositsRetry">${COPY.error.retry}</button>
+        </div>
+      `;
+      const retry = document.getElementById("cashBillsDepositsRetry");
+      if (retry) {
+        retry.addEventListener("click", () => loadDepositTransactions(context));
+      }
+      return;
+    }
+    if (!state.depositsModalRows.length) {
+      els.depositsModalContent.innerHTML = `<div class="ui-muted">${COPY.deposits.detailEmpty}</div>`;
+      return;
+    }
+
+    const total = state.depositsModalRows.reduce((sum, row) => sum + Number(row.amount || 0), 0);
+    const tableRows = state.depositsModalRows
+      .map((row) => {
+        const dateLabel = formatDate(row.posted_date);
+        const desc = (row.description || "").trim() || "Deposit";
+        return `
+          <tr>
+            <td>${dateLabel}</td>
+            <td>${desc}</td>
+            <td class="num ui-tabular-nums">${currency.format(row.amount || 0)}</td>
+          </tr>
+        `;
+      })
+      .join("");
+    els.depositsModalContent.innerHTML = `
+      <div class="ui-muted" style="margin-bottom:8px">Total for month: ${currency.format(total)}</div>
+      <div class="table-wrapper">
+        <table class="data-table cashbills-deposits-detail-table">
+          <colgroup>
+            <col style="width:140px" />
+            <col />
+            <col style="width:160px" />
+          </colgroup>
+          <thead>
+            <tr>
+              <th>Date</th>
+              <th>Description</th>
+              <th class="num">Amount</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${tableRows}
+          </tbody>
+        </table>
+      </div>
+    `;
+  };
+
   const loadFinanceTransactions = (context) => {
     if (!context || !context.year || !context.month || !context.account_id) return;
     state.financeModalLoading = true;
@@ -1273,6 +1525,34 @@
       });
   };
 
+  const loadDepositTransactions = (context) => {
+    if (!context || !context.year || !context.month || !context.account_id) return;
+    state.depositsModalLoading = true;
+    state.depositsModalError = null;
+    state.depositsModalRows = [];
+    renderDepositsModal();
+    const params = new URLSearchParams({
+      account_id: String(context.account_id),
+      year: String(context.year),
+      month: String(context.month),
+    });
+    return fetchJson(`/api/cash-bills/deposits/transactions?${params}`)
+      .then((payload) => {
+        state.depositsModalLoading = false;
+        state.depositsModalRows = payload.rows || [];
+        state.depositsModalContext = {
+          ...context,
+          account_label: payload.account_label || context.account_label,
+        };
+        renderDepositsModal();
+      })
+      .catch((err) => {
+        state.depositsModalLoading = false;
+        state.depositsModalError = err ? String(err) : COPY.deposits.detailError;
+        renderDepositsModal();
+      });
+  };
+
   const openFinanceModal = (context) => {
     state.financeModalOpen = true;
     state.financeModalContext = context || null;
@@ -1288,8 +1568,36 @@
     renderFinanceModal();
   };
 
+  const openDepositsModal = (context) => {
+    state.depositsModalOpen = true;
+    state.depositsModalContext = context || null;
+    renderDepositsModal();
+    loadDepositTransactions(context || {});
+  };
+
+  const closeDepositsModal = () => {
+    state.depositsModalOpen = false;
+    state.depositsModalContext = null;
+    state.depositsModalRows = [];
+    state.depositsModalLoading = false;
+    state.depositsModalError = null;
+    renderDepositsModal();
+  };
+
   const renderCash = (rows) => {
     if (!els.cashTable) return;
+    if (state.cashError) {
+      els.cashTable.innerHTML = `
+        <div class="alert alert--warn">
+          <div>${COPY.error.accounts}</div>
+          <div class="ui-muted" style="margin-top:4px">${state.cashError}</div>
+          <button class="btn btn--secondary" type="button" id="cashBillsRetryAccounts">${COPY.error.retry}</button>
+        </div>
+      `;
+      const retry = document.getElementById("cashBillsRetryAccounts");
+      if (retry) retry.addEventListener("click", () => loadData());
+      return;
+    }
     if (!rows.length) {
       els.cashTable.innerHTML = `
         <div class="ui-muted">${COPY.empty.accounts}</div>
@@ -1602,6 +1910,43 @@
         } else {
           renderRecurringSection();
         }
+      });
+  };
+
+  const refreshDepositSummary = (force = false) => {
+    if (state.depositsLoading && !force) return;
+    state.depositsLoading = true;
+    state.depositsError = null;
+    renderMonthlyTotals();
+    const params = new URLSearchParams({
+      as_of: state.asOfDate,
+      scope: state.scope,
+      months: String(state.depositsMonths || 6),
+    });
+    if (state.depositsAccountId) {
+      params.append("account_id", String(state.depositsAccountId));
+    }
+    return fetchJson(`/api/cash-bills/deposits/summary?${params}`)
+      .then((data) => {
+        state.depositsLoading = false;
+        state.depositsError = null;
+        state.depositsAccounts = Array.isArray(data.accounts) ? data.accounts : [];
+        state.depositsMonthly = Array.isArray(data.monthly) ? data.monthly : [];
+        if (data.months) {
+          state.depositsMonths = Number(data.months) || state.depositsMonths;
+        }
+        const selected = data.selected_account_id != null ? String(data.selected_account_id) : "";
+        if (!state.depositsAccountId || !state.depositsAccounts.some((acct) => String(acct.id) === String(state.depositsAccountId))) {
+          state.depositsAccountId = selected || (state.depositsAccounts[0] ? String(state.depositsAccounts[0].id) : null);
+        }
+        renderMonthlyTotals();
+      })
+      .catch((err) => {
+        state.depositsLoading = false;
+        state.depositsError = err ? String(err) : "Failed";
+        state.depositsAccounts = [];
+        state.depositsMonthly = [];
+        renderMonthlyTotals();
       });
   };
 
@@ -2155,7 +2500,7 @@
     }
     const filtered = state.cardSuggestions
       .map((item, idx) => ({ item, idx }))
-      .filter(({ item }) => matchesMemberFilter(item));
+      .filter(({ item }) => matchesMemberFilter(item) && matchesAccountFilter(item));
     if (!filtered.length) {
       els.cardModalContent.innerHTML = `
         <div class="ui-muted">${COPY.cardRecurring.suggestedEmpty}</div>
@@ -2261,7 +2606,7 @@
       if (retry) retry.addEventListener("click", () => loadCardRecurringAll());
       return;
     }
-    const filtered = applyMemberFilter(state.cardRecurringAllCharges);
+    const filtered = applyCardFilters(state.cardRecurringAllCharges);
     if (!filtered.length) {
       els.cardModalContent.innerHTML = `
         <div class="ui-muted">${COPY.cardRecurring.activeEmpty}</div>
@@ -2375,7 +2720,7 @@
     }
     const filtered = state.cardRecentCharges
       .map((item, idx) => ({ item, idx }))
-      .filter(({ item }) => matchesMemberFilter(item));
+      .filter(({ item }) => matchesMemberFilter(item) && matchesAccountFilter(item));
     if (!filtered.length) {
       els.cardModalContent.innerHTML = `
         <div class="ui-muted">${COPY.cardRecurring.recentEmpty}</div>
@@ -2460,32 +2805,87 @@
           ? state.cardRecurringAllCharges
           : state.cardRecentCharges;
     const { options: memberOptions, hasUnknown } = collectMemberOptions(source);
+    const { options: accountOptions, hasUnknown: hasUnknownAccount } = collectAccountOptions(source);
     if (!memberOptions.length && !hasUnknown) {
-      els.cardModalFilters.innerHTML = "";
-      return;
+      state.cardMemberFilter = "ALL";
     }
-    const options = [
+    if (!accountOptions.length && !hasUnknownAccount) {
+      state.cardAccountFilter = "ALL";
+    }
+    const filtered =
+      state.cardModalTab === "active"
+        ? applyCardFilters(source)
+        : source.filter((row) => matchesMemberFilter(row) && matchesAccountFilter(row));
+    const total = filtered.reduce((sum, item) => {
+      if (state.cardModalTab === "recent") {
+        return sum + Math.abs(Number(item.amount || 0));
+      }
+      return sum + expectedChargeAmount(item);
+    }, 0);
+    const totalLabel =
+      state.cardModalTab === "recent"
+        ? "Total spent (30d)"
+        : state.cardModalTab === "active"
+          ? "Expected monthly total"
+          : "Estimated monthly total";
+    const filterParts = [];
+    const memberSelect = [
       `<option value="ALL">All members</option>`,
       ...(hasUnknown ? [`<option value="UNKNOWN">Unknown</option>`] : []),
       ...memberOptions.map((option) => `<option value="${option.key}">${option.label}</option>`),
     ].join("");
-    els.cardModalFilters.innerHTML = `
-      <label class="cashbills-modal__filter">
-        Member
-        <select id="cashBillsCardMemberFilter">${options}</select>
-      </label>
-    `;
-    const select = document.getElementById("cashBillsCardMemberFilter");
-    if (!select) return;
-    const validKeys = new Set(["ALL", "UNKNOWN", ...memberOptions.map((option) => option.key)]);
-    if (!validKeys.has(state.cardMemberFilter)) {
-      state.cardMemberFilter = "ALL";
+    if (memberOptions.length || hasUnknown) {
+      filterParts.push(`
+        <label class="cashbills-modal__filter">
+          Member
+          <select id="cashBillsCardMemberFilter">${memberSelect}</select>
+        </label>
+      `);
     }
-    select.value = state.cardMemberFilter;
-    select.addEventListener("change", (event) => {
-      state.cardMemberFilter = event.target.value || "ALL";
-      renderCardModal();
-    });
+    const accountSelect = [
+      `<option value="ALL">All accounts</option>`,
+      ...(hasUnknownAccount ? [`<option value="UNKNOWN">Unknown</option>`] : []),
+      ...accountOptions.map((option) => `<option value="${option.key}">${option.label}</option>`),
+    ].join("");
+    if (accountOptions.length || hasUnknownAccount) {
+      filterParts.push(`
+        <label class="cashbills-modal__filter">
+          Card account
+          <select id="cashBillsCardAccountFilter">${accountSelect}</select>
+        </label>
+      `);
+    }
+    filterParts.push(`
+      <div class="cashbills-modal__filter-summary">
+        <span class="ui-muted">${totalLabel}</span>
+        <span class="ui-tabular-nums">${currency.format(total)}</span>
+      </div>
+    `);
+    els.cardModalFilters.innerHTML = filterParts.join("");
+    const memberSelectEl = document.getElementById("cashBillsCardMemberFilter");
+    if (memberSelectEl) {
+      const validKeys = new Set(["ALL", "UNKNOWN", ...memberOptions.map((option) => option.key)]);
+      if (!validKeys.has(state.cardMemberFilter)) {
+        state.cardMemberFilter = "ALL";
+      }
+      memberSelectEl.value = state.cardMemberFilter;
+      memberSelectEl.addEventListener("change", (event) => {
+        state.cardMemberFilter = event.target.value || "ALL";
+        renderCardModal();
+      });
+    }
+    const accountSelectEl = document.getElementById("cashBillsCardAccountFilter");
+    if (accountSelectEl) {
+      const validKeys = new Set(["ALL", "UNKNOWN", ...accountOptions.map((option) => option.key)]);
+      if (!validKeys.has(state.cardAccountFilter)) {
+        state.cardAccountFilter = "ALL";
+      }
+      accountSelectEl.value = state.cardAccountFilter;
+      accountSelectEl.addEventListener("change", (event) => {
+        state.cardAccountFilter = event.target.value || "ALL";
+        renderCardModal();
+      });
+    }
   };
 
   const renderCardModal = () => {
@@ -2581,10 +2981,16 @@
   const loadData = () => {
     state.loading = true;
     state.error = null;
+    state.billsError = null;
+    state.billsWarning = null;
+    state.cashError = null;
     setLoading();
     useDashboardData()
       .then((data) => {
         state.data = data;
+        state.billsError = data && data.bills_error ? String(data.bills_error) : null;
+        state.billsWarning = data && data.bills_warning ? String(data.bills_warning) : null;
+        state.cashError = data && data.cash_error ? String(data.cash_error) : null;
         state.loading = false;
         render();
       })
@@ -2594,6 +3000,7 @@
         setError(state.error);
       });
     refreshRecurringSummary();
+    refreshDepositSummary();
   };
 
   const setChipActive = (group, attr, value) => {
@@ -2627,8 +3034,12 @@
           state.cardSuggestions = [];
           state.cardRecurringAllCharges = [];
           state.cardRecentCharges = [];
+          state.depositsAccountId = null;
+          state.depositsAccounts = [];
+          state.depositsMonthly = [];
           render();
           refreshRecurringSummary();
+          refreshDepositSummary(true);
         }
       });
       els.customDate.addEventListener("change", (e) => {
@@ -2640,8 +3051,12 @@
           state.cardSuggestions = [];
           state.cardRecurringAllCharges = [];
           state.cardRecentCharges = [];
+          state.depositsAccountId = null;
+          state.depositsAccounts = [];
+          state.depositsMonthly = [];
           render();
           refreshRecurringSummary();
+          refreshDepositSummary(true);
         }
       });
     }
@@ -2654,8 +3069,12 @@
         state.cardSuggestions = [];
         state.cardRecurringAllCharges = [];
         state.cardRecentCharges = [];
+        state.depositsAccountId = null;
+        state.depositsAccounts = [];
+        state.depositsMonthly = [];
         render();
         refreshRecurringSummary();
+        refreshDepositSummary(true);
       });
     }
     if (els.refreshBtn) {
@@ -2679,6 +3098,13 @@
         state.status = status;
         setChipActive(els.statusChips, "data-status", status);
         render();
+      });
+    }
+    if (els.monthlyTotals) {
+      els.monthlyTotals.addEventListener("change", (e) => {
+        if (!e.target || e.target.id !== "cashBillsDepositAccount") return;
+        state.depositsAccountId = e.target.value || null;
+        refreshDepositSummary(true);
       });
     }
     if (els.recurringTable) {
@@ -2722,6 +3148,9 @@
     if (els.financeModalClose) {
       els.financeModalClose.addEventListener("click", () => closeFinanceModal());
     }
+    if (els.depositsModalClose) {
+      els.depositsModalClose.addEventListener("click", () => closeDepositsModal());
+    }
     if (els.modal) {
       els.modal.addEventListener("click", (e) => {
         if (e.target && e.target.getAttribute("data-modal-close")) {
@@ -2740,6 +3169,13 @@
       els.financeModal.addEventListener("click", (e) => {
         if (e.target && e.target.getAttribute("data-modal-close")) {
           closeFinanceModal();
+        }
+      });
+    }
+    if (els.depositsModal) {
+      els.depositsModal.addEventListener("click", (e) => {
+        if (e.target && e.target.getAttribute("data-modal-close")) {
+          closeDepositsModal();
         }
       });
     }

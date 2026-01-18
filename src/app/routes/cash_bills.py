@@ -2,22 +2,20 @@ from __future__ import annotations
 
 import datetime as dt
 import json
-import os
 from typing import Any
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
-from src.adapters.plaid_chase.client import PlaidApiError, PlaidClient
 from src.app.auth import auth_banner_message, require_actor
 from src.app.db import db_session
-from src.core.credential_store import get_credential
 from src.db.models import (
     ExpenseAccount,
     ExpenseAccountBalance,
     ExpenseTransaction,
     ExternalConnection,
+    ExternalLiabilitySnapshot,
     RecurringCardCharge,
     RecurringCardChargeIgnore,
     RecurringCardChargeRule,
@@ -28,6 +26,7 @@ from src.db.models import (
 from src.investor.cash_bills.recurring import (
     active_bills_summary,
     detect_suggestions,
+    monthly_deposits_summary,
     recent_charges,
     recurring_due_total,
 )
@@ -46,11 +45,6 @@ api_router = APIRouter(prefix="/api/cash-bills", tags=["cash-bills-api"])
 
 def _as_str(v: Any) -> str:
     return str(v).strip() if v is not None else ""
-
-
-def _normalize_env(value: str | None) -> str:
-    raw = (value or os.environ.get("PLAID_ENV") or "sandbox").strip().lower()
-    return "sandbox" if raw in {"dev", "development"} else raw
 
 
 def _norm_inst(value: str | None) -> str:
@@ -73,6 +67,8 @@ def _plaid_cash_bills_data(session: Session) -> dict[str, Any]:
     bills: list[dict[str, Any]] = []
     cash_accounts: list[dict[str, Any]] = []
     errors: list[str] = []
+    missing_snapshots: list[str] = []
+    snapshots_as_of: list[dt.datetime] = []
     scope_by_key: dict[str, str] = {}
     acct_id_by_key: dict[str, int] = {}
     acct_ids_by_last4: dict[str, list[int]] = {}
@@ -122,20 +118,17 @@ def _plaid_cash_bills_data(session: Session) -> dict[str, Any]:
     )
 
     for conn in connections:
-        access_token = get_credential(session, connection_id=conn.id, key="PLAID_ACCESS_TOKEN") or ""
-        if not access_token:
-            errors.append(f"Missing Plaid credentials for connection {conn.id}.")
+        snapshot = (
+            session.query(ExternalLiabilitySnapshot)
+            .filter(ExternalLiabilitySnapshot.connection_id == conn.id)
+            .order_by(ExternalLiabilitySnapshot.as_of.desc(), ExternalLiabilitySnapshot.id.desc())
+            .first()
+        )
+        if snapshot is None:
+            missing_snapshots.append(conn.name)
             continue
-        env = _normalize_env((conn.metadata_json or {}).get("plaid_env"))
-        client = PlaidClient(env=env)
-        try:
-            payload = client.liabilities_get(access_token=access_token)
-        except PlaidApiError as e:
-            errors.append(f"Plaid liabilities failed for {conn.name}: {e.info.error_code}")
-            continue
-        except Exception as e:
-            errors.append(f"Plaid liabilities failed for {conn.name}: {type(e).__name__}")
-            continue
+        payload = snapshot.payload_json or {}
+        snapshots_as_of.append(snapshot.as_of)
 
         accounts = payload.get("accounts") or []
         if not isinstance(accounts, list):
@@ -171,7 +164,7 @@ def _plaid_cash_bills_data(session: Session) -> dict[str, Any]:
                     "account_name": label,
                     "available_balance": float(available if available is not None else current or 0),
                     "current_balance": float(current) if current is not None else None,
-                    "last_updated": None,
+                    "last_updated": snapshot.as_of.date().isoformat() if snapshot.as_of else None,
                     "scope": scope,
                 }
             )
@@ -254,18 +247,119 @@ def _plaid_cash_bills_data(session: Session) -> dict[str, Any]:
                 }
             )
 
+    if not cash_accounts:
+        balances = (
+            session.query(ExpenseAccountBalance)
+            .order_by(ExpenseAccountBalance.as_of_date.desc(), ExpenseAccountBalance.id.desc())
+            .all()
+        )
+        balances_by_account: dict[int, ExpenseAccountBalance] = {}
+        for bal in balances:
+            if bal.expense_account_id not in balances_by_account:
+                balances_by_account[bal.expense_account_id] = bal
+        fallback_accounts = (
+            session.query(ExpenseAccount)
+            .filter(ExpenseAccount.type.in_(["BANK", "CHECKING", "DEPOSITORY"]))
+            .order_by(ExpenseAccount.institution.asc(), ExpenseAccount.name.asc())
+            .all()
+        )
+        for acct in fallback_accounts:
+            bal = balances_by_account.get(acct.id)
+            if bal is None:
+                continue
+            available = bal.balance_available if bal.balance_available is not None else bal.balance_current
+            current = bal.balance_current
+            if available is None and current is None:
+                continue
+            mask = _last4(acct.last4_masked)
+            label = f"{acct.name} • {mask}" if mask else acct.name
+            cash_accounts.append(
+                {
+                    "id": f"db:{acct.id}",
+                    "account_name": label,
+                    "available_balance": float(available if available is not None else current or 0),
+                    "current_balance": float(current) if current is not None else None,
+                    "last_updated": bal.as_of_date.date().isoformat() if bal.as_of_date else None,
+                    "scope": (acct.scope or "PERSONAL").upper(),
+                }
+            )
+
+    as_of_date = max(snapshots_as_of).date() if snapshots_as_of else today
+    # Fallback: if no liabilities snapshot is available, show balances from ExpenseAccountBalance
+    # so the UI can still render while due dates remain unknown.
+    fallback_used = False
+    if not bills:
+        balances = (
+            session.query(ExpenseAccountBalance)
+            .order_by(ExpenseAccountBalance.as_of_date.desc(), ExpenseAccountBalance.id.desc())
+            .all()
+        )
+        balances_by_account: dict[int, ExpenseAccountBalance] = {}
+        for bal in balances:
+            if bal.expense_account_id not in balances_by_account:
+                balances_by_account[bal.expense_account_id] = bal
+        credit_accounts = (
+            session.query(ExpenseAccount)
+            .filter(ExpenseAccount.type == "CREDIT")
+            .order_by(ExpenseAccount.institution.asc(), ExpenseAccount.name.asc())
+            .all()
+        )
+        for acct in credit_accounts:
+            bal = balances_by_account.get(acct.id)
+            if bal is None:
+                continue
+            balance_current = bal.balance_current if bal.balance_current is not None else bal.balance_available
+            if balance_current is None:
+                continue
+            last4 = _last4(acct.last4_masked)
+            bills.append(
+                {
+                    "id": f"db:{acct.id}",
+                    "card_name": _as_str(acct.name) or "Card",
+                    "issuer": _as_str(acct.institution),
+                    "last4": last4 or None,
+                    "scope": (acct.scope or "PERSONAL").upper(),
+                    "due_date": None,
+                    "current_balance": float(balance_current),
+                    "statement_balance": float(balance_current),
+                    "minimum_due": None,
+                    "last_payment_date": None,
+                    "last_payment_amount": None,
+                    "last_statement_issue_date": None,
+                    "balance_subject_to_apr": None,
+                    "interest_charge_amount": None,
+                    "aprs_count": 0,
+                    "autopay": "unknown",
+                    "status": "unknown",
+                }
+            )
+        if bills:
+            fallback_used = True
+
     data: dict[str, Any] = {
-        "as_of": today.isoformat(),
+        "as_of": as_of_date.isoformat(),
         "bills": bills,
         "cash_accounts": cash_accounts,
     }
-    if errors and not bills and not cash_accounts:
+    if missing_snapshots and fallback_used:
+        names = ", ".join(sorted(set(missing_snapshots)))
+        data["bills_warning"] = (
+            f"Due dates unavailable for {names}. Showing balances only."
+        )
+    if errors:
+        error_msg = "; ".join(errors)
         if any("ADDITIONAL_CONSENT_REQUIRED" in e for e in errors):
-            data["error"] = (
+            error_msg = (
                 "Additional Plaid consent required. Re-link the Chase/Amex connection in Sync → Connections → Credentials."
             )
-        else:
-            data["error"] = "; ".join(errors)
+        if not bills:
+            data["bills_error"] = error_msg
+        if not cash_accounts:
+            data["cash_error"] = error_msg
+    if missing_snapshots and not bills:
+        data["bills_error"] = (
+            "No liabilities snapshot. Run Sync to capture liabilities."
+        )
     return data
 
 
@@ -352,6 +446,90 @@ def recurring_summary(
     bills = summary.get("bills") or []
     due_total = recurring_due_total(bills, as_of=as_of_date, range_days=range_i)
     return {"as_of": as_of_date.isoformat(), "range_days": range_i, "due_total": float(due_total), "bills": bills}
+
+
+@api_router.get("/deposits/summary")
+def deposits_summary(
+    request: Request,
+    session: Session = Depends(db_session),
+    actor: str = Depends(require_actor),
+    as_of: str = "",
+    scope: str = "personal",
+    months: str = "6",
+    account_id: str = "",
+):
+    as_of_date = _parse_date(as_of, fallback=dt.date.today())
+    try:
+        months_i = max(1, min(int(months or 6), 24))
+    except Exception:
+        months_i = 6
+    try:
+        account_id_i = int(account_id) if account_id not in ("", None) else None
+    except Exception:
+        account_id_i = None
+    summary = monthly_deposits_summary(
+        session=session,
+        scope=scope,
+        as_of=as_of_date,
+        months=months_i,
+        account_id=account_id_i,
+    )
+    return summary
+
+
+@api_router.get("/deposits/transactions")
+def deposits_transactions(
+    request: Request,
+    session: Session = Depends(db_session),
+    actor: str = Depends(require_actor),
+    account_id: str = "",
+    year: str = "",
+    month: str = "",
+):
+    try:
+        account_id_i = int(account_id)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Missing account_id.")
+    try:
+        year_i = int(year)
+        month_i = int(month)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Missing year/month.")
+    if month_i < 1 or month_i > 12:
+        raise HTTPException(status_code=400, detail="Invalid month.")
+    start = dt.date(year_i, month_i, 1)
+    end = (start.replace(day=28) + dt.timedelta(days=4)).replace(day=1) - dt.timedelta(days=1)
+    rows = (
+        session.query(ExpenseTransaction)
+        .filter(
+            ExpenseTransaction.expense_account_id == account_id_i,
+            ExpenseTransaction.posted_date >= start,
+            ExpenseTransaction.posted_date <= end,
+            ExpenseTransaction.amount > 0,
+        )
+        .order_by(ExpenseTransaction.posted_date.desc(), ExpenseTransaction.id.desc())
+        .all()
+    )
+    account = session.query(ExpenseAccount).filter(ExpenseAccount.id == account_id_i).one_or_none()
+    account_label = account.name if account else "Account"
+    last4 = _last4(account.last4_masked) if account else ""
+    if last4:
+        account_label = f"{account_label} • {last4}"
+    payload = [
+        {
+            "posted_date": r.posted_date.isoformat(),
+            "description": r.description_raw,
+            "amount": float(r.amount or 0),
+        }
+        for r in rows
+    ]
+    return {
+        "account_id": account_id_i,
+        "account_label": account_label,
+        "year": year_i,
+        "month": month_i,
+        "rows": payload,
+    }
 
 
 @api_router.get("/recurring/suggestions")
