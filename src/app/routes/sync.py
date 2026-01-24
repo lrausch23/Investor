@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import os
 import time
 import shutil
@@ -33,6 +34,7 @@ from src.core.sync_runner import run_sync
 from src.core.lot_reconstruction import rebuild_reconstructed_tax_lots_for_taxpayer
 from src.core.cashflow_supplement import import_supplemental_cashflows
 from src.db.audit import log_change
+from src.importers.adapters import ProviderError
 from src.db.models import (
     Account,
     BrokerLotClosure,
@@ -41,6 +43,7 @@ from src.db.models import (
     CorporateActionEvent,
     ExternalConnection,
     ExternalAccountMap,
+    ExternalCardStatement,
     ExternalCredential,
     ExternalFileIngest,
     ExternalHoldingSnapshot,
@@ -61,6 +64,7 @@ from src.db.models import (
 from src.core.sync_runner import AdapterConnectionContext, _adapter_for
 from src.utils.time import utcfromtimestamp
 from src.adapters.plaid_chase.client import PlaidApiError, PlaidClient
+from src.investor.cash_bills.card_statement_pdf import parse_chase_card_statement_pdf
 
 
 router = APIRouter(prefix="/sync", tags=["sync"])
@@ -83,6 +87,14 @@ def _parse_form_date(value: str) -> dt.date | None:
         except Exception:
             continue
     raise ValueError(f"Invalid date: {value!r} (use YYYY-MM-DD or MM/DD/YYYY)")
+
+
+def _sha256_path(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
 
 
 def _split_query_tokens(raw: str) -> list[str]:
@@ -450,7 +462,7 @@ def connections_create(
         )
     elif kind == "CHASE_PLAID":
         # Credentials are established via Plaid Link from the Credentials page after creation.
-        pe_raw = (os.environ.get("PLAID_ENV") or "sandbox").strip().lower() or "sandbox"
+        pe_raw = (os.environ.get("PLAID_ENV") or "production").strip().lower() or "production"
         pe = "sandbox" if pe_raw in {"dev", "development"} else pe_raw
         conn = ExternalConnection(
             name=name_u,
@@ -464,7 +476,7 @@ def connections_create(
             },
         )
     elif kind == "AMEX_PLAID":
-        pe_raw = (os.environ.get("PLAID_ENV") or "sandbox").strip().lower() or "sandbox"
+        pe_raw = (os.environ.get("PLAID_ENV") or "production").strip().lower() or "production"
         pe = "sandbox" if pe_raw in {"dev", "development"} else pe_raw
         conn = ExternalConnection(
             name=name_u,
@@ -725,7 +737,7 @@ def connection_detail(
     except Exception:
         pass
     data_dir = str(data_dir_path)
-    plaid_env_raw = str((meta.get("plaid_env") or os.environ.get("PLAID_ENV") or "sandbox")).strip().lower() or "sandbox"
+    plaid_env_raw = str((meta.get("plaid_env") or os.environ.get("PLAID_ENV") or "production")).strip().lower() or "production"
     # Plaid no longer reliably resolves a dedicated "development" hostname; normalize to sandbox.
     plaid_env = "sandbox" if plaid_env_raw in {"dev", "development"} else plaid_env_raw
     plaid_enable_investments = bool(meta.get("plaid_enable_investments") is True)
@@ -1120,6 +1132,7 @@ def connection_upload_file(
     note: str = Form(default=""),
 ):
     conn = session.query(ExternalConnection).filter(ExternalConnection.id == connection_id).one()
+    connector_u = (conn.connector or "").upper()
     meta = dict(conn.metadata_json or {})
     dd = os.path.expanduser(str(meta.get("data_dir") or ""))
     base_dir = Path(dd) if dd else (Path("data") / "external" / f"conn_{conn.id}")
@@ -1140,7 +1153,7 @@ def connection_upload_file(
                 return cand
         return path.with_name(f"{stem}-{dt.datetime.utcnow().strftime('%Y%m%d%H%M%S')}{suffix}")
 
-    uploaded_files: list[tuple[str, str, int]] = []
+    uploaded_files: list[tuple[str, Path, int, str]] = []
     invalid_exts: list[str] = []
 
     for uf in upload:
@@ -1155,14 +1168,15 @@ def connection_upload_file(
             size = int(dest.stat().st_size)
         except Exception:
             size = 0
-        uploaded_files.append((safe, dest.name, size))
+        file_hash = _sha256_path(dest)
+        uploaded_files.append((safe, dest, size, file_hash))
 
     if not meta.get("data_dir"):
         meta["data_dir"] = str(base_dir)
     conn.metadata_json = dict(meta)
     flag_modified(conn, "metadata_json")
 
-    for safe, stored, size in uploaded_files:
+    for safe, stored, size, _file_hash in uploaded_files:
         log_change(
             session,
             actor=actor,
@@ -1170,30 +1184,122 @@ def connection_upload_file(
             entity="ExternalConnection",
             entity_id=str(conn.id),
             old=None,
-            new={"file": stored, "bytes": size, "data_dir": str(base_dir)},
+            new={"file": stored.name, "bytes": size, "data_dir": str(base_dir)},
             note=note or "Uploaded offline statement file",
         )
     session.commit()
     supported_exts = {".csv", ".tsv", ".txt", ".xml"}
-    if (conn.connector or "").upper() == "RJ_OFFLINE":
+    if connector_u == "RJ_OFFLINE":
         supported_exts.update({".qfx", ".ofx"})
-    if (conn.connector or "").upper() in {"RJ_OFFLINE", "CHASE_OFFLINE", "CHASE_PLAID"}:
+    if connector_u in {"RJ_OFFLINE", "CHASE_OFFLINE", "CHASE_PLAID"}:
         supported_exts.add(".pdf")
-    for safe, stored, _size in uploaded_files:
-        ext = Path(stored).suffix.lower()
+    for safe, stored, _size, _file_hash in uploaded_files:
+        ext = stored.suffix.lower()
         if ext and ext not in supported_exts:
-            invalid_exts.append(stored)
+            invalid_exts.append(stored.name)
     if invalid_exts:
         hint = ".csv/.tsv/.txt/.xml"
-        if (conn.connector or "").upper() == "RJ_OFFLINE":
+        if connector_u == "RJ_OFFLINE":
             hint = ".qfx/.ofx (preferred), .csv/.tsv/.txt/.xml (legacy), or .pdf statements (holdings totals only)"
-        elif (conn.connector or "").upper() in {"CHASE_OFFLINE", "CHASE_PLAID"}:
+        elif connector_u == "CHASE_PLAID":
+            hint = ".csv/.tsv/.txt/.xml (or .pdf statements for holdings totals / card int-free balance)"
+        elif connector_u == "CHASE_OFFLINE":
             hint = ".csv/.tsv/.txt/.xml (or .pdf statements for holdings totals)"
         msg = urllib.parse.quote(
             f"Uploaded {len(invalid_exts)} unsupported file(s): {', '.join(invalid_exts[:5])}. "
             f"Export as {hint} and re-upload."
         )
         return RedirectResponse(url=f"/sync/connections/{connection_id}?error={msg}", status_code=303)
+
+    parse_ok = 0
+    parse_errors: list[str] = []
+    if connector_u == "CHASE_PLAID":
+        for _safe, stored, _size, file_hash in uploaded_files:
+            if stored.suffix.lower() != ".pdf":
+                continue
+            try:
+                existing_stmt = (
+                    session.query(ExternalCardStatement)
+                    .filter(
+                        ExternalCardStatement.connection_id == conn.id,
+                        ExternalCardStatement.file_hash == file_hash,
+                    )
+                    .first()
+                )
+                parsed = parse_chase_card_statement_pdf(stored)
+                last4 = str(parsed.get("last4") or "").strip() or None
+                exp_acct_id = None
+                if last4:
+                    q = session.query(ExpenseAccount).filter(ExpenseAccount.last4_masked == last4)
+                    broker = str(conn.broker or "").strip()
+                    if broker:
+                        q = q.filter(func.upper(ExpenseAccount.institution).like(f"%{broker.upper()}%"))
+                    match = q.order_by(ExpenseAccount.id.desc()).first()
+                    if match is not None:
+                        exp_acct_id = int(match.id)
+                if existing_stmt is not None:
+                    existing_stmt.expense_account_id = exp_acct_id
+                    existing_stmt.last4 = last4
+                    existing_stmt.statement_period_start = parsed.get("statement_period_start")
+                    existing_stmt.statement_period_end = parsed.get("statement_period_end")
+                    existing_stmt.payment_due_date = parsed.get("payment_due_date")
+                    existing_stmt.statement_balance = (
+                        float(parsed["statement_balance"]) if parsed.get("statement_balance") is not None else None
+                    )
+                    existing_stmt.interest_saving_balance = (
+                        float(parsed["interest_saving_balance"]) if parsed.get("interest_saving_balance") is not None else None
+                    )
+                    existing_stmt.minimum_payment_due = (
+                        float(parsed["minimum_payment_due"]) if parsed.get("minimum_payment_due") is not None else None
+                    )
+                    existing_stmt.pay_over_time_json = parsed.get("pay_over_time")
+                    existing_stmt.source_file = str(parsed.get("source_file") or stored.name)
+                else:
+                    session.add(
+                        ExternalCardStatement(
+                            connection_id=conn.id,
+                            expense_account_id=exp_acct_id,
+                            last4=last4,
+                            statement_period_start=parsed.get("statement_period_start"),
+                            statement_period_end=parsed.get("statement_period_end"),
+                            payment_due_date=parsed.get("payment_due_date"),
+                            statement_balance=float(parsed["statement_balance"])
+                            if parsed.get("statement_balance") is not None
+                            else None,
+                            interest_saving_balance=float(parsed["interest_saving_balance"])
+                            if parsed.get("interest_saving_balance") is not None
+                            else None,
+                            minimum_payment_due=float(parsed["minimum_payment_due"])
+                            if parsed.get("minimum_payment_due") is not None
+                            else None,
+                            pay_over_time_json=parsed.get("pay_over_time"),
+                            source_file=str(parsed.get("source_file") or stored.name),
+                            file_hash=file_hash,
+                        )
+                    )
+                parse_ok += 1
+            except ProviderError as e:
+                parse_errors.append(f"{stored.name}: {e}")
+            except Exception as e:
+                parse_errors.append(f"{stored.name}: {type(e).__name__}: {e}")
+        if parse_ok or parse_errors:
+            session.commit()
+
+    ok_msg = ""
+    error_msg = ""
+    if parse_ok:
+        ok_msg = f"Parsed {parse_ok} Chase card statement PDF(s)."
+    if parse_errors:
+        suffix = "; ".join(parse_errors[:2])
+        extra = "" if len(parse_errors) <= 2 else f" (+{len(parse_errors) - 2} more)"
+        error_msg = f"Statement PDF parse issue: {suffix}{extra}"
+    if ok_msg or error_msg:
+        qs = []
+        if ok_msg:
+            qs.append(f"ok={urllib.parse.quote(ok_msg)}")
+        if error_msg:
+            qs.append(f"error={urllib.parse.quote(error_msg)}")
+        return RedirectResponse(url=f"/sync/connections/{connection_id}?{'&'.join(qs)}", status_code=303)
     return RedirectResponse(url=f"/sync/connections/{connection_id}", status_code=303)
 
 
@@ -1415,8 +1521,8 @@ def connection_auth(
             query_id_display = qid_plain
     from src.app.main import templates
 
-    plaid_env_raw = (conn.metadata_json or {}).get("plaid_env") or (os.environ.get("PLAID_ENV") or "sandbox")
-    plaid_env_norm = str(plaid_env_raw or "sandbox").strip().lower() or "sandbox"
+    plaid_env_raw = (conn.metadata_json or {}).get("plaid_env") or (os.environ.get("PLAID_ENV") or "production")
+    plaid_env_norm = str(plaid_env_raw or "production").strip().lower() or "production"
     if plaid_env_norm in {"dev", "development"}:
         plaid_env_norm = "sandbox"
     plaid_enable_investments = bool((conn.metadata_json or {}).get("plaid_enable_investments") is True)
@@ -1521,8 +1627,8 @@ def plaid_link_token(
         raise HTTPException(status_code=400, detail="APP_SECRET_KEY is required to save credentials.")
     try:
         redirect_uri = (os.environ.get("PLAID_REDIRECT_URI") or "").strip() or None
-        env = (conn.metadata_json or {}).get("plaid_env") or (os.environ.get("PLAID_ENV") or "sandbox")
-        env_s = str(env).strip().lower() if env is not None else "sandbox"
+        env = (conn.metadata_json or {}).get("plaid_env") or (os.environ.get("PLAID_ENV") or "production")
+        env_s = str(env).strip().lower() if env is not None else "production"
         if env_s in {"dev", "development"}:
             env_s = "sandbox"
         if env_s == "production" and not redirect_uri:

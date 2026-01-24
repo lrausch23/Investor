@@ -44,15 +44,11 @@
       {% set liab_last = last_run.coverage_json.get("liability_snapshot_last_asof") %}
       {% set liab_attempt = last_run.coverage_json.get("liability_snapshot_attempted_at") %}
       {% set liab_stale = last_run.coverage_json.get("liability_snapshot_used_stale") %}
-      {% set liab_skipped = last_run.coverage_json.get("liability_snapshots_skipped_recent") %}
       {% if liab_last or liab_attempt %}
         <div class="ui-muted" style="margin-top:6px">
           Liabilities snapshot: {{ liab_last|local_dt if liab_last else "—" }}
           {% if liab_stale %}
             <span class="ui-badge ui-badge--outline" style="margin-left:6px">stale</span>
-          {% endif %}
-          {% if liab_skipped %}
-            <span class="ui-muted">· skipped (fresh)</span>
           {% endif %}
           {% if liab_attempt %}
             <span class="ui-muted">· last attempt {{ liab_attempt|local_dt }}</span>

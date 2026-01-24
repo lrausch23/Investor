@@ -178,6 +178,46 @@ def ensure_sqlite_schema(engine: Engine) -> None:
         except Exception:
             pass
 
+    if "external_card_statements" not in existing_tables:
+        try:
+            with engine.begin() as conn:
+                conn.execute(
+                    text(
+                        """
+                        CREATE TABLE external_card_statements (
+                            id INTEGER PRIMARY KEY,
+                            connection_id INTEGER NOT NULL,
+                            expense_account_id INTEGER,
+                            last4 VARCHAR(8),
+                            statement_period_start DATE,
+                            statement_period_end DATE,
+                            payment_due_date DATE,
+                            statement_balance NUMERIC(20,2),
+                            interest_saving_balance NUMERIC(20,2),
+                            minimum_payment_due NUMERIC(20,2),
+                            pay_over_time_json JSON,
+                            source_file TEXT,
+                            file_hash VARCHAR(64) NOT NULL,
+                            created_at DATETIME NOT NULL,
+                            FOREIGN KEY(connection_id) REFERENCES external_connections(id),
+                            FOREIGN KEY(expense_account_id) REFERENCES expense_accounts(id),
+                            UNIQUE(connection_id, file_hash)
+                        )
+                        """
+                    )
+                )
+                conn.execute(
+                    text(
+                        "CREATE INDEX ix_external_card_statements_conn_last4 ON external_card_statements(connection_id, last4)"
+                    )
+                )
+        except Exception:
+            pass
+    else:
+        cols = _table_columns(engine, "external_card_statements")
+        if "pay_over_time_json" not in cols:
+            _add_column(engine, "external_card_statements", "pay_over_time_json TEXT")
+
     if "expense_account_balances" not in existing_tables:
         try:
             with engine.begin() as conn:

@@ -58,11 +58,12 @@ Manage card charges includes **Card**, **Member**, **Merchant**, and **Descripti
 ## Technical notes
 
 ### Data sources
-- **Card bills**: Plaid liabilities snapshots captured during Sync (statement balances, due dates, last payment). Snapshots are cached to avoid repeated live calls.
+- **Card bills**: Plaid liabilities snapshots captured during Sync (statement balances, due dates, last payment).
+  - Optional: Chase card statement PDFs can supply **Interest-free balance** for Pay Over Time cards.
 - **Checking balances**: Plaid accounts.
 - **Checking transactions**: Plaid transactions (used for recurring bill detection).
 - **Card transactions**: Plaid transactions (used for recurring card charges).
-  - The dashboard reads from stored snapshots to avoid live Plaid calls.
+  - The dashboard reads from stored snapshots; no live Plaid calls on page load.
 
 ### Tables
 - `recurring_bill`, `recurring_bill_rule`, `recurring_bill_ignore`

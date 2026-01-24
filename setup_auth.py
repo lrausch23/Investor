@@ -76,9 +76,9 @@ def _require_env(name: str) -> str:
 
 
 def _plaid_client() -> plaid_api.PlaidApi:
-    env = (os.environ.get("PLAID_ENV") or "sandbox").strip().lower()
+    env = (os.environ.get("PLAID_ENV") or "production").strip().lower()
     if env not in {"sandbox", "development", "production"}:
-        env = "sandbox"
+        env = "production"
 
     # Defaults match plaid-python docs.
     host_by_env = {
@@ -109,7 +109,7 @@ class LinkContext:
 
 
 def _make_link_token(*, client: plaid_api.PlaidApi, received_redirect_uri: str | None) -> LinkContext:
-    env = (os.environ.get("PLAID_ENV") or "sandbox").strip().lower()
+    env = (os.environ.get("PLAID_ENV") or "production").strip().lower()
     redirect_uri = (os.environ.get("PLAID_REDIRECT_URI") or "").strip() or None
 
     # Products: investments + transactions.
@@ -270,4 +270,3 @@ if __name__ == "__main__":
     _db_init()
     port = int(os.environ.get("PORT", "5000") or "5000")
     app.run(host="127.0.0.1", port=port, debug=True)
-

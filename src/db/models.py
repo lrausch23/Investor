@@ -655,6 +655,32 @@ class ExternalLiabilitySnapshot(Base):
     created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=utcnow, nullable=False)
 
 
+class ExternalCardStatement(Base):
+    __tablename__ = "external_card_statements"
+    __table_args__ = (
+        UniqueConstraint("connection_id", "file_hash"),
+        Index("ix_external_card_statements_conn_last4", "connection_id", "last4"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    connection_id: Mapped[int] = mapped_column(ForeignKey("external_connections.id"), nullable=False)
+    expense_account_id: Mapped[Optional[int]] = mapped_column(ForeignKey("expense_accounts.id"))
+    last4: Mapped[Optional[str]] = mapped_column(String(8))
+    statement_period_start: Mapped[Optional[dt.date]] = mapped_column(Date)
+    statement_period_end: Mapped[Optional[dt.date]] = mapped_column(Date)
+    payment_due_date: Mapped[Optional[dt.date]] = mapped_column(Date)
+    statement_balance: Mapped[Optional[float]] = mapped_column(Numeric(20, 2))
+    interest_saving_balance: Mapped[Optional[float]] = mapped_column(Numeric(20, 2))
+    minimum_payment_due: Mapped[Optional[float]] = mapped_column(Numeric(20, 2))
+    pay_over_time_json: Mapped[Optional[dict[str, Any]]] = mapped_column(JSON)
+    source_file: Mapped[Optional[str]] = mapped_column(Text)
+    file_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=utcnow, nullable=False)
+
+    connection: Mapped["ExternalConnection"] = relationship()
+    expense_account: Mapped[Optional["ExpenseAccount"]] = relationship()
+
+
 class ExternalFileIngest(Base):
     __tablename__ = "external_file_ingests"
     __table_args__ = (UniqueConstraint("connection_id", "file_hash"),)

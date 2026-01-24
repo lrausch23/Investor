@@ -235,6 +235,8 @@ a:focus-visible, button:focus-visible, summary:focus-visible, input:focus-visibl
 .cashbills-control__label { font-size: 12px; color: var(--ui-muted); }
 .cashbills-control__input { border: 1px solid #d1d5db; border-radius: 10px; padding: 6px 10px; background: #fff; min-width: 140px; }
 .cashbills-control--date { min-width: 170px; }
+.cash-bills-page .ui-card { border-color: #8cb99c; border-width: 2px; }
+.cash-bills-page .cashbills-badge--overdue { background: #ef4444; border-color: #ef4444; color: #fff; }
 .cash-bills-page .container { max-width: 1720px; width: 100%; margin: 0 auto; padding-left: 24px; padding-right: 24px; }
 .cash-bills-main { display: grid; grid-template-columns: minmax(0, 2.2fr) minmax(0, 1.2fr); gap: 24px; align-items: start; margin-top: 12px; }
 .cash-bills-left, .cash-bills-right { min-width: 0; overflow: hidden; }
@@ -250,6 +252,8 @@ a:focus-visible, button:focus-visible, summary:focus-visible, input:focus-visibl
 .cashbills-card-name { font-weight: 600; }
 .cashbills-finance-meta { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .cashbills-finance-meta .btn--link { padding: 0; font-size: 0.85em; }
+.cashbills-interest-cell { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
+.cashbills-payover-btn { padding: 0; font-size: 0.85em; }
 .cashbills-coverage { display: grid; gap: 6px; margin-top: 6px; }
 .cashbills-coverage__row { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
 .cashbills-coverage__net { font-weight: 700; }
@@ -302,12 +306,37 @@ a:focus-visible, button:focus-visible, summary:focus-visible, input:focus-visibl
 .cashbills-finance-detail-table td:nth-child(2) { white-space: normal; }
 .cashbills-finance-detail-table th:nth-child(3),
 .cashbills-finance-detail-table td:nth-child(3) { text-align: right; }
+.cashbills-payover-table { table-layout: auto; }
+.cashbills-payover-table th,
+.cashbills-payover-table td { white-space: nowrap; }
+.cashbills-payover-table th:nth-child(1),
+.cashbills-payover-table td:nth-child(1) { white-space: normal; overflow: visible; text-overflow: initial; }
+.cashbills-payover-table th:nth-child(n+3),
+.cashbills-payover-table td:nth-child(n+3) { text-align: right; }
+.cashbills-payover-total { font-weight: 600; }
+.cashbills-calendar { margin-top: 8px; }
+.cashbills-calendar__header { flex-wrap: wrap; }
+.cashbills-calendar__heading { display: flex; flex-direction: column; gap: 2px; }
+.cashbills-calendar__nav { display: flex; gap: 6px; align-items: center; }
+.cashbills-calendar__nav .btn { padding: 4px 8px; }
+.cashbills-calendar__grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 6px; margin-top: 8px; }
+.cashbills-calendar__dow { font-size: 11px; color: var(--ui-muted); text-transform: uppercase; letter-spacing: 0.03em; text-align: center; }
+.cashbills-calendar__cell { border: 1px solid #e5e7eb; border-radius: 10px; padding: 6px 8px; min-height: 52px; display: flex; flex-direction: column; justify-content: space-between; background: #fff; }
+.cashbills-calendar__cell--empty { border: 0; background: transparent; }
+.cashbills-calendar__cell--due { border-color: #cbd5e1; background: #f8fafc; }
+.cashbills-calendar__details { display: flex; flex-direction: column; gap: 4px; }
+.cashbills-calendar__day { font-size: 12px; font-weight: 600; color: #111827; }
+.cashbills-calendar__amount { font-size: 12px; color: #374151; }
+.cashbills-calendar__cell--due .cashbills-calendar__amount { color: #b91c1c; font-weight: 600; }
+.cashbills-calendar__link { font-size: 11px; }
+.cashbills-calendar__title { font-size: 13px; color: #111827; font-weight: 600; }
 
 .cashbills-modal { position: fixed; inset: 0; display: none; align-items: center; justify-content: center; background: rgba(15, 23, 42, 0.45); z-index: 2500; }
 .cashbills-modal.is-open { display: flex; }
 .cashbills-modal__dialog { background: #fff; border-radius: 14px; width: min(980px, 94vw); max-height: 90vh; overflow: auto; padding: 16px 18px; box-shadow: 0 20px 45px rgba(15, 23, 42, 0.2); }
 .cashbills-modal__header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .cashbills-modal__actions { display: flex; gap: 8px; align-items: center; }
+.cashbills-card-applepay.is-active { background: #111827; border-color: #111827; color: #fff; }
 .cashbills-modal__tabs { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
 .cashbills-modal__filters { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin-top: 10px; }
 .cashbills-modal__filter { display: grid; gap: 4px; font-size: 12px; color: var(--ui-muted); }

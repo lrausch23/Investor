@@ -23,7 +23,7 @@ Create `.env` entries (or a separate file and `source` it):
 
 - `PLAID_CLIENT_ID`
 - `PLAID_SECRET`
-- `PLAID_ENV` (`sandbox` default; use `production` for real Chase)
+- `PLAID_ENV` (`production` default; use `sandbox` for testing)
 - `PLAID_REDIRECT_URI` (required for Chase OAuth in production; must match what you configured in Plaid Dashboard “OAuth redirect URIs”; recommended: an HTTPS tunnel URL like `https://<your-tunnel>/sync/plaid/oauth-return`)
  - `APP_SECRET_KEY` (required to store credentials encrypted in the Investor DB)
  - `NETWORK_ENABLED=1` (required for live network calls)
@@ -33,6 +33,15 @@ Optional:
 
 Notes:
 - Plaid no longer supports `development.plaid.com`. Use `sandbox` or `production`.
+
+## Plaid Dashboard products (production)
+
+Enable these products for your Plaid application:
+- `transactions` (required; used for bank/credit sync)
+- `liabilities` (required for Cash & Bills statement balances/due dates)
+- `investments` (optional; required if you enable investment holdings/transactions in Investor)
+
+After enabling new products, re-link the Plaid item in Investor so the access token has the new scopes.
 
 ## UI workflow
 
@@ -53,11 +62,18 @@ To sync Chase **investment holdings** into the Holdings page:
 4) Run `Sync now`
 
 ### Liabilities snapshots (card bills)
-Liabilities are fetched via `/liabilities/get` and stored as **snapshots**. To avoid rate limits:
-- If the last successful liabilities snapshot is **< 24 hours old**, the sync **skips** the API call and reuses stored data.
+Liabilities are fetched via `/liabilities/get` and stored as **snapshots**.
+- Each sync attempts a fresh liabilities fetch.
 - If Plaid returns **429/5xx**, the sync **falls back to the latest stored snapshot** and does not overwrite it.
 
 Cash & Bills reads from the stored snapshots (no live calls on page load).
+
+### Chase card statement PDFs (Interest-free balance)
+If you use Chase Pay Over Time, the **Interest-free balance** can be uploaded from a PDF statement:
+- Upload the Chase credit card PDF under Sync → Connection → Statement files.
+- Requires the `pdftotext` utility (Poppler) to extract text.
+- Parsed fields include interest-free balance, statement balance, minimum due, and payment due date (when present).
+- Cash & Bills uses the interest-free balance for liquidity totals when available.
 
 ### Investments endpoints are gated
 Investment endpoints are only called for items that actually include investment accounts. Non‑investment items skip `/investments/holdings/get`.

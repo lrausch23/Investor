@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import datetime as dt
-from typing import Literal, Optional, TypedDict
+from typing import Any, Literal, Optional, TypedDict
 
 
 BillStatus = Literal["overdue", "due_soon", "upcoming", "paid"]
@@ -16,6 +16,8 @@ class CreditCardBillRow(TypedDict):
     due_date: str
     current_balance: Optional[float]
     statement_balance: float
+    interest_saving_balance: Optional[float]
+    pay_over_time: Optional[dict[str, Any]]
     minimum_due: Optional[float]
     last_payment_date: Optional[str]
     last_payment_amount: Optional[float]

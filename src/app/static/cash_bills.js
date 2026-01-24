@@ -46,12 +46,19 @@
     depositsModalError: null,
     depositsModalRows: [],
     depositsModalContext: null,
+    calendarMonthOffset: 0,
+    calendarModalOpen: false,
+    calendarModalContext: null,
+    calendarModalItems: [],
+    payOverModalOpen: false,
+    payOverModalContext: null,
     cardSuggestionsLoading: false,
     cardSuggestionsError: null,
     cardSuggestions: [],
     cardRecentLoading: false,
     cardRecentError: null,
     cardRecentCharges: [],
+    cardRecentAppleOnly: false,
     cardMemberFilter: "ALL",
     cardAccountFilter: "ALL",
     cardModalOpen: false,
@@ -104,6 +111,7 @@
     cardModalFilters: document.getElementById("cashBillsCardModalFilters"),
     cardModalClose: document.getElementById("cashBillsCardModalClose"),
     cardModalRescan: document.getElementById("cashBillsCardModalRescan"),
+    cardModalApplePay: document.getElementById("cashBillsCardModalApplePay"),
     modal: document.getElementById("cashBillsManageModal"),
     modalContent: document.getElementById("cashBillsModalContent"),
     modalTabs: document.getElementById("cashBillsModalTabs"),
@@ -117,6 +125,14 @@
     depositsModalContent: document.getElementById("cashBillsDepositsContent"),
     depositsModalClose: document.getElementById("cashBillsDepositsClose"),
     depositsModalTitle: document.getElementById("cashBillsDepositsTitle"),
+    payOverModal: document.getElementById("cashBillsPayOverModal"),
+    payOverModalContent: document.getElementById("cashBillsPayOverContent"),
+    payOverModalClose: document.getElementById("cashBillsPayOverClose"),
+    payOverModalTitle: document.getElementById("cashBillsPayOverTitle"),
+    calendarModal: document.getElementById("cashBillsCalendarModal"),
+    calendarModalContent: document.getElementById("cashBillsCalendarContent"),
+    calendarModalClose: document.getElementById("cashBillsCalendarClose"),
+    calendarModalTitle: document.getElementById("cashBillsCalendarTitle"),
   };
 
   const currency = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 2 });
@@ -127,6 +143,16 @@
       return `${base || "Card"} • ${mask}`;
     }
     return base || "—";
+  };
+
+  const formatCardBillLabel = (bill) => {
+    if (!bill) return "Card";
+    const issuer = (bill.issuer || "").trim();
+    const name = (bill.card_name || "").trim();
+    let label = [issuer, name].filter(Boolean).join(" ").trim();
+    if (!label) label = "Card";
+    if (bill.last4) label = `${label} • ${bill.last4}`;
+    return label;
   };
 
   const formatPlaidAccountId = (value) => {
@@ -282,6 +308,21 @@
     return key === filter;
   };
 
+  const isApplePayCharge = (row) => {
+    const candidates = [row.description_sample, row.merchant_display, row.name]
+      .map((value) => (value || "").toString().trim())
+      .filter(Boolean);
+    return candidates.some((value) => {
+      const normalized = value.replace(/\*/g, " ");
+      return /apl\s*pay/i.test(normalized);
+    });
+  };
+
+  const matchesApplePayFilter = (row) => {
+    if (!state.cardRecentAppleOnly) return true;
+    return isApplePayCharge(row);
+  };
+
   const applyCardFilters = (rows) => {
     return rows.filter((row) => matchesMemberFilter(row) && matchesAccountFilter(row));
   };
@@ -292,7 +333,7 @@
       cardBalancesDue: "Card balances due",
       netAfterBills: "Net after bills",
       nextBillDue: "Next bill due",
-      cardBalancesDueTooltip: "Sum of statement balances with due dates in the selected range.",
+      cardBalancesDueTooltip: "Sum of Interest-free balances (fallback to statement balance) with due dates in the selected range.",
     },
     coverage: {
       title: "Bill coverage",
@@ -305,7 +346,7 @@
     statuses: {
       overdue: "Overdue",
       due_soon: "Due soon",
-      upcoming: "Due soon",
+      upcoming: "Upcoming",
       paid: "Paid",
       unknown: "Unknown",
     },
@@ -417,6 +458,18 @@
     return d.toLocaleDateString("en-US", { month: "short", year: "numeric" });
   };
 
+  const formatMonthLabelLong = (year, month) => {
+    const d = new Date(Number(year), Number(month || 1) - 1, 1);
+    if (Number.isNaN(d.getTime())) return "—";
+    return d.toLocaleDateString("en-US", { month: "long", year: "numeric" });
+  };
+
+  const formatDateFromParts = (year, monthIndex, day) => {
+    const d = new Date(Number(year), Number(monthIndex), Number(day));
+    if (Number.isNaN(d.getTime())) return "—";
+    return d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+  };
+
   const relativeTime = (iso) => {
     if (!iso) return "—";
     const d = clampDate(iso);
@@ -523,6 +576,14 @@
     return value === "upcoming" ? "due_soon" : value;
   };
 
+  const matchesStatusFilter = (status, statusFilter) => {
+    if (statusFilter === "all") return true;
+    if (statusFilter === "upcoming") {
+      return status === "overdue" || status === "due_soon" || status === "upcoming";
+    }
+    return status === statusFilter;
+  };
+
   const getRecurringStatus = (bill) => {
     let status = normalizeStatus(bill.status || "unknown");
     if (status === "unknown" && !bill.due_date && bill.last_payment_date) {
@@ -533,7 +594,7 @@
 
   const withinRange = (days, range, status) => {
     if (status === "overdue") return days < 0 && Math.abs(days) <= range;
-    if (status === "due_soon") return days >= 0 && days <= range;
+    if (status === "due_soon" || status === "upcoming") return days >= 0 && days <= range;
     return Math.abs(days) <= range;
   };
 
@@ -547,7 +608,8 @@
         }
         const due = clampDate(b.due_date);
         const days = daysBetween(asOfDate, due);
-        if (statusFilter !== "all" && status !== statusFilter) return false;
+        if (!matchesStatusFilter(status, statusFilter)) return false;
+        if (statusFilter === "upcoming" && status === "overdue") return true;
         return withinRange(days, rangeDays, status);
       })
       .sort((a, b) => {
@@ -623,11 +685,12 @@
     return bills
       .filter((b) => {
         const status = getRecurringStatus(b);
-        if (statusFilter !== "all" && status !== statusFilter) return false;
+        if (!matchesStatusFilter(status, statusFilter)) return false;
         const dueSource = getRecurringDueDate(b);
         if (!dueSource) return statusFilter === "unknown" || statusFilter === "all";
         const due = clampDate(dueSource);
         const days = daysBetween(asOfDate, due);
+        if (statusFilter === "upcoming" && status === "overdue") return true;
         return withinRange(days, rangeDays, status);
       })
       .sort((a, b) => {
@@ -643,6 +706,13 @@
         if (aDue === bDue) return (a.name || "").localeCompare(b.name || "");
         return aDue > bDue ? 1 : -1;
       });
+  };
+
+  const billLiquidityAmount = (bill) => {
+    if (bill.interest_saving_balance != null && Number(bill.interest_saving_balance) > 0) {
+      return Number(bill.interest_saving_balance) || 0;
+    }
+    return Number(bill.statement_balance || 0);
   };
 
   const computeSummary = (bills, cash, asOfDate, rangeDays, recurringDueTotal) => {
@@ -662,12 +732,12 @@
       const due = clampDate(b.due_date);
       const days = daysBetween(asOfDate, due);
       if (Math.abs(days) > rangeDays) return;
-      cardDueTotal += Number(b.statement_balance || 0);
+      cardDueTotal += billLiquidityAmount(b);
       const lastPaid = b.last_payment_date ? clampDate(b.last_payment_date) >= due : false;
       if (days < 0 || lastPaid) return;
       if (!nextDueDate || due < nextDueDate) {
         nextDueDate = due;
-        nextDueAmount = Number(b.statement_balance || 0);
+        nextDueAmount = billLiquidityAmount(b);
         nextDueCard = b.card_name;
       }
     });
@@ -748,7 +818,170 @@
     return total;
   };
 
+  const collectCalendarDayItems = (bills, charges, cardBills, asOfDate, year, monthIndex, day) => {
+    const dayNum = Number(day);
+    if (!dayNum || Number.isNaN(dayNum)) return [];
+    const isCurrentMonth = year === asOfDate.getFullYear() && monthIndex === asOfDate.getMonth();
+    const items = [];
+
+    const addItem = (type, label, subLabel, amount) => {
+      const val = Number(amount) || 0;
+      if (val <= 0) return;
+      items.push({
+        type,
+        label: (label || "—").toString(),
+        subLabel: (subLabel || "").toString(),
+        amount: val,
+      });
+    };
+
+    const dueDateFromDay = (dueDay) => (dueDay ? dueDateForMonth(year, monthIndex, dueDay) : null);
+
+    bills.forEach((b) => {
+      const status = getRecurringStatus(b);
+      if (isCurrentMonth && status === "paid") return;
+      const dueDayRaw = b.due_day_of_month != null ? Number(b.due_day_of_month) : null;
+      const dueDay = dueDayRaw || dayOfMonthFromIso(getRecurringDueDate(b));
+      const dueDate = dueDateFromDay(dueDay);
+      if (!dueDate || dueDate.getDate() !== dayNum) return;
+      const label = (b.name || "").trim() || "Bill";
+      const accountLabel = accountLabelFromRow(b) || b.source_account_name || "Checking";
+      addItem("Monthly bill", label, accountLabel, expectedAmount(b));
+    });
+
+    charges.forEach((c) => {
+      const status = normalizeStatus(c.status || "unknown");
+      if (isCurrentMonth && status === "paid") return;
+      const dueDayRaw = c.due_day_of_month != null ? Number(c.due_day_of_month) : null;
+      const dueDay = dueDayRaw || dayOfMonthFromIso(c.due_date || c.last_charge_date);
+      const dueDate = dueDateFromDay(dueDay);
+      if (!dueDate || dueDate.getDate() !== dayNum) return;
+      const label = formatChargeLabel(c.name, c.merchant_display, c.description_sample);
+      const accountLabel = accountLabelFromRow(c) || c.source_account_name || "Card";
+      addItem("Card charge", label, accountLabel, expectedChargeAmount(c));
+    });
+
+    cardBills.forEach((b) => {
+      if (!b || !b.due_date) return;
+      if (isCurrentMonth) {
+        const status = deriveStatus(b, asOfDate);
+        if (status === "paid") return;
+      }
+      const due = parseDate(b.due_date);
+      if (!due) return;
+      if (due.getFullYear() !== year || due.getMonth() !== monthIndex || due.getDate() !== dayNum) return;
+      addItem("Card bill", formatCardBillLabel(b), "", billLiquidityAmount(b));
+    });
+
+    return items;
+  };
+
+  const buildMonthlyCalendar = (bills, charges, cardBills, asOfDate, monthOffset = 0) => {
+    const offset = Number(monthOffset) || 0;
+    const monthBase = new Date(asOfDate.getFullYear(), asOfDate.getMonth() + offset, 1);
+    const year = monthBase.getFullYear();
+    const monthIndex = monthBase.getMonth();
+    const isCurrentMonth = year === asOfDate.getFullYear() && monthIndex === asOfDate.getMonth();
+    const daysInMonth = new Date(year, monthIndex + 1, 0).getDate();
+    const firstDow = new Date(year, monthIndex, 1).getDay();
+    const totals = Array.from({ length: daysInMonth }, () => 0);
+
+    const addAmount = (dueDate, amount) => {
+      if (!dueDate || amount == null) return;
+      const due = clampDate(dueDate);
+      if (due.getFullYear() !== year || due.getMonth() !== monthIndex) return;
+      const val = Number(amount) || 0;
+      if (val <= 0) return;
+      totals[due.getDate() - 1] += val;
+    };
+
+    const dueDateFromDay = (day) => (day ? dueDateForMonth(year, monthIndex, day) : null);
+
+    bills.forEach((b) => {
+      const status = getRecurringStatus(b);
+      if (isCurrentMonth && status === "paid") return;
+      const dueDayRaw = b.due_day_of_month != null ? Number(b.due_day_of_month) : null;
+      const dueDay = dueDayRaw || dayOfMonthFromIso(getRecurringDueDate(b));
+      const dueDate = dueDateFromDay(dueDay);
+      if (!dueDate) return;
+      addAmount(dueDate, expectedAmount(b));
+    });
+
+    charges.forEach((c) => {
+      const status = normalizeStatus(c.status || "unknown");
+      if (isCurrentMonth && status === "paid") return;
+      const dueDayRaw = c.due_day_of_month != null ? Number(c.due_day_of_month) : null;
+      const dueDay = dueDayRaw || dayOfMonthFromIso(c.due_date || c.last_charge_date);
+      const dueDate = dueDateFromDay(dueDay);
+      if (!dueDate) return;
+      addAmount(dueDate, expectedChargeAmount(c));
+    });
+
+    cardBills.forEach((b) => {
+      if (!b || !b.due_date) return;
+      if (isCurrentMonth) {
+        const status = deriveStatus(b, asOfDate);
+        if (status === "paid") return;
+      }
+      addAmount(b.due_date, billLiquidityAmount(b));
+    });
+
+    const dowLabels = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+    const header = dowLabels.map((d) => `<div class="cashbills-calendar__dow">${d}</div>`).join("");
+
+    const cells = [];
+    for (let i = 0; i < firstDow; i += 1) {
+      cells.push(`<div class="cashbills-calendar__cell cashbills-calendar__cell--empty"></div>`);
+    }
+    for (let day = 1; day <= daysInMonth; day += 1) {
+      const amt = totals[day - 1] || 0;
+      const amountLabel = amt > 0 ? currency.format(amt) : "-";
+      const dueClass = amt > 0 ? " cashbills-calendar__cell--due" : "";
+      const detailsLink =
+        amt > 0
+          ? `<button class="btn btn--link btn--sm cashbills-calendar__link" type="button" data-calendar-year="${year}" data-calendar-month="${monthIndex + 1}" data-calendar-day="${day}">Items</button>`
+          : "";
+      cells.push(`
+        <div class="cashbills-calendar__cell${dueClass}">
+          <div class="cashbills-calendar__day">${day}</div>
+          <div class="cashbills-calendar__details">
+            <div class="cashbills-calendar__amount ui-tabular-nums">${amountLabel}</div>
+            ${detailsLink}
+          </div>
+        </div>
+      `);
+    }
+    while (cells.length % 7 !== 0) {
+      cells.push(`<div class="cashbills-calendar__cell cashbills-calendar__cell--empty"></div>`);
+    }
+
+    const monthLabel = formatMonthLabelLong(year, monthIndex + 1);
+    return `
+      <div class="cashbills-monthly-divider"></div>
+      <div class="cashbills-monthly-header cashbills-calendar__header">
+        <div class="cashbills-calendar__heading">
+          <div class="ui-muted">Monthly calendar</div>
+          <div class="cashbills-calendar__title">${monthLabel}</div>
+        </div>
+        <div class="cashbills-calendar__nav">
+          <button class="btn btn--secondary btn--sm" type="button" id="cashBillsCalendarPrev" aria-label="Previous month">Prev</button>
+          <button class="btn btn--secondary btn--sm" type="button" id="cashBillsCalendarNext" aria-label="Next month">Next</button>
+        </div>
+      </div>
+      <div class="cashbills-calendar">
+        <div class="cashbills-calendar__grid">
+          ${header}
+          ${cells.join("")}
+        </div>
+      </div>
+      <div class="ui-muted" style="margin-top:6px">Amounts shown are due in this month.</div>
+    `;
+  };
+
   const typicalCardBillAmount = (bill) => {
+    if (bill.interest_saving_balance != null && Number(bill.interest_saving_balance) > 0) {
+      return Number(bill.interest_saving_balance) || 0;
+    }
     if (bill.last_payment_amount != null && Number(bill.last_payment_amount) > 0) {
       return Number(bill.last_payment_amount) || 0;
     }
@@ -904,13 +1137,15 @@
         const days = due ? daysBetween(asOfDate, due) : null;
         const status = normalizeStatus(hasDue ? (b.__status || deriveStatus(b, asOfDate)) : "unknown");
         const statusLabel = COPY.statuses[status] || status.replace("_", " ");
+        const overdueClass = status === "overdue" ? " cashbills-badge--overdue" : "";
         const statusClass =
-          status === "overdue" ? "ui-badge--bad" : status === "due_soon" ? "ui-badge--risk" : status === "paid" ? "ui-badge--safe" : "ui-badge--neutral";
+          (status === "overdue" ? "ui-badge--bad" : status === "due_soon" ? "ui-badge--risk" : status === "paid" ? "ui-badge--safe" : "ui-badge--neutral") +
+          overdueClass;
         let daysLabel = "—";
         let daysClass = "ui-badge--outline";
         if (days != null) {
           daysLabel = days === 0 ? "Due today" : days < 0 ? `${Math.abs(days)}d overdue` : `${days}d left`;
-          daysClass = days < 0 ? "ui-badge--bad" : days <= 7 ? "ui-badge--risk" : "ui-badge--outline";
+          daysClass = days < 0 ? "ui-badge--bad cashbills-badge--overdue" : days <= 7 ? "ui-badge--risk" : "ui-badge--outline";
         }
         const dueMeta =
           status === "paid"
@@ -919,6 +1154,18 @@
         const cardLabel = `${b.issuer ? b.issuer + " " : ""}${b.card_name}${b.last4 ? " • " + b.last4 : ""}`;
         const lastPaymentDate = b.last_payment_date ? formatDate(b.last_payment_date) : "—";
         const lastPaymentAmt = b.last_payment_amount != null ? currency.format(b.last_payment_amount) : "—";
+        const interestSaving = b.interest_saving_balance != null ? currency.format(b.interest_saving_balance) : "—";
+        const payOverRows = b.pay_over_time && Array.isArray(b.pay_over_time.rows) ? b.pay_over_time.rows : [];
+        const payOverBtn =
+          payOverRows.length > 0
+            ? `<button class="btn btn--link cashbills-payover-btn js-payover" type="button" data-bill-id="${b.id}">Pay Over Time details</button>`
+            : "";
+        const interestCell = `
+          <div class="cashbills-interest-cell">
+            <div class="ui-tabular-nums">${interestSaving}</div>
+            ${payOverBtn}
+          </div>
+        `;
         return `
           <tr>
             <td>
@@ -930,6 +1177,7 @@
               <div class="ui-muted">${b.card_name}</div>
             </td>
             <td class="num ui-tabular-nums">${currency.format(b.statement_balance || 0)}</td>
+            <td class="num">${interestCell}</td>
             <td class="num ui-tabular-nums">${b.minimum_due != null ? currency.format(b.minimum_due) : "—"}</td>
             <td class="num ui-tabular-nums">${b.current_balance != null ? currency.format(b.current_balance) : "—"}</td>
             <td>
@@ -949,6 +1197,7 @@
             <col style="width:130px" />
             <col />
             <col style="width:170px" />
+            <col style="width:190px" />
             <col style="width:140px" />
             <col style="width:160px" />
             <col style="width:170px" />
@@ -958,6 +1207,7 @@
               <th>Due date</th>
               <th>Card</th>
               <th class="num">Statement balance</th>
+              <th class="num">Interest-free balance</th>
               <th class="num">Minimum due</th>
               <th class="num">Current balance</th>
               <th>Last payment</th>
@@ -999,15 +1249,17 @@
       .map((b) => {
         const status = getRecurringStatus(b);
         const statusLabel = COPY.statuses[status] || status;
+        const overdueClass = status === "overdue" ? " cashbills-badge--overdue" : "";
         const statusClass =
-          status === "overdue" ? "ui-badge--bad" : status === "due_soon" ? "ui-badge--risk" : status === "paid" ? "ui-badge--safe" : "ui-badge--neutral";
+          (status === "overdue" ? "ui-badge--bad" : status === "due_soon" ? "ui-badge--risk" : status === "paid" ? "ui-badge--safe" : "ui-badge--neutral") +
+          overdueClass;
         const dueSource = getRecurringDueDate(b);
         let dueCell = `<div>—</div><button class="btn btn--link js-set-due" data-bill-id="${b.id}">Set due date</button>`;
         if (dueSource) {
           const due = clampDate(dueSource);
           const days = daysBetween(asOfDate, due);
           let daysLabel = days === 0 ? "Due today" : days < 0 ? `${Math.abs(days)}d overdue` : `${days}d left`;
-          let daysClass = days < 0 ? "ui-badge--bad" : days <= 7 ? "ui-badge--risk" : "ui-badge--outline";
+          let daysClass = days < 0 ? "ui-badge--bad cashbills-badge--overdue" : days <= 7 ? "ui-badge--risk" : "ui-badge--outline";
           const dueMeta =
             status === "paid"
               ? `<span class="ui-badge ui-badge--safe">Paid</span>`
@@ -1092,14 +1344,16 @@
       .map((c) => {
         const status = normalizeStatus(c.status || "unknown");
         const statusLabel = COPY.statuses[status] || status;
+        const overdueClass = status === "overdue" ? " cashbills-badge--overdue" : "";
         const statusClass =
-          status === "overdue" ? "ui-badge--bad" : status === "due_soon" ? "ui-badge--risk" : status === "paid" ? "ui-badge--safe" : "ui-badge--neutral";
+          (status === "overdue" ? "ui-badge--bad" : status === "due_soon" ? "ui-badge--risk" : status === "paid" ? "ui-badge--safe" : "ui-badge--neutral") +
+          overdueClass;
         let dueCell = `<div>—</div><button class="btn btn--link js-set-card-due" data-charge-id="${c.id}">Set charge day</button>`;
         if (c.due_date) {
           const due = clampDate(c.due_date);
           const days = daysBetween(asOfDate, due);
           let daysLabel = days === 0 ? "Due today" : days < 0 ? `${Math.abs(days)}d overdue` : `${days}d left`;
-          let daysClass = days < 0 ? "ui-badge--bad" : days <= 7 ? "ui-badge--risk" : "ui-badge--outline";
+          let daysClass = days < 0 ? "ui-badge--bad cashbills-badge--overdue" : days <= 7 ? "ui-badge--risk" : "ui-badge--outline";
           const dueMeta =
             status === "paid"
               ? `<span class="ui-badge ui-badge--safe">Paid</span>`
@@ -1280,6 +1534,11 @@
         })()
       : `<div class="ui-muted">—</div>`;
 
+    const scopedCardBills = state.data ? applyScope(state.data.bills || [], state.scope) : [];
+    const calendarHtml = totalsReady
+      ? buildMonthlyCalendar(state.recurringBills || [], state.cardRecurringCharges || [], scopedCardBills, asOfDate, state.calendarMonthOffset)
+      : `<div class="ui-muted" style="margin-top:12px">Calendar loading...</div>`;
+
     let depositsHtml = "";
     if (state.depositsLoading) {
       depositsHtml = `<div class="ui-muted" style="margin-top:12px">${COPY.deposits.loading}</div>`;
@@ -1330,12 +1589,37 @@
 
     els.monthlyTotals.innerHTML = `
       ${totalsHtml}
+      ${calendarHtml}
       ${depositsHtml}
     `;
     const retryDeposits = document.getElementById("cashBillsRetryDeposits");
     if (retryDeposits) {
       retryDeposits.addEventListener("click", () => refreshDepositSummary(true));
     }
+    const calendarPrev = document.getElementById("cashBillsCalendarPrev");
+    if (calendarPrev) {
+      calendarPrev.addEventListener("click", () => {
+        state.calendarMonthOffset -= 1;
+        renderMonthlyTotals();
+      });
+    }
+    const calendarNext = document.getElementById("cashBillsCalendarNext");
+    if (calendarNext) {
+      calendarNext.addEventListener("click", () => {
+        state.calendarMonthOffset += 1;
+        renderMonthlyTotals();
+      });
+    }
+    const calendarLinks = els.monthlyTotals.querySelectorAll(".cashbills-calendar__link");
+    calendarLinks.forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const year = Number(btn.getAttribute("data-calendar-year"));
+        const month = Number(btn.getAttribute("data-calendar-month"));
+        const day = Number(btn.getAttribute("data-calendar-day"));
+        if (!year || !month || !day) return;
+        openCalendarModal({ year, monthIndex: month - 1, day });
+      });
+    });
     const viewButtons = els.monthlyTotals.querySelectorAll(".cashbills-deposits-view");
     viewButtons.forEach((btn) => {
       btn.addEventListener("click", () => {
@@ -1499,6 +1783,166 @@
     `;
   };
 
+  const renderPayOverModal = () => {
+    if (!els.payOverModal) return;
+    els.payOverModal.classList.toggle("is-open", state.payOverModalOpen);
+    els.payOverModal.setAttribute("aria-hidden", state.payOverModalOpen ? "false" : "true");
+    if (!state.payOverModalOpen || !els.payOverModalContent) return;
+
+    const context = state.payOverModalContext || {};
+    const cardLabel = context.card_label || "";
+    const data = context.pay_over_time || {};
+    const rows = Array.isArray(data.rows) ? data.rows : [];
+    const totals = data.totals && typeof data.totals === "object" ? data.totals : null;
+    const paymentDueTotal = data.payment_due_total;
+
+    if (els.payOverModalTitle) {
+      els.payOverModalTitle.textContent = cardLabel && cardLabel !== "—" ? `Pay Over Time plans · ${cardLabel}` : "Pay Over Time plans";
+    }
+
+    if (!rows.length) {
+      els.payOverModalContent.innerHTML = `<div class="ui-muted">No Pay Over Time plans found in this statement.</div>`;
+      return;
+    }
+
+    const fmtMoney = (value) => (value != null ? currency.format(value) : "—");
+    const paymentDueNote =
+      paymentDueTotal != null
+        ? `<div class="ui-muted" style="margin-bottom:8px">Payment due for plans set up after purchase: ${fmtMoney(paymentDueTotal)}</div>`
+        : "";
+    const tableRows = rows
+      .map((row) => {
+        return `
+          <tr>
+            <td>${row.description || "—"}</td>
+            <td>${row.plan_start_date ? formatDate(row.plan_start_date) : "—"}</td>
+            <td class="num ui-tabular-nums">${fmtMoney(row.original_principal)}</td>
+            <td class="num ui-tabular-nums">${row.total_payments != null ? row.total_payments : "—"}</td>
+            <td class="num ui-tabular-nums">${fmtMoney(row.remaining_principal)}</td>
+            <td class="num ui-tabular-nums">${row.remaining_payments != null ? row.remaining_payments : "—"}</td>
+            <td class="num ui-tabular-nums">${fmtMoney(row.monthly_principal)}</td>
+            <td class="num ui-tabular-nums">${fmtMoney(row.monthly_fee)}</td>
+            <td class="num ui-tabular-nums">${fmtMoney(row.payment_due)}</td>
+          </tr>
+        `;
+      })
+      .join("");
+    const totalsRow = totals
+      ? `
+        <tr class="cashbills-payover-total">
+          <td>Plan totals</td>
+          <td>—</td>
+          <td class="num ui-tabular-nums">${fmtMoney(totals.original_principal)}</td>
+          <td class="num ui-tabular-nums">—</td>
+          <td class="num ui-tabular-nums">${fmtMoney(totals.remaining_principal)}</td>
+          <td class="num ui-tabular-nums">—</td>
+          <td class="num ui-tabular-nums">${fmtMoney(totals.monthly_principal)}</td>
+          <td class="num ui-tabular-nums">${fmtMoney(totals.monthly_fee)}</td>
+          <td class="num ui-tabular-nums">${fmtMoney(totals.payment_due)}</td>
+        </tr>
+      `
+      : "";
+
+    els.payOverModalContent.innerHTML = `
+      ${paymentDueNote}
+      <div class="table-wrapper">
+        <table class="data-table cashbills-payover-table">
+          <colgroup>
+            <col style="width:200px" />
+            <col style="width:120px" />
+            <col style="width:140px" />
+            <col style="width:120px" />
+            <col style="width:140px" />
+            <col style="width:130px" />
+            <col style="width:140px" />
+            <col style="width:120px" />
+            <col style="width:140px" />
+          </colgroup>
+          <thead>
+            <tr>
+              <th>Description</th>
+              <th>Plan start</th>
+              <th class="num">Original principal</th>
+              <th class="num">Total payments</th>
+              <th class="num">Remaining principal</th>
+              <th class="num">Remaining payments</th>
+              <th class="num">Monthly principal</th>
+              <th class="num">Monthly fee</th>
+              <th class="num">Payment due</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${tableRows}
+            ${totalsRow}
+          </tbody>
+        </table>
+      </div>
+    `;
+  };
+
+  const renderCalendarModal = () => {
+    if (!els.calendarModal) return;
+    els.calendarModal.classList.toggle("is-open", state.calendarModalOpen);
+    els.calendarModal.setAttribute("aria-hidden", state.calendarModalOpen ? "false" : "true");
+    if (!state.calendarModalOpen || !els.calendarModalContent) return;
+
+    const context = state.calendarModalContext || {};
+    const titleLabel =
+      context.year != null && context.monthIndex != null && context.day != null
+        ? formatDateFromParts(context.year, context.monthIndex, context.day)
+        : "Items due";
+    if (els.calendarModalTitle) {
+      els.calendarModalTitle.textContent = titleLabel && titleLabel !== "—" ? `Due on ${titleLabel}` : "Items due";
+    }
+
+    const items = Array.isArray(state.calendarModalItems) ? state.calendarModalItems : [];
+    if (!items.length) {
+      els.calendarModalContent.innerHTML = `<div class="ui-muted">No items due on this day.</div>`;
+      return;
+    }
+
+    const total = items.reduce((sum, item) => sum + Number(item.amount || 0), 0);
+    const tableRows = items
+      .map((item) => {
+        const label = item.label || "—";
+        const subLabel = item.subLabel ? `<div class="cashbills-modal__cell-muted">${item.subLabel}</div>` : "";
+        return `
+          <tr>
+            <td>${item.type || "—"}</td>
+            <td>
+              <div>${label}</div>
+              ${subLabel}
+            </td>
+            <td class="num ui-tabular-nums">${currency.format(item.amount || 0)}</td>
+          </tr>
+        `;
+      })
+      .join("");
+
+    els.calendarModalContent.innerHTML = `
+      <div class="ui-muted" style="margin-bottom:8px">Total due: ${currency.format(total)}</div>
+      <div class="table-wrapper">
+        <table class="data-table cashbills-calendar-detail-table">
+          <colgroup>
+            <col style="width:160px" />
+            <col />
+            <col style="width:160px" />
+          </colgroup>
+          <thead>
+            <tr>
+              <th>Type</th>
+              <th>Item</th>
+              <th class="num">Amount</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${tableRows}
+          </tbody>
+        </table>
+      </div>
+    `;
+  };
+
   const loadFinanceTransactions = (context) => {
     if (!context || !context.year || !context.month || !context.account_id) return;
     state.financeModalLoading = true;
@@ -1582,6 +2026,47 @@
     state.depositsModalLoading = false;
     state.depositsModalError = null;
     renderDepositsModal();
+  };
+
+  const openCalendarModal = (context) => {
+    if (!context || context.year == null || context.monthIndex == null || context.day == null) return;
+    const asOfDate = clampDate(state.asOfDate);
+    const scopedCardBills = state.data ? applyScope(state.data.bills || [], state.scope) : [];
+    state.calendarModalItems = collectCalendarDayItems(
+      state.recurringBills || [],
+      state.cardRecurringCharges || [],
+      scopedCardBills,
+      asOfDate,
+      context.year,
+      context.monthIndex,
+      context.day
+    );
+    state.calendarModalContext = context;
+    state.calendarModalOpen = true;
+    renderCalendarModal();
+  };
+
+  const closeCalendarModal = () => {
+    state.calendarModalOpen = false;
+    state.calendarModalContext = null;
+    state.calendarModalItems = [];
+    renderCalendarModal();
+  };
+
+  const openPayOverModal = (bill) => {
+    if (!bill || !bill.pay_over_time || !Array.isArray(bill.pay_over_time.rows) || !bill.pay_over_time.rows.length) return;
+    state.payOverModalOpen = true;
+    state.payOverModalContext = {
+      card_label: formatCardLabel(bill.card_name, bill.last4),
+      pay_over_time: bill.pay_over_time,
+    };
+    renderPayOverModal();
+  };
+
+  const closePayOverModal = () => {
+    state.payOverModalOpen = false;
+    state.payOverModalContext = null;
+    renderPayOverModal();
   };
 
   const renderCash = (rows) => {
@@ -2311,7 +2796,7 @@
           `
           : "";
         return `
-          <div class="cashbills-modal__row" data-charge-id="${charge.id}">
+          <div class="cashbills-modal__row" data-bill-id="${bill.id}">
             <div class="cashbills-modal__grid cashbills-modal__grid--active">
               <div>
                 <div class="cashbills-modal__cell-title">${bill.name}</div>
@@ -2720,14 +3205,24 @@
     }
     const filtered = state.cardRecentCharges
       .map((item, idx) => ({ item, idx }))
-      .filter(({ item }) => matchesMemberFilter(item) && matchesAccountFilter(item));
+      .filter(({ item }) => matchesMemberFilter(item) && matchesAccountFilter(item) && matchesApplePayFilter(item));
     if (!filtered.length) {
+      if (state.cardRecentAppleOnly) {
+        els.cardModalContent.innerHTML = `
+          <div class="ui-muted">No Apple Pay transactions found in the last 30 days.</div>
+          <div class="ui-muted cashbills-modal__hint">Click Apple Pay (30d) again to show all recent transactions.</div>
+        `;
+        return;
+      }
       els.cardModalContent.innerHTML = `
         <div class="ui-muted">${COPY.cardRecurring.recentEmpty}</div>
         <div class="ui-muted cashbills-modal__hint">${COPY.cardRecurring.recentHelper}</div>
       `;
       return;
     }
+    const filterNote = state.cardRecentAppleOnly
+      ? `<div class="ui-muted" style="margin-bottom:8px">Filtered to Apple Pay transactions.</div>`
+      : "";
     const rows = filtered
       .map(({ item, idx }) => {
         const isEditing = state.cardModalEdit && state.cardModalEdit.kind === "recent" && state.cardModalEdit.index === idx;
@@ -2781,6 +3276,7 @@
       })
       .join("");
     els.cardModalContent.innerHTML = `
+      ${filterNote}
       <div class="cashbills-modal__table">
         <div class="cashbills-modal__grid cashbills-modal__grid--card-recent cashbills-modal__cell-muted">
           <div>Date</div>
@@ -2812,10 +3308,11 @@
     if (!accountOptions.length && !hasUnknownAccount) {
       state.cardAccountFilter = "ALL";
     }
+    const applePayOnly = state.cardModalTab === "recent" && state.cardRecentAppleOnly;
     const filtered =
       state.cardModalTab === "active"
         ? applyCardFilters(source)
-        : source.filter((row) => matchesMemberFilter(row) && matchesAccountFilter(row));
+        : source.filter((row) => matchesMemberFilter(row) && matchesAccountFilter(row) && (!applePayOnly || isApplePayCharge(row)));
     const total = filtered.reduce((sum, item) => {
       if (state.cardModalTab === "recent") {
         return sum + Math.abs(Number(item.amount || 0));
@@ -2824,7 +3321,9 @@
     }, 0);
     const totalLabel =
       state.cardModalTab === "recent"
-        ? "Total spent (30d)"
+        ? applePayOnly
+          ? "Apple Pay total (30d)"
+          : "Total spent (30d)"
         : state.cardModalTab === "active"
           ? "Expected monthly total"
           : "Estimated monthly total";
@@ -2900,6 +3399,11 @@
         btn.setAttribute("aria-pressed", isActive ? "true" : "false");
       });
     }
+    if (els.cardModalApplePay) {
+      const isActive = state.cardRecentAppleOnly;
+      els.cardModalApplePay.classList.toggle("is-active", isActive);
+      els.cardModalApplePay.setAttribute("aria-pressed", isActive ? "true" : "false");
+    }
     if (state.cardModalTab === "suggested") {
       renderCardModalSuggestions();
     } else if (state.cardModalTab === "active") {
@@ -2926,6 +3430,7 @@
     state.cardModalTab = "suggested";
     state.cardModalEdit = null;
     state.cardModalFocusId = null;
+    state.cardRecentAppleOnly = false;
     renderCardModal();
     loadCardSuggestions();
   };
@@ -2935,6 +3440,7 @@
     state.cardModalTab = "active";
     state.cardModalEdit = { kind: "active", chargeId };
     state.cardModalFocusId = chargeId;
+    state.cardRecentAppleOnly = false;
     renderCardModal();
     loadCardRecurringAll();
   };
@@ -2943,7 +3449,18 @@
     state.cardModalOpen = false;
     state.cardModalEdit = null;
     state.cardModalFocusId = null;
+    state.cardRecentAppleOnly = false;
     renderCardModal();
+  };
+
+  const toggleCardRecentApplePay = () => {
+    state.cardModalOpen = true;
+    state.cardModalTab = "recent";
+    state.cardModalEdit = null;
+    state.cardModalFocusId = null;
+    state.cardRecentAppleOnly = !state.cardRecentAppleOnly;
+    renderCardModal();
+    loadCardRecent();
   };
 
   const openModal = () => {
@@ -3028,6 +3545,7 @@
           const base = new Date();
           if (value === "yesterday") base.setDate(base.getDate() - 1);
           state.asOfDate = toIsoDate(base);
+          state.calendarMonthOffset = 0;
           state.suggestions = [];
           state.recurringAllBills = [];
           state.recentCharges = [];
@@ -3045,6 +3563,7 @@
       els.customDate.addEventListener("change", (e) => {
         if (e.target.value) {
           state.asOfDate = e.target.value;
+          state.calendarMonthOffset = 0;
           state.suggestions = [];
           state.recurringAllBills = [];
           state.recentCharges = [];
@@ -3127,6 +3646,18 @@
         }
       });
     }
+    if (els.billsTable) {
+      els.billsTable.addEventListener("click", (e) => {
+        const btn = e.target.closest(".js-payover");
+        if (!btn || !state.data) return;
+        const billId = btn.getAttribute("data-bill-id");
+        if (!billId) return;
+        const bill = (state.data.bills || []).find((row) => String(row.id) === billId);
+        if (bill) {
+          openPayOverModal(bill);
+        }
+      });
+    }
     if (els.manageBillsBtn) {
       els.manageBillsBtn.addEventListener("click", () => openModal());
     }
@@ -3145,11 +3676,20 @@
     if (els.cardModalRescan) {
       els.cardModalRescan.addEventListener("click", () => loadCardSuggestions(true));
     }
+    if (els.cardModalApplePay) {
+      els.cardModalApplePay.addEventListener("click", () => toggleCardRecentApplePay());
+    }
     if (els.financeModalClose) {
       els.financeModalClose.addEventListener("click", () => closeFinanceModal());
     }
     if (els.depositsModalClose) {
       els.depositsModalClose.addEventListener("click", () => closeDepositsModal());
+    }
+    if (els.payOverModalClose) {
+      els.payOverModalClose.addEventListener("click", () => closePayOverModal());
+    }
+    if (els.calendarModalClose) {
+      els.calendarModalClose.addEventListener("click", () => closeCalendarModal());
     }
     if (els.modal) {
       els.modal.addEventListener("click", (e) => {
@@ -3179,6 +3719,20 @@
         }
       });
     }
+    if (els.payOverModal) {
+      els.payOverModal.addEventListener("click", (e) => {
+        if (e.target && e.target.getAttribute("data-modal-close")) {
+          closePayOverModal();
+        }
+      });
+    }
+    if (els.calendarModal) {
+      els.calendarModal.addEventListener("click", (e) => {
+        if (e.target && e.target.getAttribute("data-modal-close")) {
+          closeCalendarModal();
+        }
+      });
+    }
     if (els.modalTabs) {
       els.modalTabs.addEventListener("click", (e) => {
         const btn = e.target.closest("button");
@@ -3205,6 +3759,9 @@
         if (!tab) return;
         state.cardModalTab = tab;
         state.cardModalEdit = null;
+        if (tab !== "recent") {
+          state.cardRecentAppleOnly = false;
+        }
         renderCardModal();
         if (tab === "suggested") {
           loadCardSuggestions();
@@ -3520,6 +4077,8 @@
         if (state.modalOpen) closeModal();
         if (state.cardModalOpen) closeCardModal();
         if (state.financeModalOpen) closeFinanceModal();
+        if (state.calendarModalOpen) closeCalendarModal();
+        if (state.payOverModalOpen) closePayOverModal();
       }
     });
   };

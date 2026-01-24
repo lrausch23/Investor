@@ -130,9 +130,9 @@ def _require_env(name: str) -> str:
 
 
 def _plaid_client() -> plaid_api.PlaidApi:
-    env = (os.environ.get("PLAID_ENV") or "sandbox").strip().lower()
+    env = (os.environ.get("PLAID_ENV") or "production").strip().lower()
     if env not in {"sandbox", "development", "production"}:
-        env = "sandbox"
+        env = "production"
     host_by_env = {
         "sandbox": "https://sandbox.plaid.com",
         "development": "https://development.plaid.com",
@@ -511,4 +511,3 @@ if __name__ == "__main__":
     client = _plaid_client()
     sync_investments(client=client)
     sync_transactions(client=client)
-

@@ -61,7 +61,7 @@
     </div>
     <div class="chip-group" role="group" aria-label="Status filter" id="cashBillsStatusChips">
       <button class="ui-chip is-active" data-status="all" aria-pressed="true" type="button">All</button>
-      <button class="ui-chip" data-status="due_soon" aria-pressed="false" type="button">Due soon</button>
+      <button class="ui-chip" data-status="upcoming" aria-pressed="false" type="button">Upcoming</button>
       <button class="ui-chip" data-status="overdue" aria-pressed="false" type="button">Overdue</button>
       <button class="ui-chip" data-status="paid" aria-pressed="false" type="button">Paid</button>
     </div>
@@ -145,6 +145,7 @@
       <div class="cashbills-modal__header">
         <h2 id="cashBillsManageCardTitle">Manage card charges</h2>
         <div class="cashbills-modal__actions">
+          <button class="btn btn--secondary cashbills-card-applepay" id="cashBillsCardModalApplePay" type="button" aria-pressed="false">Apple Pay (30d)</button>
           <button class="btn btn--secondary" id="cashBillsCardModalRescan" type="button">Re-scan</button>
           <button class="btn" id="cashBillsCardModalClose" type="button">Close</button>
         </div>
@@ -201,6 +202,32 @@
         </div>
       </div>
       <div class="cashbills-modal__body" id="cashBillsDepositsContent"></div>
+    </div>
+  </div>
+
+  <div class="cashbills-modal" id="cashBillsPayOverModal" aria-hidden="true">
+    <div class="cashbills-modal__overlay" data-modal-close="true"></div>
+    <div class="cashbills-modal__dialog" role="dialog" aria-modal="true" aria-labelledby="cashBillsPayOverTitle">
+      <div class="cashbills-modal__header">
+        <h2 id="cashBillsPayOverTitle">Pay Over Time plans</h2>
+        <div class="cashbills-modal__actions">
+          <button class="btn" id="cashBillsPayOverClose" type="button">Close</button>
+        </div>
+      </div>
+      <div class="cashbills-modal__body" id="cashBillsPayOverContent"></div>
+    </div>
+  </div>
+
+  <div class="cashbills-modal" id="cashBillsCalendarModal" aria-hidden="true">
+    <div class="cashbills-modal__overlay" data-modal-close="true"></div>
+    <div class="cashbills-modal__dialog" role="dialog" aria-modal="true" aria-labelledby="cashBillsCalendarTitle">
+      <div class="cashbills-modal__header">
+        <h2 id="cashBillsCalendarTitle">Items due</h2>
+        <div class="cashbills-modal__actions">
+          <button class="btn" id="cashBillsCalendarClose" type="button">Close</button>
+        </div>
+      </div>
+      <div class="cashbills-modal__body" id="cashBillsCalendarContent"></div>
     </div>
   </div>
 

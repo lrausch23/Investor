@@ -19,7 +19,7 @@ def _env_upper(name: str, default: str = "") -> str:
 
 
 def _plaid_base_url(env: str) -> str:
-    e = (env or "sandbox").strip().lower()
+    e = (env or "production").strip().lower()
     if e in {"prod", "production"}:
         host = "production.plaid.com"
     elif e in {"dev", "development"}:
@@ -64,7 +64,7 @@ class PlaidClient:
         client_id: str | None = None,
         secret: str | None = None,
     ) -> None:
-        self.env = (env or os.environ.get("PLAID_ENV") or "sandbox").strip().lower()
+        self.env = (env or os.environ.get("PLAID_ENV") or "production").strip().lower()
         self.client_id = (client_id or os.environ.get("PLAID_CLIENT_ID") or "").strip()
         self.secret = (secret or os.environ.get("PLAID_SECRET") or "").strip()
         base_override = (os.environ.get("PLAID_BASE_URL") or "").strip()

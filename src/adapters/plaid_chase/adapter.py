@@ -30,6 +30,13 @@ def _as_float(v: Any) -> float | None:
         return None
 
 
+def _prefer_apple_pay_name(name: str) -> bool:
+    if not name:
+        return False
+    cleaned = re.sub(r"[*]+", " ", name).strip()
+    return bool(re.match(r"(?i)^apl\s*pay\b", cleaned))
+
+
 def _plaid_account_type(raw: dict[str, Any]) -> str:
     # For ExpenseAccount.type: BANK|CREDIT|UNKNOWN
     t = _as_str(raw.get("type")).lower()
@@ -463,7 +470,12 @@ class PlaidChaseAdapter(BrokerAdapter):
                     if currency != "USD":
                         continue
 
-                    desc = _as_str(r.get("name") or r.get("merchant_name") or "")
+                    name = _as_str(r.get("name") or r.get("original_description") or "")
+                    merchant_name = _as_str(r.get("merchant_name") or "")
+                    if _prefer_apple_pay_name(name):
+                        desc = name
+                    else:
+                        desc = merchant_name or name
                     desc = " ".join(desc.split()) or "Investment cashflow"
 
                     cat_hint = None
@@ -554,7 +566,12 @@ class PlaidChaseAdapter(BrokerAdapter):
                 continue
             signed = Decimal(str(-float(amt)))
             currency = _as_str(r.get("iso_currency_code") or r.get("unofficial_currency_code") or "USD").upper()
-            desc = _as_str(r.get("merchant_name") or r.get("name") or "")
+            name = _as_str(r.get("name") or r.get("original_description") or "")
+            merchant_name = _as_str(r.get("merchant_name") or "")
+            if _prefer_apple_pay_name(name):
+                desc = name
+            else:
+                desc = merchant_name or name
             if not desc:
                 desc = "Unknown"
 

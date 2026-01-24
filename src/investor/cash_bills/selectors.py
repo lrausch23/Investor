@@ -52,6 +52,12 @@ def compute_summary(
     as_of: dt.date,
     range_days: int,
 ) -> DashboardSummary:
+    def _liquidity_amount(bill: CreditCardBillRow) -> float:
+        val = bill.get("interest_saving_balance")
+        if val is not None and float(val) > 0:
+            return float(val)
+        return float(bill.get("statement_balance") or 0.0)
+
     cash_total = 0.0
     for c in cash_accounts:
         val = c.get("available_balance")
@@ -71,10 +77,10 @@ def compute_summary(
         days = (due - as_of).days
         if abs(days) > range_days:
             continue
-        due_total += float(b.get("statement_balance") or 0.0)
+        due_total += _liquidity_amount(b)
         if next_due_date is None or due < next_due_date:
             next_due_date = due
-            next_due_amount = float(b.get("statement_balance") or 0.0)
+            next_due_amount = _liquidity_amount(b)
             next_due_card = b.get("card_name")
 
     return {

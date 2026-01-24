@@ -15,6 +15,7 @@ from src.db.models import (
     ExpenseAccountBalance,
     ExpenseTransaction,
     ExternalConnection,
+    ExternalCardStatement,
     ExternalLiabilitySnapshot,
     RecurringCardCharge,
     RecurringCardChargeIgnore,
@@ -116,6 +117,30 @@ def _plaid_cash_bills_data(session: Session) -> dict[str, Any]:
         .order_by(ExternalConnection.id.asc())
         .all()
     )
+
+    stmt_by_key: dict[tuple[int, str], ExternalCardStatement] = {}
+    if connections:
+        stmt_rows = (
+            session.query(ExternalCardStatement)
+            .filter(ExternalCardStatement.connection_id.in_([c.id for c in connections]))
+            .all()
+        )
+
+        def _stmt_rank(row: ExternalCardStatement) -> tuple[int, dt.datetime]:
+            if row.statement_period_end:
+                return (row.statement_period_end.toordinal(), row.created_at)
+            if row.statement_period_start:
+                return (row.statement_period_start.toordinal(), row.created_at)
+            return (row.created_at.date().toordinal(), row.created_at)
+
+        for row in stmt_rows:
+            last4 = _last4(row.last4)
+            if not last4:
+                continue
+            key = (int(row.connection_id), last4)
+            existing = stmt_by_key.get(key)
+            if existing is None or _stmt_rank(row) > _stmt_rank(existing):
+                stmt_by_key[key] = row
 
     for conn in connections:
         snapshot = (
@@ -225,6 +250,15 @@ def _plaid_cash_bills_data(session: Session) -> dict[str, Any]:
                             last_payment_amount = float(p["amount"] or 0)
                 except Exception:
                     pass
+            interest_saving_balance = None
+            pay_over_time = None
+            if last4:
+                stmt = stmt_by_key.get((conn.id, last4))
+                if stmt is not None and stmt.interest_saving_balance is not None:
+                    interest_saving_balance = float(stmt.interest_saving_balance)
+                if stmt is not None and stmt.pay_over_time_json:
+                    if isinstance(stmt.pay_over_time_json, dict) and stmt.pay_over_time_json.get("rows"):
+                        pay_over_time = stmt.pay_over_time_json
             bills.append(
                 {
                     "id": f"{conn.id}:{plaid_account_id or expense_account_id}",
@@ -235,6 +269,8 @@ def _plaid_cash_bills_data(session: Session) -> dict[str, Any]:
                     "due_date": due_date,
                     "current_balance": float(current_balance) if current_balance is not None else None,
                     "statement_balance": float(statement_balance or 0),
+                    "interest_saving_balance": interest_saving_balance,
+                    "pay_over_time": pay_over_time,
                     "minimum_due": float(row.get("minimum_payment_amount") or 0) if row.get("minimum_payment_amount") is not None else None,
                     "last_payment_date": last_payment_date,
                     "last_payment_amount": last_payment_amount,
@@ -322,6 +358,8 @@ def _plaid_cash_bills_data(session: Session) -> dict[str, Any]:
                     "due_date": None,
                     "current_balance": float(balance_current),
                     "statement_balance": float(balance_current),
+                    "interest_saving_balance": None,
+                    "pay_over_time": None,
                     "minimum_due": None,
                     "last_payment_date": None,
                     "last_payment_amount": None,

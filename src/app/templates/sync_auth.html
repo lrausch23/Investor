@@ -65,7 +65,9 @@
         <a class="btn btn--secondary" href="/sync/connections/{{ conn.id }}">Back</a>
       </div>
       <div class="ui-muted" style="margin-top:10px">
-        Requires <code>PLAID_CLIENT_ID</code>, <code>PLAID_SECRET</code>, <code>PLAID_ENV</code>, and <code>NETWORK_ENABLED=1</code>.
+        Requires <code>PLAID_CLIENT_ID</code>, <code>PLAID_SECRET</code>, <code>PLAID_ENV</code> (production default; use sandbox for testing),
+        <code>PLAID_REDIRECT_URI</code> (required for production OAuth), and <code>NETWORK_ENABLED=1</code>.
+        In Plaid Dashboard enable products: <code>transactions</code>, <code>liabilities</code> (required), <code>investments</code> (optional).
       </div>
       <details class="ui-disclosure" style="margin-top:8px">
         <summary>Network allowlist</summary>

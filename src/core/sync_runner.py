@@ -315,14 +315,6 @@ def _store_plaid_liabilities_snapshot(
         .order_by(ExternalLiabilitySnapshot.as_of.desc(), ExternalLiabilitySnapshot.id.desc())
         .first()
     )
-    if recent is not None:
-        age = utcnow() - recent.as_of
-        if age <= dt.timedelta(hours=24):
-            coverage["liability_snapshots_skipped_recent"] = int(
-                coverage.get("liability_snapshots_skipped_recent") or 0
-            ) + 1
-            coverage["liability_snapshot_last_asof"] = recent.as_of.isoformat()
-            return
     if not access_token:
         warnings.append(f"Liabilities snapshot skipped for {connection.name}: missing access token.")
         return
@@ -1130,9 +1122,9 @@ def run_sync(
     offline_holdings_metrics: dict[str, Any] | None = None
     connector = (conn.connector or "").upper()
     is_offline_files = connector in {"IB_FLEX_OFFLINE", "CHASE_OFFLINE", "RJ_OFFLINE"}
-    if connector == "AMEX_PLAID":
+    if connector in {"CHASE_PLAID", "AMEX_PLAID"}:
         meta = conn.metadata_json or {}
-        if bool(meta.get("plaid_force_transactions_get")):
+        if connector == "AMEX_PLAID" and bool(meta.get("plaid_force_transactions_get")):
             run_settings["plaid_force_transactions_get"] = True
     # Allow importing offline holdings snapshots (e.g., baseline statement valuations) even for live connectors.
     # This is especially useful for IB Flex Web when historical holdings snapshots cannot be fetched via the API.

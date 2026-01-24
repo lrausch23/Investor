@@ -84,9 +84,11 @@
       <details class="ui-disclosure" style="margin-top:8px">
         <summary>Requirements</summary>
         <div class="ui-muted" style="margin-top:6px">
-          Set <code>PLAID_CLIENT_ID</code>, <code>PLAID_SECRET</code>, <code>PLAID_ENV</code> (sandbox/production), and enable
-          <code>NETWORK_ENABLED=1</code>. If <code>ALLOWED_OUTBOUND_HOSTS</code> is set, ensure it includes the Plaid host
-          (e.g., <code>sandbox.plaid.com</code>).
+          Set <code>PLAID_CLIENT_ID</code>, <code>PLAID_SECRET</code>, <code>PLAID_ENV</code> (production default; use sandbox for testing),
+          <code>PLAID_REDIRECT_URI</code> (required for production OAuth), and enable <code>NETWORK_ENABLED=1</code>.
+          In Plaid Dashboard enable products: <code>transactions</code>, <code>liabilities</code> (required), <code>investments</code> (optional).
+          If <code>ALLOWED_OUTBOUND_HOSTS</code> is set, ensure it includes the Plaid host
+          (e.g., <code>production.plaid.com</code> or <code>sandbox.plaid.com</code>).
         </div>
       </details>
     </fieldset>
@@ -100,9 +102,11 @@
       <details class="ui-disclosure" style="margin-top:8px">
         <summary>Requirements</summary>
         <div class="ui-muted" style="margin-top:6px">
-          Set <code>PLAID_CLIENT_ID</code>, <code>PLAID_SECRET</code>, <code>PLAID_ENV</code> (sandbox/production), and enable
-          <code>NETWORK_ENABLED=1</code>. If <code>ALLOWED_OUTBOUND_HOSTS</code> is set, ensure it includes the Plaid host
-          (e.g., <code>sandbox.plaid.com</code>).
+          Set <code>PLAID_CLIENT_ID</code>, <code>PLAID_SECRET</code>, <code>PLAID_ENV</code> (production default; use sandbox for testing),
+          <code>PLAID_REDIRECT_URI</code> (required for production OAuth), and enable <code>NETWORK_ENABLED=1</code>.
+          In Plaid Dashboard enable products: <code>transactions</code>, <code>liabilities</code> (required), <code>investments</code> (optional).
+          If <code>ALLOWED_OUTBOUND_HOSTS</code> is set, ensure it includes the Plaid host
+          (e.g., <code>production.plaid.com</code> or <code>sandbox.plaid.com</code>).
         </div>
       </details>
     </fieldset>

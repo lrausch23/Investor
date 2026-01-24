@@ -1008,9 +1008,25 @@ class IBFlexWebAdapter(BrokerAdapter):
                 report_date = _parse_ib_date(str(flex_meta.get("toDate") or "") or None) or end_date
             sym_u = sym.strip().upper()
             # Cash positions often show symbol="USD" or similar; normalize to CASH:USD for internal cash fallback.
-            asset_class = (attrs.get("assetClass") or attrs.get("AssetClass") or "").strip().upper()
+            asset_class = (attrs.get("assetClass") or attrs.get("AssetClass") or attrs.get("assetCategory") or attrs.get("AssetCategory") or "").strip().upper()
             if asset_class == "CASH" or sym_u in {"USD", "CASH", "CASHUSD"}:
                 sym_u = "CASH:USD"
+            else:
+                conid = (attrs.get("conid") or attrs.get("Conid") or "").strip()
+                expiry = (attrs.get("expiry") or attrs.get("Expiry") or "").strip()
+                strike = (attrs.get("strike") or attrs.get("Strike") or "").strip()
+                put_call = (attrs.get("putCall") or attrs.get("PutCall") or "").strip().upper()
+                # IB Flex can emit multiple positions with the same symbol (options/futures/etc.).
+                # Add a stable suffix to keep those distinct in holdings snapshots.
+                if conid and asset_class and asset_class not in {"STK", "ETF", "ADR"}:
+                    sym_u = f"{sym_u}#{conid}"
+                elif (expiry or strike or put_call) and conid:
+                    sym_u = f"{sym_u}#{conid}"
+                elif expiry or strike or put_call:
+                    suffix_bits = [expiry, put_call, strike]
+                    suffix = "-".join([b for b in suffix_bits if b])
+                    if suffix:
+                        sym_u = f"{sym_u}#{suffix}"
             holdings_items_by_date.setdefault(report_date, []).append(
                 {
                     "provider_account_id": provider_account_id,
