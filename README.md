@@ -63,6 +63,11 @@ make dev
 
 - MVP supports optional HTTP Basic auth via `APP_PASSWORD` in `.env`.
 - If `APP_PASSWORD` is **unset**, the UI runs without auth and shows a warning banner. Run locally only.
+- Optional rate limiting for failed logins:
+  - `APP_AUTH_MAX_ATTEMPTS` (default `5`)
+  - `APP_AUTH_WINDOW_SECONDS` (default `300`)
+  - `APP_AUTH_LOCKOUT_SECONDS` (default `900`)
+  - `APP_AUTH_TRUST_PROXY=1` to respect `X-Forwarded-For` when behind a trusted proxy.
 
 ## Defaults (chosen for MVP)
 

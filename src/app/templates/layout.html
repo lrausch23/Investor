@@ -38,7 +38,9 @@
           </div>
         </div>
       </div>
-      <div class="topbar__right">Actor: {{ actor }}</div>
+      <div class="topbar__right">
+        Actor: {{ actor }}{% set auth_label = auth_status_label() %}{% if auth_label %} · Auth: {{ auth_label }}{% endif %}
+      </div>
     </header>
     <div class="app-content">
       {% if auth_banner %}
