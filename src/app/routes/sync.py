@@ -2477,6 +2477,118 @@ def plaid_supplemental_cashflows_reprocess(
     return RedirectResponse(url=f"{return_to}?ok={msg}", status_code=303)
 
 
+@router.post("/connections/{connection_id}/plaid/purge-old-investments")
+def plaid_purge_old_investments(
+    connection_id: int,
+    session: Session = Depends(db_session),
+    actor: str = Depends(require_actor),
+    confirm: str = Form(default=""),
+    note: str = Form(default=""),
+):
+    conn = session.query(ExternalConnection).filter(ExternalConnection.id == connection_id).one()
+    if (conn.connector or "").upper() != "CHASE_PLAID":
+        raise HTTPException(status_code=400, detail="Not a Plaid connector.")
+    if (confirm or "").strip().upper() != "PURGE PLAID OLD":
+        raise HTTPException(status_code=400, detail="Type PURGE PLAID OLD to confirm.")
+
+    meta = conn.metadata_json or {}
+    current_item_id = str(meta.get("plaid_item_id") or "").strip()
+    if not current_item_id:
+        current_item_id = str(get_credential(session, connection_id=conn.id, key="PLAID_ITEM_ID") or "").strip()
+    if not current_item_id:
+        raise HTTPException(status_code=400, detail="Missing Plaid item id for this connection.")
+
+    prefix = f"PLAID:{current_item_id}:"
+    provider_account_id = func.json_extract(Transaction.lot_links_json, "$.provider_account_id")
+    txn_ids = [
+        r[0]
+        for r in (
+            session.query(Transaction.id)
+            .join(ExternalTransactionMap, ExternalTransactionMap.transaction_id == Transaction.id)
+            .filter(
+                ExternalTransactionMap.connection_id == conn.id,
+                ExternalTransactionMap.provider_txn_id.like("PLAID_INV:%"),
+                or_(provider_account_id.is_(None), ~provider_account_id.like(f"{prefix}%")),
+            )
+            .all()
+        )
+    ]
+
+    if not txn_ids:
+        msg = urllib.parse.quote("No old Plaid investment transactions found to purge.")
+        return RedirectResponse(url=f"/sync/connections/{connection_id}?ok={msg}", status_code=303)
+
+    lot_deleted = 0
+    wash_deleted = 0
+    taxlot_deleted = 0
+    try:
+        lot_deleted = int(
+            session.query(LotDisposal)
+            .filter(LotDisposal.sell_txn_id.in_(txn_ids))
+            .delete(synchronize_session=False)
+            or 0
+        )
+    except Exception:
+        lot_deleted = 0
+    try:
+        wash_deleted = int(
+            session.query(WashSaleAdjustment)
+            .filter(
+                (WashSaleAdjustment.loss_sale_txn_id.in_(txn_ids))
+                | (WashSaleAdjustment.replacement_buy_txn_id.in_(txn_ids))
+            )
+            .delete(synchronize_session=False)
+            or 0
+        )
+    except Exception:
+        wash_deleted = 0
+    try:
+        taxlot_deleted = int(
+            session.query(TaxLot)
+            .filter(TaxLot.created_from_txn_id.in_(txn_ids))
+            .delete(synchronize_session=False)
+            or 0
+        )
+    except Exception:
+        taxlot_deleted = 0
+
+    maps_deleted = int(
+        session.query(ExternalTransactionMap)
+        .filter(
+            ExternalTransactionMap.connection_id == conn.id,
+            ExternalTransactionMap.transaction_id.in_(txn_ids),
+        )
+        .delete(synchronize_session=False)
+        or 0
+    )
+    tx_deleted = int(
+        session.query(Transaction).filter(Transaction.id.in_(txn_ids)).delete(synchronize_session=False) or 0
+    )
+
+    log_change(
+        session,
+        actor=actor,
+        action="PURGE_IMPORTED",
+        entity="ExternalConnection",
+        entity_id=str(conn.id),
+        old=None,
+        new={
+            "transactions_deleted": int(tx_deleted),
+            "transaction_maps_deleted": int(maps_deleted),
+            "lot_disposals_deleted": int(lot_deleted),
+            "wash_adjustments_deleted": int(wash_deleted),
+            "tax_lots_deleted": int(taxlot_deleted),
+            "current_item_id": current_item_id,
+        },
+        note=note.strip() or "Purged Plaid investment transactions from previous item ids",
+    )
+    session.commit()
+    msg = urllib.parse.quote(
+        f"Purged {tx_deleted} old Plaid investment txn(s) and {maps_deleted} map(s)."
+    )
+    return RedirectResponse(url=f"/sync/connections/{connection_id}?ok={msg}", status_code=303)
+
+
 @router.post("/connections/{connection_id}/test")
 def connection_test(
     connection_id: int,

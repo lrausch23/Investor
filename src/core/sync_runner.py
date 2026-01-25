@@ -36,6 +36,7 @@ from src.db.models import (
     ExternalAccountMap,
     ExternalConnection,
     ExternalCredential,
+    ExternalCardStatement,
     ExternalFileIngest,
     ExternalHoldingSnapshot,
     ExternalLiabilitySnapshot,
@@ -554,6 +555,17 @@ def _select_offline_holdings_files(
     if not reprocess_files and mode == "INCREMENTAL":
         rows = session.query(ExternalFileIngest.file_hash).filter(ExternalFileIngest.connection_id == connection.id).all()
         seen_hashes = {r[0] for r in rows}
+    card_stmt_hashes: set[str] = set()
+    if connector == "CHASE_PLAID":
+        try:
+            rows = (
+                session.query(ExternalCardStatement.file_hash)
+                .filter(ExternalCardStatement.connection_id == connection.id)
+                .all()
+            )
+            card_stmt_hashes = {r[0] for r in rows if r and r[0]}
+        except Exception:
+            card_stmt_hashes = set()
 
     selected: list[dict[str, Any]] = []
     skipped_seen = 0
@@ -603,8 +615,10 @@ def _select_offline_holdings_files(
                     pass
         if kind != "HOLDINGS":
             continue
-        holdings_total += 1
         h = _sha256_file(p)
+        if card_stmt_hashes and h in card_stmt_hashes:
+            continue
+        holdings_total += 1
         if not reprocess_files and mode == "INCREMENTAL" and h in seen_hashes:
             skipped_seen += 1
             continue

@@ -19,6 +19,24 @@
 
     {% if is_chase_plaid %}
       <hr style="margin:14px 0; border:none; border-top:1px solid #e5e7eb"/>
+      <div class="ui-section-title">Purge old Plaid investment txns</div>
+      <div class="ui-muted" style="margin-top:6px">
+        Use after re-linking Plaid to drop investment transactions tied to previous Plaid item ids.
+        Keeps the current item id and does not touch non-investment transactions.
+      </div>
+      <form method="post" action="/sync/connections/{{ conn.id }}/plaid/purge-old-investments" class="form-compact" style="margin-top:10px">
+        <label>
+          <span>Type <code>PURGE PLAID OLD</code> to confirm</span>
+          <input name="confirm" size="18" placeholder="PURGE PLAID OLD" autocomplete="off"/>
+        </label>
+        <label>
+          <span>Audit note</span>
+          <input name="note" placeholder="Why are you purging old Plaid transactions?"/>
+        </label>
+        <button class="btn" type="submit">Purge old Plaid investment txns</button>
+      </form>
+
+      <hr style="margin:14px 0; border:none; border-top:1px solid #e5e7eb"/>
       <div class="ui-section-title">Replace legacy Chase sources</div>
       <div class="ui-muted" style="margin-top:6px">
         Use this if you previously imported Chase data via CSV files or the (legacy) Yodlee connector and now want Plaid to be the only Chase source.
