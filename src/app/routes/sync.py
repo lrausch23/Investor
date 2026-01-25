@@ -109,6 +109,10 @@ def _split_query_tokens(raw: str) -> list[str]:
     return out
 
 
+def _normalize_confirm(value: str) -> str:
+    return " ".join((value or "").strip().upper().split())
+
+
 @router.get("/connections")
 def connections_list(
     request: Request,
@@ -2488,7 +2492,7 @@ def plaid_purge_old_investments(
     conn = session.query(ExternalConnection).filter(ExternalConnection.id == connection_id).one()
     if (conn.connector or "").upper() != "CHASE_PLAID":
         raise HTTPException(status_code=400, detail="Not a Plaid connector.")
-    if (confirm or "").strip().upper() != "PURGE PLAID OLD":
+    if _normalize_confirm(confirm) != "PURGE PLAID OLD":
         raise HTTPException(status_code=400, detail="Type PURGE PLAID OLD to confirm.")
 
     meta = conn.metadata_json or {}
@@ -2643,7 +2647,7 @@ def connection_purge_imported_data(
     Does NOT delete Accounts/Securities/Lots (manual data safety).
     """
     conn = session.query(ExternalConnection).filter(ExternalConnection.id == connection_id).one()
-    if (confirm or "").strip().upper() != "PURGE":
+    if _normalize_confirm(confirm) != "PURGE":
         raise HTTPException(status_code=400, detail="Type PURGE to confirm.")
 
     txn_ids = [
@@ -2737,7 +2741,7 @@ def purge_legacy_chase_sources(
     conn = session.query(ExternalConnection).filter(ExternalConnection.id == connection_id).one()
     if (conn.connector or "").upper() != "CHASE_PLAID":
         raise HTTPException(status_code=400, detail="This action is only available for Chase (Plaid) connections.")
-    if (confirm or "").strip().upper() != "PURGE CHASE":
+    if _normalize_confirm(confirm) != "PURGE CHASE":
         raise HTTPException(status_code=400, detail="Type PURGE CHASE to confirm.")
 
     totals: dict[str, int] = {
