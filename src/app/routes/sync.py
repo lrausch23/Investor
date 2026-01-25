@@ -2492,6 +2492,7 @@ def plaid_supplemental_cashflows_reprocess(
                 stored_path=path,
                 actor=actor,
                 purge_manual_overrides=True,
+                allow_reimport=True,
             )
         except Exception as exc:
             failed_files.append(f"{ingest.file_name} ({exc})")

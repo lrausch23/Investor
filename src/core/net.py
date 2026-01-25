@@ -24,6 +24,10 @@ def outbound_host_allowlist_enabled() -> bool:
     To disable (unsafe), set:
       - DISABLE_OUTBOUND_HOST_ALLOWLIST=1
     """
+    raw = (os.environ.get("ALLOWED_OUTBOUND_HOSTS") or "").strip()
+    if raw:
+        # Explicit allowlist should always be enforced, even if disable is set.
+        return True
     v = (os.environ.get("DISABLE_OUTBOUND_HOST_ALLOWLIST") or "").strip().lower()
     return v not in {"1", "true", "yes", "y", "on"}
 

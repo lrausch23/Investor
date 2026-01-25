@@ -908,9 +908,10 @@ class PlaidChaseAdapter(BrokerAdapter):
         access_token = (getattr(connection, "credentials", {}) or {}).get("PLAID_ACCESS_TOKEN") or ""
         if not access_token:
             return {"as_of": (as_of or utcnow()).isoformat(), "items": []}
-        has_investment = False
+        has_investment: bool | None = None
         cache = run_settings.get("_plaid_accounts_cache")
         if isinstance(cache, list):
+            has_investment = False
             for row in cache:
                 if not isinstance(row, dict):
                     continue
@@ -918,21 +919,21 @@ class PlaidChaseAdapter(BrokerAdapter):
                 if raw_type == "investment":
                     has_investment = True
                     break
-        if not has_investment:
+        if has_investment is None:
             try:
                 rows = client.get_accounts(access_token=str(access_token))
-                for r in rows:
-                    if _as_str(r.get("type")).lower() == "investment":
-                        has_investment = True
-                        break
+                has_investment = any(_as_str(r.get("type")).lower() == "investment" for r in rows)
             except PlaidApiError as e:
                 if e.info.is_item_login_required:
                     raise ProviderError(
                         "ITEM_LOGIN_REQUIRED: Plaid re-auth required. Re-link the connection via Plaid."
                     )
+                has_investment = None
+            except AttributeError:
+                has_investment = None
             except Exception:
-                has_investment = False
-        if not has_investment:
+                has_investment = None
+        if has_investment is False:
             return {
                 "as_of": (as_of or utcnow()).isoformat(),
                 "items": [],

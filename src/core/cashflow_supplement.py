@@ -178,6 +178,7 @@ def import_supplemental_cashflows(
     stored_path: str | None = None,
     actor: str | None = None,
     purge_manual_overrides: bool = True,
+    allow_reimport: bool = False,
 ) -> dict[str, Any]:
     if not file_bytes:
         raise ValueError("Empty CSV file.")
@@ -263,6 +264,7 @@ def import_supplemental_cashflows(
     stats = {
         "file_hash": file_hash,
         "already_imported": already_imported,
+        "skipped": False,
         "rows": 0,
         "inserted": 0,
         "duplicates": 0,
@@ -275,6 +277,10 @@ def import_supplemental_cashflows(
     }
     start_date: dt.date | None = None
     end_date: dt.date | None = None
+
+    if already_imported and not allow_reimport:
+        stats["skipped"] = True
+        return stats
 
     if already_imported and existing and existing.file_name:
         src_name = existing.file_name
