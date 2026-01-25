@@ -113,6 +113,16 @@ def _normalize_confirm(value: str) -> str:
     return " ".join((value or "").strip().upper().split())
 
 
+def _stale_run_minutes() -> int:
+    raw = (os.environ.get("SYNC_STALE_RUN_MINUTES") or "").strip()
+    if not raw:
+        return 15
+    try:
+        return max(5, int(raw))
+    except Exception:
+        return 15
+
+
 @router.get("/connections")
 def connections_list(
     request: Request,
@@ -1336,7 +1346,36 @@ def connection_run_sync(
         )
         if existing is not None and existing.started_at is not None:
             age = dt.datetime.now(dt.timezone.utc) - existing.started_at
-            if age < dt.timedelta(hours=6):
+            stale_minutes = _stale_run_minutes()
+            if age >= dt.timedelta(minutes=stale_minutes) and int(existing.pages_fetched or 0) == 0:
+                mins = max(1, int(age.total_seconds() // 60))
+                note = f"Stale run aborted after {mins} minutes."
+                existing.finished_at = dt.datetime.now(dt.timezone.utc)
+                existing.status = "ERROR"
+                existing.error_json = note
+                cov = dict(existing.coverage_json or {})
+                warns = list(cov.get("warnings") or [])
+                if note not in warns:
+                    warns.append(note)
+                cov["warnings"] = warns
+                cov["error"] = "Stale run aborted"
+                cov["aborted_at"] = existing.finished_at.isoformat() if existing.finished_at else None
+                existing.coverage_json = cov
+                conn.last_error_json = note
+                session.flush()
+                log_change(
+                    session,
+                    actor=actor,
+                    action="SYNC_RUN_FINISHED",
+                    entity="SyncRun",
+                    entity_id=str(existing.id),
+                    old=None,
+                    new={"status": existing.status, "error": note},
+                    note="Stale run auto-aborted before new sync",
+                )
+                session.commit()
+                existing = None
+            if existing is not None and age < dt.timedelta(hours=6):
                 msg = urllib.parse.quote(f"Sync already running (started {existing.started_at.isoformat()}).")
                 return RedirectResponse(url=f"/sync/connections/{connection_id}?error={msg}", status_code=303)
     except Exception:
