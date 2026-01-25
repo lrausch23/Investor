@@ -1,3 +1,5 @@
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-
+markers = [
+    "integration: integration tests that require network or external services",
+]

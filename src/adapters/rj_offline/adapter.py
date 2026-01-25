@@ -200,7 +200,7 @@ def _extract_statement_period(text: str) -> tuple[dt.date | None, dt.date | None
         # Extremely rare; attempt no-year parse with the current year as a fallback.
         for fmt in fmts_no_year:
             try:
-                end_d = dt.datetime.strptime(end_s, fmt).date().replace(year=dt.date.today().year)
+                end_d = dt.datetime.strptime(f"{end_s} {dt.date.today().year}", f"{fmt} %Y").date()
                 break
             except Exception:
                 continue
@@ -218,7 +218,7 @@ def _extract_statement_period(text: str) -> tuple[dt.date | None, dt.date | None
     else:
         for fmt in fmts_no_year:
             try:
-                start_d = dt.datetime.strptime(start_s, fmt).date().replace(year=end_d.year)
+                start_d = dt.datetime.strptime(f"{start_s} {end_d.year}", f"{fmt} %Y").date()
                 break
             except Exception:
                 continue
