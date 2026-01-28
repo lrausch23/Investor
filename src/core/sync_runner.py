@@ -31,6 +31,7 @@ from src.db.audit import log_change
 from src.db.models import (
     Account,
     BrokerLotClosure,
+    BrokerSymbolSummary,
     BrokerWashSaleEvent,
     CashBalance,
     ExternalAccountMap,
@@ -1830,7 +1831,44 @@ def run_sync(
                                 coverage["cash_balances_imported"] = int(coverage.get("cash_balances_imported") or 0) + 1
                         continue
                     if record_kind == "BROKER_SYMBOL_SUMMARY":
-                        coverage["symbol_summary_rows_seen"] = int(coverage.get("symbol_summary_rows_seen") or 0) + 1
+                        symbol = str(it.get("symbol") or "").strip().upper()
+                        provider_account_id = str(it.get("provider_account_id") or "")
+                        if not symbol or not provider_account_id:
+                            coverage["parse_fail_count"] += 1
+                            continue
+                        try:
+                            as_of_date = dt.date.fromisoformat(str(it.get("date")))
+                        except Exception:
+                            coverage["parse_fail_count"] += 1
+                            continue
+                        qty = _float_or_none(it.get("qty"))
+                        cost_basis = _float_or_none(it.get("cost_basis"))
+                        realized = _float_or_none(it.get("realized_pl"))
+                        proceeds = _float_or_none(it.get("proceeds"))
+                        source_file_hash = str(it.get("source_file_hash") or "") or "UNKNOWN"
+                        source_row = int(it.get("source_row") or 0)
+
+                        row = BrokerSymbolSummary(
+                            connection_id=conn.id,
+                            provider_account_id=provider_account_id,
+                            symbol=symbol,
+                            as_of_date=as_of_date,
+                            quantity=qty,
+                            cost_basis=cost_basis,
+                            proceeds=proceeds,
+                            realized_pl=realized,
+                            currency=str(it.get("currency")) if it.get("currency") not in (None, "") else None,
+                            source_file_hash=source_file_hash,
+                            source_row=source_row,
+                            raw_json={"row": it.get("raw_row") or {}, "source_file": it.get("source_file"), "source_row": it.get("source_row")},
+                        )
+                        try:
+                            with session.begin_nested():
+                                session.add(row)
+                                session.flush()
+                            coverage["symbol_summary_rows_imported"] = int(coverage.get("symbol_summary_rows_imported") or 0) + 1
+                        except IntegrityError:
+                            coverage["symbol_summary_rows_dupes"] = int(coverage.get("symbol_summary_rows_dupes") or 0) + 1
                         continue
                     if record_kind in {"BROKER_CLOSED_LOT", "BROKER_WASH_SALE"}:
                         symbol = str(it.get("symbol") or it.get("ticker") or "").strip().upper()

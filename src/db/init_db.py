@@ -5,7 +5,7 @@ import datetime as dt
 from src.db.models import Base
 from src.db.session import get_engine
 from src.db.session import get_session
-from src.db.models import TaxAssumptionsSet
+from src.db.models import HouseholdEntity, TaxAssumptionsSet
 from src.db.sqlite_migrations import ensure_sqlite_schema
 
 
@@ -31,4 +31,32 @@ def init_db() -> None:
                     },
                 )
             )
+            session.commit()
+
+        year = dt.date.today().year
+        existing_entities = (
+            session.query(HouseholdEntity).filter(HouseholdEntity.tax_year == int(year)).all()
+        )
+        existing_types = {str(row.entity_type) for row in existing_entities}
+        defaults = [
+            ("USER", "Laszlo"),
+            ("SPOUSE", "Tamila"),
+            ("DEPENDENT", "Milana"),
+            ("TRUST", "Trust"),
+            ("BUSINESS", "ArtYoga (Schedule C)"),
+            ("HOUSEHOLD", "Household"),
+        ]
+        created = False
+        for entity_type, name in defaults:
+            if entity_type in existing_types:
+                continue
+            session.add(
+                HouseholdEntity(
+                    tax_year=int(year),
+                    entity_type=entity_type,
+                    display_name=name,
+                )
+            )
+            created = True
+        if created:
             session.commit()

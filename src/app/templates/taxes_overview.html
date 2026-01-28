@@ -1,0 +1,488 @@
+{% extends "layout.html" %}
+{% block content %}
+  <h1>Taxes</h1>
+  {% set s = dashboard.summary %}
+
+  <nav class="ui-tabs" aria-label="Taxes">
+    <a class="ui-tab ui-tab--active" href="/taxes?year={{ year }}">Overview</a>
+    <a class="ui-tab" href="/taxes/inputs?year={{ year }}">Inputs &amp; Assumptions</a>
+    <a class="ui-tab" href="/taxes/cpa-pack?year={{ year }}">CPA Pack</a>
+  </nav>
+
+  <div class="box">
+    <form method="get" action="/taxes">
+      <div class="grid3">
+        <label>Tax year<br/>
+          <select name="year">
+            {% for y in tax_years %}
+              <option value="{{ y }}" {% if year == y %}selected{% endif %}>{{ y }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label>&nbsp;<br/><button type="submit">View</button></label>
+        <label>&nbsp;<br/><a href="/taxes/inputs?year={{ year }}">Edit inputs</a></label>
+      </div>
+      <div class="muted">
+        Estimates only. Use the Inputs tab to adjust assumptions, tag transactions, and update overrides.
+      </div>
+    </form>
+  </div>
+
+  {% if s.ordinary_income == 0 and s.capital_gains.st == 0 and s.capital_gains.lt == 0 and s.paid_ytd == 0 %}
+    <div class="banner banner--warn">No tax inputs detected yet. Use the Inputs tab to add wages, distributions, or tags.</div>
+  {% endif %}
+  {% if s.docs_present and s.docs_primary %}
+    <div class="banner banner--ok">Using confirmed tax documents as the primary source of truth.</div>
+  {% elif s.docs_present and not s.docs_primary %}
+    <div class="banner banner--warn">Tax documents are available but not applied as primary sources.</div>
+  {% endif %}
+
+  {% set source_items = [
+    ("w2_wages_total", "W-2 wages"),
+    ("w2_withholding_total", "W-2 withholding"),
+    ("ira_distributions_total", "IRA distributions"),
+    ("ira_withholding_total", "IRA withholding"),
+    ("interest_total", "Interest income"),
+    ("dividends_ordinary_total", "Dividends (ordinary)"),
+    ("dividends_qualified_total", "Dividends (qualified)"),
+    ("cap_gain_dist_total", "Capital gain distributions"),
+    ("k1_total", "K-1 income"),
+    ("aca_premium_monthly", "ACA premiums"),
+    ("aca_aptc_monthly", "ACA APTC"),
+  ] %}
+  {% set ns = namespace(has_override=false) %}
+  {% for key, label in source_items %}
+    {% if s.sources.get(key) in ["docs", "manual"] %}
+      {% set ns.has_override = true %}
+    {% endif %}
+  {% endfor %}
+  {% if ns.has_override %}
+    <div class="box" style="margin-top:12px;">
+      <b>Source hints</b>
+      <div class="muted">These categories are currently overridden by tax docs or manual inputs.</div>
+      <div class="table-wrap" style="margin-top:8px;">
+        <table>
+          <thead>
+            <tr>
+              <th>Category</th>
+              <th>Source</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for key, label in source_items %}
+              {% set src = s.sources.get(key) %}
+              {% if src == "docs" or src == "manual" %}
+                <tr>
+                  <td>{{ label }}</td>
+                  <td><span class="ui-badge ui-badge--outline">{{ src|capitalize }}</span></td>
+                </tr>
+              {% endif %}
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  {% endif %}
+
+  <div class="ui-kpi-grid">
+    <div class="ui-card ui-kpi ui-tone-neutral">
+      <div class="ui-card__label">Estimated total tax (federal + state)</div>
+      <div class="ui-card__value ui-tabular-nums">{{ s.total_tax|usd }}</div>
+      <div class="ui-card__subtext">Includes SE tax {{ s.se_tax|usd }}{% if s.state_tax %} · State {{ s.state_tax|usd }}{% endif %}</div>
+      <div class="ui-card__subtext"><button type="button" class="btn btn--secondary btn--sm" data-tax-detail="total-tax">Details</button></div>
+    </div>
+    <div class="ui-card ui-kpi ui-tone-neutral">
+      <div class="ui-card__label">Effective tax rate</div>
+      <div class="ui-card__value ui-tabular-nums">{{ "%.2f"|format(s.effective_tax_rate * 100.0) }}%</div>
+      <div class="ui-card__subtext">Gross rate {{ "%.2f"|format(s.effective_tax_rate_gross * 100.0) }}%</div>
+      <div class="ui-card__subtext"><button type="button" class="btn btn--secondary btn--sm" data-tax-detail="effective-rate">Details</button></div>
+    </div>
+    <div class="ui-card ui-kpi ui-tone-neutral">
+      <div class="ui-card__label">Estimated paid/withheld YTD</div>
+      <div class="ui-card__value ui-tabular-nums">{{ s.paid_ytd|usd }}</div>
+      <div class="ui-card__subtext">
+        Withholding {{ s.withholding_ytd|usd }} (IRA {{ s.ira_withholding_ytd|usd }} · W-2 {{ s.w2_withholding_ytd|usd }} · Trust dividend tax {{ s.other_withholding_ytd|usd }})
+        · Estimates {{ s.estimated_payments_ytd|usd }}
+      </div>
+      <div class="ui-card__subtext"><button type="button" class="btn btn--secondary btn--sm" data-tax-detail="paid-ytd">Details</button></div>
+    </div>
+    <div class="ui-card ui-kpi {% if s.remaining_due < 0 %}ui-tone-positive{% else %}ui-tone-warning{% endif %}">
+      <div class="ui-card__label">Estimated remaining due</div>
+      <div class="ui-card__value ui-tabular-nums">{{ s.remaining_due|usd }}</div>
+      <div class="ui-card__subtext">{% if s.remaining_due < 0 %}Refund estimate{% else %}Due by year-end{% endif %}</div>
+      <div class="ui-card__subtext"><button type="button" class="btn btn--secondary btn--sm" data-tax-detail="remaining-due">Details</button></div>
+    </div>
+    <div class="ui-card ui-kpi {% if s.safe_harbor_status == 'behind' %}ui-tone-warning{% else %}ui-tone-positive{% endif %}">
+      <div class="ui-card__label">Safe harbor (YTD)</div>
+      <div class="ui-card__value ui-tabular-nums">{{ s.safe_harbor_paid_ytd|usd }} / {{ s.safe_harbor_paid_target|usd }}</div>
+      <div class="ui-card__subtext">{{ s.safe_harbor_status|capitalize }}</div>
+      <div class="ui-card__subtext"><button type="button" class="btn btn--secondary btn--sm" data-tax-detail="safe-harbor">Details</button></div>
+    </div>
+  </div>
+
+  <div class="ui-card" style="margin-top:12px;">
+    <div class="table-toolbar">
+      <div>
+        <b>Income &amp; Tax Breakdown</b>
+        <div class="muted">Year {{ year }} · Filing {{ s.filing_status }}</div>
+      </div>
+      <div>
+        <a href="/taxes/inputs?year={{ year }}">Edit inputs</a>
+      </div>
+    </div>
+    <div class="grid3">
+      <div class="ui-card">
+        <div class="ui-card__label">Ordinary income</div>
+        <div class="ui-card__value ui-tabular-nums">{{ s.ordinary_income|usd }}</div>
+        <div class="ui-card__subtext">
+          IRA gross {{ s.ordinary_breakdown.ira_distributions|usd }} · IRA net {{ s.ordinary_breakdown.ira_distributions_net|usd }}
+          · W-2 {{ s.ordinary_breakdown.w2_wages|usd }} ·
+          Yoga {{ s.ordinary_breakdown.yoga_net_profit|usd }} · Trust net {{ s.ordinary_breakdown.trust_passthrough|usd }}
+        </div>
+        <div class="ui-card__subtext">Interest {{ s.ordinary_breakdown.interest|usd }} · Dividends {{ s.ordinary_breakdown.dividends|usd }}</div>
+        <div class="ui-card__subtext muted">Pass-through: Interest {{ s.ordinary_breakdown.interest_pass_through|usd }} · Dividends {{ s.ordinary_breakdown.dividends_pass_through|usd }}</div>
+        <div class="ui-card__subtext muted">Other: Interest {{ s.ordinary_breakdown.interest_other|usd }} · Dividends {{ s.ordinary_breakdown.dividends_other|usd }}</div>
+        <div class="ui-card__subtext"><button type="button" class="btn btn--secondary btn--sm" data-tax-detail="ordinary-income">Details</button></div>
+      </div>
+      <div class="ui-card">
+        <div class="ui-card__label">Capital gains</div>
+        <div class="ui-card__value ui-tabular-nums">{{ (s.capital_gains.st + s.capital_gains.lt)|usd }}</div>
+        <div class="ui-card__subtext">ST {{ s.capital_gains.st|usd }} · LT {{ s.capital_gains.lt|usd }}</div>
+        <div class="ui-card__subtext">Taxable LT {{ s.taxable_ltcg|usd }}</div>
+        <div class="ui-card__subtext"><button type="button" class="btn btn--secondary btn--sm" data-tax-detail="capital-gains">Details</button></div>
+      </div>
+      <div class="ui-card">
+        <div class="ui-card__label">Deductions</div>
+        <div class="ui-card__value ui-tabular-nums">{{ s.deductions|usd }}</div>
+        <div class="ui-card__subtext">Mode: {{ s.deductions_mode }} · SE deduction {{ s.se_deduction|usd }}</div>
+        <div class="ui-card__subtext"><button type="button" class="btn btn--secondary btn--sm" data-tax-detail="deductions">Details</button></div>
+      </div>
+      <div class="ui-card">
+        <div class="ui-card__label">Self-employment (Yoga)</div>
+        <div class="ui-card__value ui-tabular-nums">{{ s.ordinary_breakdown.yoga_net_profit|usd }}</div>
+        <div class="ui-card__subtext">SE tax estimate {{ s.se_tax|usd }}</div>
+        <div class="ui-card__subtext"><button type="button" class="btn btn--secondary btn--sm" data-tax-detail="self-employment">Details</button></div>
+      </div>
+      <div class="ui-card">
+        <div class="ui-card__label">Credits (planning)</div>
+        <div class="ui-card__value ui-tabular-nums">{{ s.credits.child_credit_est|usd }}</div>
+        <div class="ui-card__subtext">Child/dependent credit estimate</div>
+        <div class="ui-card__subtext"><button type="button" class="btn btn--secondary btn--sm" data-tax-detail="credits">Details</button></div>
+      </div>
+      <div class="ui-card">
+        <div class="ui-card__label">ACA Marketplace</div>
+        {% if not s.aca.enabled %}
+          <div class="ui-card__value ui-tabular-nums">Disabled</div>
+          <div class="ui-card__subtext">Enable in Inputs &amp; Assumptions to show the PTC risk indicator.</div>
+        {% else %}
+          <div class="ui-card__value ui-tabular-nums">{{ s.aca.aptc_received|usd }}</div>
+          <div class="ui-card__subtext">Premiums {{ s.aca.premium_paid|usd }} · MAGI {{ s.aca.magi_estimate|usd }}</div>
+          <div class="ui-card__subtext">PTC risk: {{ s.aca.indicator }}</div>
+        {% endif %}
+        <div class="ui-card__subtext"><button type="button" class="btn btn--secondary btn--sm" data-tax-detail="aca">Details</button></div>
+      </div>
+    </div>
+  </div>
+
+  <details style="margin-top:12px;">
+    <summary>Assumptions (simplified)</summary>
+    <div class="box">
+      <ul>
+        <li>Uses broker CLOSED_LOT gains when available; unknown term treated as short-term.</li>
+        <li>Standard/itemized deductions applied to ordinary income first; remaining reduces LTCG bucket.</li>
+        <li>Qualified dividend percentage from Inputs; otherwise treated as ordinary.</li>
+        <li>SE tax uses SS cap + Medicare rates from the year parameter file.</li>
+        <li>ACA estimator is a risk indicator, not a precise reconciliation.</li>
+      </ul>
+    </div>
+  </details>
+
+  <div class="box" style="margin-top:12px;">
+    <b>What this estimate includes</b>
+    <ul>
+      <li>Tagged IRA distributions, withholding, and estimated payments.</li>
+      <li>Broker-reported capital gains and dividends (when available).</li>
+      <li>Manual inputs for yoga net profit, W-2 wages/withholding, and trust passthrough.</li>
+    </ul>
+    <b>Excludes / simplified</b>
+    <ul>
+      <li>State-specific deductions/credits beyond a flat rate.</li>
+      <li>Exact ACA premium tax credit reconciliation.</li>
+      <li>Full IRS filing logic (AMT, phaseouts, carryforwards).</li>
+    </ul>
+  </div>
+
+  <div class="ui-card" style="margin-top:12px;">
+    <div class="table-toolbar">
+      <div><b>Monthly monitoring (YTD)</b></div>
+      <div class="muted">Flags: behind safe harbor · withholding shortfall · large cap gains month</div>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Month</th>
+            <th>Ordinary YTD</th>
+            <th>ST gains YTD</th>
+            <th>LT gains YTD</th>
+            <th>Tax YTD</th>
+            <th>Paid YTD</th>
+            <th>Remaining YTD</th>
+            <th>Run-rate tax</th>
+            <th>Flags</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in dashboard.monthly %}
+            <tr>
+              <td>{{ row.label }}</td>
+              <td class="num ui-tabular-nums">{{ row.ordinary_ytd|usd }}</td>
+              <td class="num ui-tabular-nums">{{ row.st_gains_ytd|usd }}</td>
+              <td class="num ui-tabular-nums">{{ row.lt_gains_ytd|usd }}</td>
+              <td class="num ui-tabular-nums">{{ row.tax_ytd|usd }}</td>
+              <td class="num ui-tabular-nums">{{ row.paid_ytd|usd }}</td>
+              <td class="num ui-tabular-nums">{{ row.remaining_ytd|usd }}</td>
+              <td class="num ui-tabular-nums">{{ row.run_rate_tax|usd }}</td>
+              <td class="muted">{{ ", ".join(row.flags or []) }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <template id="tax-detail-total-tax" data-title="Estimated total tax">
+    <table class="kv">
+      <tr><td>Ordinary tax</td><td class="num ui-tabular-nums">{{ s.ordinary_tax|usd }}</td></tr>
+      <tr><td>LTCG tax</td><td class="num ui-tabular-nums">{{ s.ltcg_tax|usd }}</td></tr>
+      <tr><td>NIIT</td><td class="num ui-tabular-nums">{{ s.niit_tax|usd }}</td></tr>
+      <tr><td>SE tax</td><td class="num ui-tabular-nums">{{ s.se_tax|usd }}</td></tr>
+      <tr><td>State tax</td><td class="num ui-tabular-nums">{{ s.state_tax|usd }}</td></tr>
+      <tr><td><b>Total</b></td><td class="num ui-tabular-nums"><b>{{ s.total_tax|usd }}</b></td></tr>
+      <tr><td>Effective rate (taxable income)</td><td class="num ui-tabular-nums">{{ "%.2f"|format(s.effective_tax_rate * 100.0) }}%</td></tr>
+      <tr><td>Effective rate (gross income)</td><td class="num ui-tabular-nums">{{ "%.2f"|format(s.effective_tax_rate_gross * 100.0) }}%</td></tr>
+    </table>
+    <div class="muted" style="margin-top:8px;">
+      <div><b>How this estimate is calculated</b></div>
+      <div style="margin-top:6px;">
+        <div>Ordinary income: {{ s.ordinary_income|usd }}</div>
+        <div>Short‑term gains: {{ s.capital_gains.st|usd }}</div>
+        <div>Qualified dividends: {{ s.qualified_dividends|usd }}</div>
+        <div>Non‑qualified dividends: {{ s.non_qualified_dividends|usd }}</div>
+        <div>Deductions used: {{ s.deductions|usd }}</div>
+        <div>SE deduction: {{ s.se_deduction|usd }}</div>
+        <div><b>Ordinary taxable income: {{ s.taxable_income.ordinary_taxable|usd }}</b></div>
+      </div>
+      <ul>
+        <li>Ordinary tax starts with ordinary taxable income.</li>
+        <li>Ordinary taxable income = ordinary income + short‑term gains + non‑qualified dividends − deductions − SE deduction.</li>
+        <li>Ordinary income includes IRA distributions (gross), W‑2 wages, trust income (net of fees), K‑1 ordinary income, interest, and other taxable income inputs.</li>
+        <li>Ordinary tax is computed by applying progressive brackets to ordinary taxable income (sum of each bracket slice × its rate).</li>
+        <li>LTCG tax uses the LTCG brackets on long‑term gains + qualified dividends, stacked above ordinary income.</li>
+        <li>NIIT is applied to investment income (ST + LT + dividends) when enabled.</li>
+        <li>SE tax is computed on net self‑employment profit using SS/Medicare rates and the wage base for the year.</li>
+        <li>State tax is a flat % applied to taxable income when a state rate is provided.</li>
+        <li>Effective rate (taxable income) = total tax ÷ taxable income (ordinary taxable + LTCG taxable).</li>
+        <li>Effective rate (gross income) = total tax ÷ gross income (ordinary + ST/LT gains + dividends), before deductions.</li>
+        <li>Rates and brackets come from the tax year parameter file (and any overrides from Inputs).</li>
+      </ul>
+    </div>
+  </template>
+
+  <template id="tax-detail-effective-rate" data-title="Effective tax rate">
+    <table class="kv">
+      <tr><td>Total tax</td><td class="num ui-tabular-nums">{{ s.total_tax|usd }}</td></tr>
+      <tr><td>Taxable income</td><td class="num ui-tabular-nums">{{ s.taxable_income_total|usd }}</td></tr>
+      <tr><td>Gross income</td><td class="num ui-tabular-nums">{{ s.gross_income_total|usd }}</td></tr>
+      <tr><td><b>Effective rate (taxable income)</b></td><td class="num ui-tabular-nums"><b>{{ "%.2f"|format(s.effective_tax_rate * 100.0) }}%</b></td></tr>
+      <tr><td><b>Effective rate (gross income)</b></td><td class="num ui-tabular-nums"><b>{{ "%.2f"|format(s.effective_tax_rate_gross * 100.0) }}%</b></td></tr>
+    </table>
+    <div class="muted" style="margin-top:8px;">
+      <div><b>How the rate is computed</b></div>
+      <ul>
+        <li>Taxable‑income rate = total tax ÷ taxable income (ordinary taxable + LTCG taxable).</li>
+        <li>Gross‑income rate = total tax ÷ gross income (ordinary + ST/LT gains + dividends), before deductions.</li>
+      </ul>
+    </div>
+  </template>
+
+  <template id="tax-detail-paid-ytd" data-title="Paid / Withheld YTD">
+    <table class="kv">
+      <tr><td>IRA withholding</td><td class="num ui-tabular-nums">{{ s.ira_withholding_ytd|usd }}</td></tr>
+      <tr><td>W-2 withholding</td><td class="num ui-tabular-nums">{{ s.w2_withholding_ytd|usd }}</td></tr>
+      <tr><td>Trust dividend tax</td><td class="num ui-tabular-nums">{{ s.other_withholding_ytd|usd }}</td></tr>
+      <tr><td>Estimated payments</td><td class="num ui-tabular-nums">{{ s.estimated_payments_ytd|usd }}</td></tr>
+      <tr><td><b>Total paid</b></td><td class="num ui-tabular-nums"><b>{{ s.paid_ytd|usd }}</b></td></tr>
+    </table>
+  </template>
+
+  <template id="tax-detail-remaining-due" data-title="Remaining due">
+    <table class="kv">
+      <tr><td>Total tax</td><td class="num ui-tabular-nums">{{ s.total_tax|usd }}</td></tr>
+      <tr><td>Paid/withheld YTD</td><td class="num ui-tabular-nums">{{ s.paid_ytd|usd }}</td></tr>
+      <tr><td><b>Remaining</b></td><td class="num ui-tabular-nums"><b>{{ s.remaining_due|usd }}</b></td></tr>
+    </table>
+  </template>
+
+  <template id="tax-detail-safe-harbor" data-title="Safe harbor status">
+    <table class="kv">
+      <tr><td>Last year total tax</td><td class="num ui-tabular-nums">{{ s.last_year_total_tax|usd }}</td></tr>
+      <tr><td>Multiplier</td><td class="num ui-tabular-nums">{{ s.safe_harbor_multiplier }}</td></tr>
+      <tr><td>Target YTD</td><td class="num ui-tabular-nums">{{ s.safe_harbor_paid_target|usd }}</td></tr>
+      <tr><td>Paid YTD</td><td class="num ui-tabular-nums">{{ s.safe_harbor_paid_ytd|usd }}</td></tr>
+      <tr><td>Status</td><td>{{ s.safe_harbor_status|capitalize }}</td></tr>
+    </table>
+    <div class="muted">Set last-year total tax and safe harbor multiplier in Inputs &amp; Assumptions.</div>
+  </template>
+
+  <template id="tax-detail-ordinary-income" data-title="Ordinary income">
+    <table class="kv">
+      <tr><td>IRA gross distributions</td><td class="num ui-tabular-nums">{{ s.ordinary_breakdown.ira_distributions|usd }}</td></tr>
+      <tr><td>IRA net distributions</td><td class="num ui-tabular-nums">{{ s.ordinary_breakdown.ira_distributions_net|usd }}</td></tr>
+      <tr><td>W-2 wages</td><td class="num ui-tabular-nums">{{ s.ordinary_breakdown.w2_wages|usd }}</td></tr>
+      <tr><td>Yoga net profit</td><td class="num ui-tabular-nums">{{ s.ordinary_breakdown.yoga_net_profit|usd }}</td></tr>
+      <tr><td>Pass-through distributions (manual)</td><td class="num ui-tabular-nums">{{ s.ordinary_breakdown.trust_passthrough_gross|usd }}</td></tr>
+      <tr><td>Pass-through fees</td><td class="num ui-tabular-nums">{{ s.ordinary_breakdown.trust_fees|usd }}</td></tr>
+      <tr><td>Pass-through distributions (net)</td><td class="num ui-tabular-nums">{{ s.ordinary_breakdown.trust_passthrough|usd }}</td></tr>
+      <tr><td>K-1 income</td><td class="num ui-tabular-nums">{{ s.ordinary_breakdown.k1_income|usd }}</td></tr>
+      <tr><td>Interest (pass-through)</td><td class="num ui-tabular-nums">{{ s.ordinary_breakdown.interest_pass_through|usd }}</td></tr>
+      <tr><td>Interest (other)</td><td class="num ui-tabular-nums">{{ s.ordinary_breakdown.interest_other|usd }}</td></tr>
+      <tr><td>Dividends (pass-through)</td><td class="num ui-tabular-nums">{{ s.ordinary_breakdown.dividends_pass_through|usd }}</td></tr>
+      <tr><td>Dividends (other)</td><td class="num ui-tabular-nums">{{ s.ordinary_breakdown.dividends_other|usd }}</td></tr>
+      <tr><td>Pass-through income (interest+dividends)</td><td class="num ui-tabular-nums">{{ s.ordinary_breakdown.pass_through_income|usd }}</td></tr>
+      <tr><td><b>Total ordinary income</b></td><td class="num ui-tabular-nums"><b>{{ s.ordinary_income|usd }}</b></td></tr>
+    </table>
+    <div class="muted" style="margin-top:8px;">
+      Pass-through income (trust + LLC) is a P&amp;L roll‑up (capital gains + dividends + interest). See the pass‑through details for the roll‑up; those components are already included in the income and capital gains lines to avoid double counting.
+    </div>
+  </template>
+
+  <template id="tax-detail-trust-income" data-title="Pass-through income (trust + LLC)">
+    {% if trust_pnl_details|length == 0 %}
+      <div class="muted">No pass-through account income found for {{ year }}.</div>
+    {% else %}
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Account</th>
+              <th>Taxpayer</th>
+              <th>Capital gains (adj.)</th>
+              <th>Dividends</th>
+              <th>Interest</th>
+              <th>Total</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in trust_pnl_details %}
+              <tr>
+                <td>{{ row.account_name }}</td>
+                <td class="muted">{{ row.taxpayer }}</td>
+                <td class="num ui-tabular-nums">{{ row.capital_gains|usd }}</td>
+                <td class="num ui-tabular-nums">{{ row.dividends|usd }}</td>
+                <td class="num ui-tabular-nums">{{ row.interest|usd }}</td>
+                <td class="num ui-tabular-nums">{{ row.total|usd }}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      <div style="margin-top:8px;"><b>Total trust income (gross)</b> {{ s.ordinary_breakdown.trust_pnl_gross|usd }}</div>
+      {% if year == 2025 %}
+        <div class="muted" style="margin-top:8px;">Trust cutoff applied from Jun 6, 2025 (trust accounts only).</div>
+      {% endif %}
+    {% endif %}
+  </template>
+
+  <template id="tax-detail-capital-gains" data-title="Capital gains">
+    <table class="kv">
+      <tr><td>Short-term gains</td><td class="num ui-tabular-nums">{{ s.capital_gains.st|usd }}</td></tr>
+      <tr><td>Long-term gains</td><td class="num ui-tabular-nums">{{ s.capital_gains.lt|usd }}</td></tr>
+      <tr><td>Taxable LTCG</td><td class="num ui-tabular-nums">{{ s.taxable_ltcg|usd }}</td></tr>
+      <tr><td><b>Total gains</b></td><td class="num ui-tabular-nums"><b>{{ (s.capital_gains.st + s.capital_gains.lt)|usd }}</b></td></tr>
+    </table>
+  </template>
+
+  <template id="tax-detail-deductions" data-title="Deductions">
+    <table class="kv">
+      <tr><td>Mode</td><td>{{ s.deductions_mode }}</td></tr>
+      <tr><td>Standard deduction</td><td class="num ui-tabular-nums">{{ s.standard_deduction|usd }}</td></tr>
+      <tr><td>Itemized amount</td><td class="num ui-tabular-nums">{{ s.itemized_amount|usd }}</td></tr>
+      <tr><td>SE deduction</td><td class="num ui-tabular-nums">{{ s.se_deduction|usd }}</td></tr>
+      <tr><td><b>Total deductions used</b></td><td class="num ui-tabular-nums"><b>{{ s.deductions|usd }}</b></td></tr>
+    </table>
+  </template>
+
+  <template id="tax-detail-self-employment" data-title="Self-employment (Yoga)">
+    <table class="kv">
+      <tr><td>Net profit</td><td class="num ui-tabular-nums">{{ s.ordinary_breakdown.yoga_net_profit|usd }}</td></tr>
+      <tr><td>SE tax</td><td class="num ui-tabular-nums">{{ s.se_tax|usd }}</td></tr>
+      <tr><td>SE deduction</td><td class="num ui-tabular-nums">{{ s.se_deduction|usd }}</td></tr>
+    </table>
+  </template>
+
+  <template id="tax-detail-credits" data-title="Credits (planning)">
+    <table class="kv">
+      <tr><td>Child/dependent credit estimate</td><td class="num ui-tabular-nums">{{ s.credits.child_credit_est|usd }}</td></tr>
+    </table>
+  </template>
+
+  <template id="tax-detail-aca" data-title="ACA Marketplace">
+    <table class="kv">
+      <tr><td>Premiums</td><td class="num ui-tabular-nums">{{ s.aca.premium_paid|usd }}</td></tr>
+      <tr><td>APTC received</td><td class="num ui-tabular-nums">{{ s.aca.aptc_received|usd }}</td></tr>
+      <tr><td>MAGI estimate</td><td class="num ui-tabular-nums">{{ s.aca.magi_estimate|usd }}</td></tr>
+      <tr><td>FPL ratio</td><td class="num ui-tabular-nums">{{ s.aca.fpl_ratio }}</td></tr>
+      <tr><td>Risk indicator</td><td>{{ s.aca.indicator }}</td></tr>
+    </table>
+  </template>
+
+  <div class="cashbills-modal" id="taxesDetailModal" aria-hidden="true">
+    <div class="cashbills-modal__overlay" data-modal-close="true"></div>
+    <div class="cashbills-modal__dialog" role="dialog" aria-modal="true" aria-labelledby="taxesDetailTitle">
+      <div class="cashbills-modal__header">
+        <div>
+          <div class="ui-section-title" id="taxesDetailTitle">Details</div>
+        </div>
+        <div class="cashbills-modal__actions">
+          <button class="btn" id="taxesDetailClose" type="button">Close</button>
+        </div>
+      </div>
+      <div class="cashbills-modal__body" id="taxesDetailBody"></div>
+    </div>
+  </div>
+
+  <script>
+    (() => {
+      const modal = document.getElementById("taxesDetailModal");
+      const body = document.getElementById("taxesDetailBody");
+      const title = document.getElementById("taxesDetailTitle");
+      if (!modal || !body || !title) return;
+
+      const closeModal = () => {
+        modal.classList.remove("is-open");
+        modal.setAttribute("aria-hidden", "true");
+        body.innerHTML = "";
+      };
+      const openModal = (key) => {
+        const tpl = document.getElementById(`tax-detail-${key}`);
+        if (!tpl) return;
+        title.textContent = tpl.dataset.title || "Details";
+        body.innerHTML = tpl.innerHTML;
+        modal.classList.add("is-open");
+        modal.setAttribute("aria-hidden", "false");
+      };
+
+      document.querySelectorAll("[data-tax-detail]").forEach((btn) => {
+        btn.addEventListener("click", () => openModal(btn.getAttribute("data-tax-detail")));
+      });
+      const closeBtn = document.getElementById("taxesDetailClose");
+      if (closeBtn) closeBtn.addEventListener("click", closeModal);
+      modal.addEventListener("click", (e) => {
+        if (e.target && e.target.getAttribute("data-modal-close")) {
+          closeModal();
+        }
+      });
+    })();
+  </script>
+{% endblock %}

@@ -1468,6 +1468,31 @@ def connection_disable(
     return RedirectResponse(url="/sync/connections", status_code=303)
 
 
+@router.post("/connections/{connection_id}/enable")
+def connection_enable(
+    connection_id: int,
+    session: Session = Depends(db_session),
+    actor: str = Depends(require_actor),
+    note: str = Form(default=""),
+):
+    conn = session.query(ExternalConnection).filter(ExternalConnection.id == connection_id).one()
+    old = {"status": conn.status}
+    conn.status = "ACTIVE"
+    session.flush()
+    log_change(
+        session,
+        actor=actor,
+        action="UPDATE",
+        entity="ExternalConnection",
+        entity_id=str(conn.id),
+        old=old,
+        new={"status": conn.status},
+        note=note.strip() or "Enabled connection",
+    )
+    session.commit()
+    return RedirectResponse(url="/sync/connections", status_code=303)
+
+
 @router.post("/connections/{connection_id}/delete")
 def connection_delete(
     connection_id: int,

@@ -22,6 +22,8 @@ from src.app.routes.maintenance import router as maintenance_router
 from src.app.routes.reports import router as reports_router
 from src.app.routes.setup import router as setup_router
 from src.app.routes.tax import router as tax_router
+from src.app.routes.taxes import router as taxes_router
+from src.app.routes.tax_documents import router as tax_documents_router
 from src.app.routes.taxlots import router as taxlots_router
 from src.app.routes.sync import router as sync_router
 from src.app.routes.api_rj import router as api_rj_router
@@ -73,6 +75,8 @@ def create_app() -> FastAPI:
     app.include_router(maintenance_router)
     app.include_router(reports_router)
     app.include_router(tax_router)
+    app.include_router(taxes_router)
+    app.include_router(tax_documents_router)
     app.include_router(taxlots_router)
     app.include_router(sync_router)
     app.include_router(api_rj_router)

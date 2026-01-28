@@ -50,6 +50,39 @@ PlanScope = Enum("TRUST", "PERSONAL", "BOTH", name="plan_scope")
 PlanStatus = Enum("DRAFT", "FINAL", "CANCELED", name="plan_status")
 SyncMode = Enum("FULL", "INCREMENTAL", name="sync_mode")
 SyncStatus = Enum("SUCCESS", "PARTIAL", "ERROR", name="sync_status")
+HouseholdEntityType = Enum("USER", "SPOUSE", "DEPENDENT", "TRUST", "BUSINESS", "HOUSEHOLD", name="household_entity_type")
+TaxDocType = Enum("W2", "K1", "1099INT", "1099DIV", "1099B", "1099R", "1095A", "1098", "SSA1099", "OTHER", name="tax_doc_type")
+TaxDocStatus = Enum(
+    "UPLOADED",
+    "EXTRACTING",
+    "EXTRACTED",
+    "NEEDS_REVIEW",
+    "CONFIRMED",
+    "ERROR",
+    name="tax_doc_status",
+)
+TaxFactType = Enum(
+    "WAGES",
+    "FED_WITHHOLDING",
+    "IRA_DISTRIBUTION",
+    "IRA_WITHHOLDING",
+    "INT_INCOME",
+    "DIV_ORDINARY",
+    "DIV_QUALIFIED",
+    "CAP_GAIN_DIST",
+    "K1_ORD_INCOME",
+    "K1_INTEREST",
+    "K1_DIVIDENDS",
+    "K1_RENTAL",
+    "K1_OTHER",
+    "ACA_PREMIUM",
+    "ACA_SLCSP",
+    "ACA_APTC",
+    "B_PROCEEDS",
+    "B_COST_BASIS",
+    "B_GAIN_LOSS",
+    name="tax_fact_type",
+)
 
 
 class TaxpayerEntity(Base):
@@ -62,6 +95,23 @@ class TaxpayerEntity(Base):
     notes: Mapped[Optional[str]] = mapped_column(Text)
 
     accounts: Mapped[list["Account"]] = relationship(back_populates="taxpayer_entity")
+
+
+class HouseholdEntity(Base):
+    __tablename__ = "household_entities"
+    __table_args__ = (
+        UniqueConstraint("tax_year", "entity_type", "display_name"),
+        Index("ix_household_entities_year", "tax_year"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tax_year: Mapped[int] = mapped_column(Integer, nullable=False)
+    entity_type: Mapped[str] = mapped_column(HouseholdEntityType, nullable=False)
+    display_name: Mapped[str] = mapped_column(String(200), nullable=False)
+    tin_last4: Mapped[Optional[str]] = mapped_column(String(4))
+    notes: Mapped[Optional[str]] = mapped_column(Text)
+    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=utcnow, nullable=False)
+    updated_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=utcnow, nullable=False)
 
 
 class Account(Base):
@@ -266,6 +316,127 @@ class TaxAssumptionsSet(Base):
     name: Mapped[str] = mapped_column(String(200), nullable=False, unique=True)
     effective_date: Mapped[dt.date] = mapped_column(Date, nullable=False)
     json_definition: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+
+
+class TaxProfile(Base):
+    __tablename__ = "tax_profiles"
+    __table_args__ = (UniqueConstraint("year"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    year: Mapped[int] = mapped_column(Integer, nullable=False)
+    filing_status: Mapped[str] = mapped_column(String(16), nullable=False, default="MFJ")
+    state_code: Mapped[Optional[str]] = mapped_column(String(8))
+    deductions_mode: Mapped[str] = mapped_column(String(16), nullable=False, default="standard")  # standard|itemized
+    itemized_amount: Mapped[Optional[float]] = mapped_column(Numeric(20, 2))
+    household_size: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
+    dependents_count: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    trust_income_taxable_to_user: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=utcnow, nullable=False)
+    updated_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=utcnow, nullable=False)
+
+
+class TaxInput(Base):
+    __tablename__ = "tax_inputs"
+    __table_args__ = (UniqueConstraint("year"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    year: Mapped[int] = mapped_column(Integer, nullable=False)
+    data_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=utcnow, nullable=False)
+    updated_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=utcnow, nullable=False)
+
+
+class TaxTag(Base):
+    __tablename__ = "tax_tags"
+    __table_args__ = (
+        UniqueConstraint("transaction_id"),
+        Index("ix_tax_tags_category", "category"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    transaction_id: Mapped[int] = mapped_column(ForeignKey("transactions.id"), nullable=False)
+    category: Mapped[str] = mapped_column(String(50), nullable=False)
+    note: Mapped[Optional[str]] = mapped_column(Text)
+    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=utcnow, nullable=False)
+    updated_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=utcnow, nullable=False)
+
+
+class TaxDocument(Base):
+    __tablename__ = "tax_documents"
+    __table_args__ = (
+        Index("ix_tax_documents_year", "tax_year"),
+        Index("ix_tax_documents_status", "status"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[Optional[str]] = mapped_column(String(100))
+    household_id: Mapped[Optional[str]] = mapped_column(String(100))
+    tax_year: Mapped[int] = mapped_column(Integer, nullable=False)
+    doc_type: Mapped[str] = mapped_column(TaxDocType, nullable=False, default="OTHER")
+    filename: Mapped[str] = mapped_column(String(255), nullable=False)
+    uploaded_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=utcnow, nullable=False)
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(TaxDocStatus, nullable=False, default="UPLOADED")
+    notes: Mapped[Optional[str]] = mapped_column(Text)
+    raw_file_path: Mapped[Optional[str]] = mapped_column(Text)
+    page_count: Mapped[Optional[int]] = mapped_column(Integer)
+    is_corrected: Mapped[Optional[bool]] = mapped_column(Boolean)
+    is_authoritative: Mapped[Optional[bool]] = mapped_column(Boolean)
+    owner_entity_id: Mapped[Optional[int]] = mapped_column(ForeignKey("household_entities.id"))
+
+    extractions: Mapped[list["TaxDocumentExtraction"]] = relationship(
+        back_populates="tax_document", cascade="all, delete-orphan"
+    )
+    facts: Mapped[list["TaxFact"]] = relationship(back_populates="tax_document", cascade="all, delete-orphan")
+    owner_entity: Mapped[Optional["HouseholdEntity"]] = relationship()
+
+
+class TaxDocumentExtraction(Base):
+    __tablename__ = "tax_document_extractions"
+    __table_args__ = (Index("ix_tax_doc_extract_doc", "tax_document_id"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tax_document_id: Mapped[int] = mapped_column(ForeignKey("tax_documents.id"), nullable=False)
+    extracted_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    confidence_overall: Mapped[Optional[float]] = mapped_column(Float)
+    warnings: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    extracted_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=utcnow, nullable=False)
+    extractor_version: Mapped[Optional[str]] = mapped_column(String(50))
+
+    tax_document: Mapped["TaxDocument"] = relationship(back_populates="extractions")
+
+
+class TaxFact(Base):
+    __tablename__ = "tax_facts"
+    __table_args__ = (Index("ix_tax_facts_year", "tax_year"), Index("ix_tax_facts_doc", "source_doc_id"))
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tax_year: Mapped[int] = mapped_column(Integer, nullable=False)
+    source_doc_id: Mapped[int] = mapped_column(ForeignKey("tax_documents.id"), nullable=False)
+    fact_type: Mapped[str] = mapped_column(TaxFactType, nullable=False)
+    payer_name: Mapped[Optional[str]] = mapped_column(String(200))
+    recipient_name: Mapped[Optional[str]] = mapped_column(String(200))
+    amount: Mapped[float] = mapped_column(Numeric(20, 2), nullable=False)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    confidence: Mapped[Optional[float]] = mapped_column(Float)
+    user_confirmed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    owner_entity_id: Mapped[Optional[int]] = mapped_column(ForeignKey("household_entities.id"))
+    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=utcnow, nullable=False)
+
+    tax_document: Mapped["TaxDocument"] = relationship(back_populates="facts")
+    owner_entity: Mapped[Optional["HouseholdEntity"]] = relationship()
+
+
+class TaxReconciliationSnapshot(Base):
+    __tablename__ = "tax_reconciliation_snapshots"
+    __table_args__ = (Index("ix_tax_reconcile_year", "tax_year"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tax_year: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=utcnow, nullable=False)
+    summary_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    document_ids: Mapped[list[int]] = mapped_column(JSON, default=list, nullable=False)
+    notes: Mapped[Optional[str]] = mapped_column(Text)
 
 
 # --- Expense analysis (local-first) ---
@@ -776,6 +947,29 @@ class BrokerWashSaleEvent(Base):
     created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=utcnow, nullable=False)
 
     linked_closure: Mapped[Optional["BrokerLotClosure"]] = relationship(foreign_keys=[linked_closure_id])
+
+
+class BrokerSymbolSummary(Base):
+    __tablename__ = "broker_symbol_summaries"
+    __table_args__ = (
+        UniqueConstraint("connection_id", "source_file_hash", "source_row", name="uq_broker_symbol_summary"),
+        Index("ix_broker_symbol_summary_scope", "connection_id", "provider_account_id", "symbol", "as_of_date"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    connection_id: Mapped[int] = mapped_column(ForeignKey("external_connections.id"), nullable=False)
+    provider_account_id: Mapped[str] = mapped_column(String(200), nullable=False)
+    symbol: Mapped[str] = mapped_column(String(32), nullable=False)
+    as_of_date: Mapped[dt.date] = mapped_column(Date, nullable=False)
+    quantity: Mapped[Optional[float]] = mapped_column(Numeric(20, 6))
+    cost_basis: Mapped[Optional[float]] = mapped_column(Numeric(20, 2))
+    proceeds: Mapped[Optional[float]] = mapped_column(Numeric(20, 2))
+    realized_pl: Mapped[Optional[float]] = mapped_column(Numeric(20, 2))
+    currency: Mapped[Optional[str]] = mapped_column(String(16))
+    source_file_hash: Mapped[str] = mapped_column(String(100), nullable=False)
+    source_row: Mapped[int] = mapped_column(Integer, nullable=False)
+    raw_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=utcnow, nullable=False)
 
 
 class TaxEstimateRun(Base):

@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import csv
 import datetime as dt
+import hashlib
 import io
+import json
 from dataclasses import dataclass
 from typing import Any, Iterable, Optional
 
@@ -78,6 +80,140 @@ def _account_ids_for_scope(session: Session, scope: DashboardScope) -> list[int]
     return [a.id for a in q.all()]
 
 
+def connection_ids_with_tax_rows(
+    session: Session,
+    *,
+    conn_ids: list[int],
+    start: dt.date,
+    end: dt.date,
+) -> set[int]:
+    if not conn_ids:
+        return set()
+    found: set[int] = set()
+    for (cid,) in (
+        session.query(BrokerLotClosure.connection_id)
+        .filter(
+            BrokerLotClosure.connection_id.in_(conn_ids),
+            BrokerLotClosure.trade_date >= start,
+            BrokerLotClosure.trade_date <= end,
+        )
+        .distinct()
+        .all()
+    ):
+        if cid is not None:
+            found.add(int(cid))
+    for (cid,) in (
+        session.query(BrokerWashSaleEvent.connection_id)
+        .filter(
+            BrokerWashSaleEvent.connection_id.in_(conn_ids),
+            BrokerWashSaleEvent.trade_date >= start,
+            BrokerWashSaleEvent.trade_date <= end,
+        )
+        .distinct()
+        .all()
+    ):
+        if cid is not None:
+            found.add(int(cid))
+    return found
+
+
+def expand_ib_conn_ids(session: Session, *, conn_ids: list[int]) -> list[int]:
+    if not conn_ids:
+        return []
+    conns = session.query(ExternalConnection).filter(ExternalConnection.id.in_(conn_ids)).all()
+    ib_tp_ids = {int(c.taxpayer_entity_id) for c in conns if (c.broker or "").upper() == "IB"}
+    if not ib_tp_ids:
+        return list(conn_ids)
+    extra = (
+        session.query(ExternalConnection.id)
+        .filter(
+            ExternalConnection.taxpayer_entity_id.in_(ib_tp_ids),
+            func.upper(ExternalConnection.broker) == "IB",
+            ExternalConnection.status == "ACTIVE",
+        )
+        .all()
+    )
+    extra_ids = {int(r[0]) for r in extra}
+    return sorted(set(conn_ids) | extra_ids)
+
+
+def prefer_ib_offline_for_tax_rows(
+    session: Session,
+    *,
+    conn_ids: list[int],
+    start: dt.date,
+    end: dt.date,
+) -> list[int]:
+    if not conn_ids:
+        return []
+    conns = session.query(ExternalConnection).filter(ExternalConnection.id.in_(conn_ids)).all()
+    by_group: dict[tuple[int, str], list[ExternalConnection]] = {}
+    for c in conns:
+        broker_u = (c.broker or "").upper()
+        if not broker_u:
+            continue
+        key = (int(c.taxpayer_entity_id), broker_u)
+        by_group.setdefault(key, []).append(c)
+
+    rows_with_tax = connection_ids_with_tax_rows(session, conn_ids=conn_ids, start=start, end=end)
+    selected: set[int] = set()
+
+    for (_tp_id, broker_u), group in by_group.items():
+        ids = [int(c.id) for c in group]
+        if broker_u == "IB":
+            offline_ids = [int(c.id) for c in group if (c.connector or "").upper() == "IB_FLEX_OFFLINE"]
+            web_ids = [int(c.id) for c in group if (c.connector or "").upper() == "IB_FLEX_WEB"]
+            if any(cid in rows_with_tax for cid in offline_ids):
+                selected.update([cid for cid in offline_ids if cid in rows_with_tax])
+                continue
+            if any(cid in rows_with_tax for cid in web_ids):
+                selected.update([cid for cid in web_ids if cid in rows_with_tax])
+                continue
+        selected.update(ids)
+
+    return sorted(selected)
+
+
+def augment_conn_ids_for_tax_rows(
+    session: Session,
+    *,
+    conn_ids: list[int],
+    start: dt.date,
+    end: dt.date,
+) -> list[int]:
+    if not conn_ids:
+        return []
+    conns = session.query(ExternalConnection).filter(ExternalConnection.id.in_(conn_ids)).all()
+    by_group: dict[tuple[int, str], list[int]] = {}
+    for c in conns:
+        broker_u = (c.broker or "").upper()
+        if not broker_u:
+            continue
+        key = (int(c.taxpayer_entity_id), broker_u)
+        by_group.setdefault(key, []).append(int(c.id))
+
+    base_with_rows = connection_ids_with_tax_rows(session, conn_ids=conn_ids, start=start, end=end)
+    augmented = set(conn_ids)
+
+    for (tp_id, broker_u), ids in by_group.items():
+        if any(i in base_with_rows for i in ids):
+            continue
+        candidates = [
+            int(cid)
+            for (cid,) in session.query(ExternalConnection.id)
+            .filter(
+                ExternalConnection.taxpayer_entity_id == tp_id,
+                func.upper(ExternalConnection.broker) == broker_u,
+            )
+            .all()
+        ]
+        if not candidates:
+            continue
+        augmented |= connection_ids_with_tax_rows(session, conn_ids=candidates, start=start, end=end)
+
+    return sorted(augmented)
+
+
 @dataclass(frozen=True)
 class BrokerRealizedRow:
     trade_date: dt.date
@@ -125,8 +261,22 @@ def broker_realized_gains(
     sc = parse_scope(scope if isinstance(scope, str) else scope)
     start = dt.date(int(year), 1, 1)
     end = dt.date(int(year), 12, 31)
+    trust_start: dt.date | None = dt.date(2025, 6, 6) if int(year) == 2025 else None
 
     conn_ids = _connection_ids_for_scope(session, sc)
+    if account_id is not None:
+        mapped_conn_ids = [
+            int(cid)
+            for (cid,) in session.query(ExternalAccountMap.connection_id)
+            .filter(ExternalAccountMap.account_id == account_id)
+            .distinct()
+            .all()
+        ]
+        if mapped_conn_ids:
+            conn_ids = sorted(set(conn_ids) | set(mapped_conn_ids))
+    conn_ids = augment_conn_ids_for_tax_rows(session, conn_ids=conn_ids, start=start, end=end)
+    conn_ids = expand_ib_conn_ids(session, conn_ids=conn_ids)
+    conn_ids = prefer_ib_offline_for_tax_rows(session, conn_ids=conn_ids, start=start, end=end)
     if not conn_ids:
         empty = BrokerRealizedSummary(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0, 0)
         return empty, [], [], {"closed_lot_rows_count": 0}
@@ -135,6 +285,20 @@ def broker_realized_gains(
     maps = session.query(ExternalAccountMap).filter(ExternalAccountMap.connection_id.in_(conn_ids)).all()
     map_key_to_acct_id = {(m.connection_id, m.provider_account_id): m.account_id for m in maps}
     acct_by_id = {a.id: a for a in session.query(Account).all()}
+
+    conn_types = {
+        int(conn.id): str(tp.type or "PERSONAL").upper()
+        for conn, tp in session.query(ExternalConnection, TaxpayerEntity)
+        .join(TaxpayerEntity, TaxpayerEntity.id == ExternalConnection.taxpayer_entity_id)
+        .filter(ExternalConnection.id.in_(conn_ids))
+        .all()
+    }
+    acct_tp_types = {
+        int(acct.id): str(tp.type or "PERSONAL").upper()
+        for acct, tp in session.query(Account, TaxpayerEntity)
+        .join(TaxpayerEntity, TaxpayerEntity.id == Account.taxpayer_entity_id)
+        .all()
+    }
 
     q = session.query(BrokerLotClosure).filter(
         BrokerLotClosure.connection_id.in_(conn_ids),
@@ -155,11 +319,62 @@ def broker_realized_gains(
     detail: list[BrokerRealizedRow] = []
     totals = {"proceeds": 0.0, "basis": 0.0, "realized": 0.0, "st": 0.0, "lt": 0.0, "unknown": 0.0}
     missing_proceeds = 0
+    seen_rows: set[tuple[int, str, int]] = set()
+    seen_row_hashes: set[str] = set()
+
+    def _dedupe_key(row: BrokerLotClosure) -> tuple[int, str, int] | None:
+        raw = row.raw_json or {}
+        src_row = raw.get("source_row")
+        if src_row is None:
+            return None
+        try:
+            src_row_i = int(src_row)
+        except Exception:
+            return None
+        return (int(row.connection_id), str(row.source_file_hash), src_row_i)
+
+    def _raw_value(raw_row: dict[str, Any], key: str) -> float | None:
+        try:
+            val = raw_row.get(key)
+        except Exception:
+            return None
+        return _float(val)
+
+    def _row_hash(raw_row: dict[str, Any]) -> str | None:
+        if not raw_row:
+            return None
+        try:
+            payload = json.dumps(raw_row, sort_keys=True)
+        except Exception:
+            return None
+        return hashlib.sha1(payload.encode("utf-8")).hexdigest()
 
     for r in closures:
-        basis = _float(r.cost_basis)
-        realized = _float(r.realized_pl_fifo)
-        proceeds = _float(r.proceeds_derived)
+        acct_id = map_key_to_acct_id.get((r.connection_id, r.provider_account_id))
+        tp_type = acct_tp_types.get(int(acct_id)) if acct_id is not None else conn_types.get(r.connection_id)
+        if trust_start and tp_type == "TRUST" and r.trade_date < trust_start:
+            continue
+        key = _dedupe_key(r)
+        if key is not None:
+            if key in seen_rows:
+                continue
+            seen_rows.add(key)
+
+        raw_row = (r.raw_json or {}).get("row") or {}
+        row_hash = _row_hash(raw_row)
+        if row_hash is not None:
+            if row_hash in seen_row_hashes:
+                continue
+            seen_row_hashes.add(row_hash)
+        basis = _raw_value(raw_row, "CostBasis") if raw_row else None
+        realized = _raw_value(raw_row, "FifoPnlRealized") if raw_row else None
+        proceeds = _raw_value(raw_row, "Proceeds") if raw_row else None
+        if basis is None:
+            basis = _float(r.cost_basis)
+        if realized is None:
+            realized = _float(r.realized_pl_fifo)
+        if proceeds is None:
+            proceeds = _float(r.proceeds_derived)
         if proceeds is None:
             proceeds = _proceeds(basis, realized)
         if proceeds is None:
@@ -433,10 +648,17 @@ def broker_tax_summary(
     year = int(year)
     start = dt.date(year, 1, 1)
     end = dt.date(year, 12, 31)
+    trust_start: dt.date | None = dt.date(2025, 6, 6) if year == 2025 else None
 
     conn_ids = _connection_ids_for_scope(session, sc)
     if not conn_ids:
         return {"scope": sc, "year": year, "rows": [], "totals": {}}
+
+    conn_ids = augment_conn_ids_for_tax_rows(session, conn_ids=conn_ids, start=start, end=end)
+
+    maps = session.query(ExternalAccountMap).filter(ExternalAccountMap.connection_id.in_(conn_ids)).all()
+    map_key_to_acct_id = {(m.connection_id, m.provider_account_id): m.account_id for m in maps}
+    acct_by_id = {a.id: a for a in session.query(Account).all()}
 
     # Join closures to taxpayer entity for per-taxpayer rollups.
     closures = (
@@ -466,7 +688,40 @@ def broker_tax_summary(
     profiles = load_tax_rate_profiles(session)
 
     by_taxpayer: dict[int, dict[str, Any]] = {}
+    by_account: dict[tuple[int, str], dict[str, Any]] = {}
+
+    def _account_bucket(tp: TaxpayerEntity, conn_id: int, provider_account_id: str | None) -> dict[str, Any]:
+        pid = str(provider_account_id or "").strip()
+        acct_id = map_key_to_acct_id.get((conn_id, pid))
+        acct_name = None
+        if acct_id is not None and acct_id in acct_by_id:
+            acct_name = acct_by_id[acct_id].name
+        key = f"id:{acct_id}" if acct_id is not None else f"provider:{pid}"
+        row = by_account.setdefault(
+            (tp.id, key),
+            {
+                "account_id": acct_id,
+                "account_name": acct_name,
+                "provider_account_id": pid,
+                "st_realized": 0.0,
+                "lt_realized": 0.0,
+                "unknown_realized": 0.0,
+                "closed_lot_rows": 0,
+                "wash_rows": 0,
+                "wash_linked": 0,
+                "wash_disallowed": 0.0,
+                "wash_disallowed_unknown": 0.0,
+            },
+        )
+        if acct_name and not row.get("account_name"):
+            row["account_name"] = acct_name
+        if pid and not row.get("provider_account_id"):
+            row["provider_account_id"] = pid
+        return row
     for c, _conn, tp in closures:
+        tp_type = str(tp.type or "PERSONAL").upper()
+        if trust_start and tp_type == "TRUST" and c.trade_date < trust_start:
+            continue
         row = by_taxpayer.setdefault(
             tp.id,
             {
@@ -493,7 +748,19 @@ def broker_tax_summary(
             row["unknown_realized"] += float(realized)
         row["closed_lot_rows"] += 1
 
+        acct_row = _account_bucket(tp, c.connection_id, c.provider_account_id)
+        if term == "LT":
+            acct_row["lt_realized"] += float(realized)
+        elif term == "ST":
+            acct_row["st_realized"] += float(realized)
+        else:
+            acct_row["unknown_realized"] += float(realized)
+        acct_row["closed_lot_rows"] += 1
+
     for w, _conn, tp in washes:
+        tp_type = str(tp.type or "PERSONAL").upper()
+        if trust_start and tp_type == "TRUST" and w.trade_date < trust_start:
+            continue
         row = by_taxpayer.setdefault(
             tp.id,
             {
@@ -513,6 +780,11 @@ def broker_tax_summary(
         row["wash_rows"] += 1
         if w.linked_closure_id is not None:
             row["wash_linked"] += 1
+
+        acct_row = _account_bucket(tp, w.connection_id, w.provider_account_id)
+        acct_row["wash_rows"] += 1
+        if w.linked_closure_id is not None:
+            acct_row["wash_linked"] += 1
         dloss = _float(w.disallowed_loss)
         if dloss is None:
             realized = _float(w.realized_pl_fifo)
@@ -534,28 +806,20 @@ def broker_tax_summary(
         else:
             row["wash_disallowed_unknown"] += float(dloss)
 
-    rows_out: list[dict[str, Any]] = []
-    totals = {
-        "st_realized": 0.0,
-        "lt_realized": 0.0,
-        "unknown_realized": 0.0,
-        "disallowed_loss": 0.0,
-        "net_taxable": 0.0,
-        "additional_tax_due": 0.0,
-    }
+        if term == "LT":
+            acct_row["wash_disallowed"] += float(dloss)
+        elif term == "ST":
+            acct_row["wash_disallowed"] += float(dloss)
+        else:
+            acct_row["wash_disallowed_unknown"] += float(dloss)
 
-    for _tp_id, r in sorted(by_taxpayer.items(), key=lambda kv: str(kv[1].get("taxpayer"))):
-        tp_type = str(r.get("taxpayer_type") or "PERSONAL").upper()
-        prof = profiles.get(tp_type) or profiles["PERSONAL"]
-
-        st_realized = float(r.get("st_realized") or 0.0)
-        lt_realized = float(r.get("lt_realized") or 0.0)
-        unknown_realized = float(r.get("unknown_realized") or 0.0)
+    def _compute_tax_metrics(row: dict[str, Any], prof: TaxRateProfile) -> dict[str, Any]:
+        st_realized = float(row.get("st_realized") or 0.0)
+        lt_realized = float(row.get("lt_realized") or 0.0)
+        unknown_realized = float(row.get("unknown_realized") or 0.0)
         realized_total = st_realized + lt_realized + unknown_realized
 
-        disallowed = float(r.get("wash_disallowed") or 0.0) + float(r.get("wash_disallowed_unknown") or 0.0)
-
-        # Conservative: disallowed losses are losses you cannot take now, so taxable gains are higher by that amount.
+        disallowed = float(row.get("wash_disallowed") or 0.0) + float(row.get("wash_disallowed_unknown") or 0.0)
         net_taxable = realized_total + disallowed
 
         st_net = st_realized + unknown_realized + disallowed  # UNKNOWN treated as ST
@@ -571,9 +835,7 @@ def broker_tax_summary(
             carryforward_note = "Net capital loss (planning). Carryforward rules not modeled; tax due shown as 0."
             additional_tax_due = 0.0
 
-        out = {
-            "taxpayer": r.get("taxpayer"),
-            "taxpayer_type": tp_type,
+        return {
             "st_realized": st_realized,
             "lt_realized": lt_realized,
             "unknown_realized": unknown_realized,
@@ -583,6 +845,77 @@ def broker_tax_summary(
             "st_tax_due": st_tax,
             "lt_tax_due": lt_tax,
             "additional_tax_due": additional_tax_due,
+            "carryforward_note": carryforward_note,
+        }
+
+    rows_out: list[dict[str, Any]] = []
+    totals = {
+        "st_realized": 0.0,
+        "lt_realized": 0.0,
+        "unknown_realized": 0.0,
+        "disallowed_loss": 0.0,
+        "net_taxable": 0.0,
+        "additional_tax_due": 0.0,
+    }
+
+    for _tp_id, r in sorted(by_taxpayer.items(), key=lambda kv: str(kv[1].get("taxpayer"))):
+        tp_type = str(r.get("taxpayer_type") or "PERSONAL").upper()
+        prof = profiles.get(tp_type) or profiles["PERSONAL"]
+
+        metrics = _compute_tax_metrics(r, prof)
+        carryforward_note = metrics.get("carryforward_note")
+        period_note = None
+        if trust_start and tp_type == "TRUST":
+            period_note = f"Trust tax period {trust_start.isoformat()} to {end.isoformat()}."
+        note = carryforward_note
+        if period_note:
+            note = f"{period_note} {note}" if note else period_note
+
+        accounts: list[dict[str, Any]] = []
+        for (tp_id, _acct_key), ar in by_account.items():
+            if tp_id != _tp_id:
+                continue
+            a_metrics = _compute_tax_metrics(ar, prof)
+            a_note = a_metrics.get("carryforward_note")
+            accounts.append(
+                {
+                    "account_id": ar.get("account_id"),
+                    "account_name": ar.get("account_name"),
+                    "provider_account_id": ar.get("provider_account_id"),
+                    "st_realized": a_metrics["st_realized"],
+                    "lt_realized": a_metrics["lt_realized"],
+                    "unknown_realized": a_metrics["unknown_realized"],
+                    "realized_total": a_metrics["realized_total"],
+                    "disallowed_loss": a_metrics["disallowed_loss"],
+                    "net_taxable": a_metrics["net_taxable"],
+                    "additional_tax_due": a_metrics["additional_tax_due"],
+                    "coverage": {
+                        "closed_lot_rows_count": int(ar.get("closed_lot_rows") or 0),
+                        "wash_rows_count": int(ar.get("wash_rows") or 0),
+                        "wash_linked_rows_count": int(ar.get("wash_linked") or 0),
+                    },
+                    "note": a_note,
+                }
+            )
+        accounts.sort(
+            key=lambda a: (
+                str(a.get("account_name") or a.get("provider_account_id") or ""),
+                str(a.get("provider_account_id") or ""),
+            )
+        )
+
+        out = {
+            "taxpayer": r.get("taxpayer"),
+            "taxpayer_type": tp_type,
+            "st_realized": metrics["st_realized"],
+            "lt_realized": metrics["lt_realized"],
+            "unknown_realized": metrics["unknown_realized"],
+            "realized_total": metrics["realized_total"],
+            "disallowed_loss": metrics["disallowed_loss"],
+            "net_taxable": metrics["net_taxable"],
+            "st_tax_due": metrics["st_tax_due"],
+            "lt_tax_due": metrics["lt_tax_due"],
+            "additional_tax_due": metrics["additional_tax_due"],
             "rates": {
                 "st_rate": prof.st_rate,
                 "lt_rate": prof.lt_rate,
@@ -594,16 +927,17 @@ def broker_tax_summary(
                 "wash_rows_count": int(r.get("wash_rows") or 0),
                 "wash_linked_rows_count": int(r.get("wash_linked") or 0),
             },
-            "note": carryforward_note,
+            "note": note,
+            "accounts": accounts,
         }
         rows_out.append(out)
 
-        totals["st_realized"] += st_realized
-        totals["lt_realized"] += lt_realized
-        totals["unknown_realized"] += unknown_realized
-        totals["disallowed_loss"] += disallowed
-        totals["net_taxable"] += net_taxable
-        totals["additional_tax_due"] += additional_tax_due
+        totals["st_realized"] += metrics["st_realized"]
+        totals["lt_realized"] += metrics["lt_realized"]
+        totals["unknown_realized"] += metrics["unknown_realized"]
+        totals["disallowed_loss"] += metrics["disallowed_loss"]
+        totals["net_taxable"] += metrics["net_taxable"]
+        totals["additional_tax_due"] += metrics["additional_tax_due"]
 
     totals["realized_total"] = totals["st_realized"] + totals["lt_realized"] + totals["unknown_realized"]
     return {

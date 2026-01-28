@@ -54,6 +54,13 @@
           <td class="muted">{{ realized|usd }}</td>
         </tr>
       {% endfor %}
+      <tr>
+        <td><b>Total</b></td>
+        <td class="muted">—</td>
+        <td class="muted">—</td>
+        <td class="muted">—</td>
+        <td><b>{{ summary.realized|usd }}</b></td>
+      </tr>
     </table>
 
     <h2>Detail (first {{ detail_rows|length }})</h2>
@@ -76,4 +83,3 @@
     </table>
   {% endif %}
 {% endblock %}
-

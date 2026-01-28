@@ -1,0 +1,425 @@
+{% extends "layout.html" %}
+{% block content %}
+  <h1>Taxes · Inputs &amp; Assumptions</h1>
+  {% set sources = dashboard.summary.sources or {} %}
+  {% set manual_overrides = inputs.tax_manual_overrides or {} %}
+
+  <nav class="ui-tabs" aria-label="Taxes">
+    <a class="ui-tab" href="/taxes?year={{ year }}">Overview</a>
+    <a class="ui-tab ui-tab--active" href="/taxes/inputs?year={{ year }}">Inputs &amp; Assumptions</a>
+    <a class="ui-tab" href="/taxes/cpa-pack?year={{ year }}">CPA Pack</a>
+  </nav>
+
+  {% if request.query_params.get("ok") %}
+    <div class="banner banner--ok">{{ request.query_params.get("ok") }}</div>
+  {% endif %}
+  {% if request.query_params.get("error") %}
+    <div class="banner banner--warn">{{ request.query_params.get("error") }}</div>
+  {% endif %}
+
+  <div class="box">
+    <form method="get" action="/taxes/inputs">
+      <div class="grid3">
+        <label>Tax year<br/>
+          <select name="year" onchange="this.form.submit()">
+            {% for y in tax_years %}
+              <option value="{{ y }}" {% if year == y %}selected{% endif %}>{{ y }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label>&nbsp;<br/>
+          <button type="button" class="btn btn--secondary js-tax-docs-open" data-tax-year="{{ year }}">Upload tax documents</button>
+        </label>
+      </div>
+    </form>
+  </div>
+
+  <div class="box">
+    <form method="post" action="/taxes/inputs">
+      <input type="hidden" name="year" value="{{ year }}" />
+      <input type="hidden" name="return_to" value="/taxes/inputs?year={{ year }}" />
+      <div class="grid3">
+        <label>Filing status<br/>
+          <select name="filing_status">
+            <option value="MFJ" {% if profile.filing_status == "MFJ" %}selected{% endif %}>MFJ</option>
+            <option value="MFS" {% if profile.filing_status == "MFS" %}selected{% endif %}>MFS</option>
+            <option value="HOH" {% if profile.filing_status == "HOH" %}selected{% endif %}>HOH</option>
+            <option value="SINGLE" {% if profile.filing_status == "SINGLE" %}selected{% endif %}>Single</option>
+          </select>
+        </label>
+        <label>State code<br/><input name="state_code" value="{{ profile.state_code or '' }}" placeholder="e.g., FL"/></label>
+        <label>State flat tax %<br/><input name="state_tax_rate" value="{{ inputs.state_tax_rate }}" placeholder="0.0"/></label>
+      </div>
+      <div class="grid3">
+        <label>Deductions mode<br/>
+          <select name="deductions_mode">
+            <option value="standard" {% if profile.deductions_mode == "standard" %}selected{% endif %}>Standard</option>
+            <option value="itemized" {% if profile.deductions_mode == "itemized" %}selected{% endif %}>Itemized</option>
+          </select>
+        </label>
+        <label>Itemized amount (if used)<br/><input name="itemized_amount" value="{{ profile.itemized_amount or '' }}"/></label>
+        <label>Household size<br/><input name="household_size" value="{{ profile.household_size }}"/></label>
+      </div>
+      <div class="grid3">
+        <label>Dependents count<br/><input name="dependents_count" value="{{ profile.dependents_count }}"/></label>
+        <label>Qualified dividend %<br/><input name="qualified_dividend_pct" value="{{ inputs.qualified_dividend_pct }}"/></label>
+        <label>Trust income taxable to me (pass-through, net of fees)<br/>
+          <input type="checkbox" name="trust_income_taxable_to_user" {% if profile.trust_income_taxable_to_user %}checked{% endif %}/>
+        </label>
+      </div>
+      <div class="grid3">
+        <label>NIIT enabled<br/>
+          <input type="checkbox" name="niit_enabled" {% if inputs.niit_enabled %}checked{% endif %}/>
+        </label>
+        <label>NIIT rate<br/><input name="niit_rate" value="{{ inputs.niit_rate }}"/></label>
+        <label>Include ACA estimator<br/>
+          <input type="checkbox" name="aca_enabled" {% if inputs.aca_enabled %}checked{% endif %}/>
+        </label>
+      </div>
+      <div class="grid3">
+        <label>Yoga expense ratio (fallback)<br/><input name="yoga_expense_ratio" value="{{ inputs.yoga_expense_ratio }}"/></label>
+        <label>Last year total tax (safe harbor)<br/><input name="last_year_total_tax" value="{{ inputs.last_year_total_tax }}"/></label>
+        <label>Safe harbor multiplier<br/><input name="safe_harbor_multiplier" value="{{ inputs.safe_harbor_multiplier }}"/></label>
+      </div>
+      <div class="grid3">
+        <label>MAGI override<br/><input name="magi_override" value="{{ inputs.magi_override if inputs.magi_override is not none else '' }}"/></label>
+        <label>IRA withholding override<br/><input name="ira_withholding_override" value="{{ inputs.ira_withholding_override if inputs.ira_withholding_override is not none else '' }}"/></label>
+      </div>
+
+      <h2>Monthly inputs</h2>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Month</th>
+              <th>Yoga net profit</th>
+              <th>
+                W-2 wages
+                {% if sources.get("w2_wages_total") %}
+                  <span class="ui-badge ui-badge--outline">{{ sources.get("w2_wages_total")|capitalize }}</span>
+                {% endif %}
+              </th>
+              <th>
+                W-2 withholding
+                {% if sources.get("w2_withholding_total") %}
+                  <span class="ui-badge ui-badge--outline">{{ sources.get("w2_withholding_total")|capitalize }}</span>
+                {% endif %}
+              </th>
+              <th>Trust income (gross)</th>
+              <th>Trust fees</th>
+              <th>
+                ACA premium
+                {% if sources.get("aca_premium_monthly") %}
+                  <span class="ui-badge ui-badge--outline">{{ sources.get("aca_premium_monthly")|capitalize }}</span>
+                {% endif %}
+              </th>
+              <th>
+                ACA APTC
+                {% if sources.get("aca_aptc_monthly") %}
+                  <span class="ui-badge ui-badge--outline">{{ sources.get("aca_aptc_monthly")|capitalize }}</span>
+                {% endif %}
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for idx in range(12) %}
+              {% set m = idx + 1 %}
+              <tr>
+                <td>{{ dashboard.monthly[idx].label }}</td>
+                <td><input name="yoga_net_profit_{{ m }}" value="{{ inputs.yoga_net_profit_monthly[idx] }}"/></td>
+                <td><input name="daughter_w2_wages_{{ m }}" value="{{ inputs.daughter_w2_wages_monthly[idx] }}"/></td>
+                <td><input name="daughter_w2_withholding_{{ m }}" value="{{ inputs.daughter_w2_withholding_monthly[idx] }}"/></td>
+                <td><input name="trust_passthrough_{{ m }}" value="{{ inputs.trust_passthrough_monthly[idx] }}"/></td>
+                <td><input name="trust_fees_{{ m }}" value="{{ inputs.trust_fees_monthly[idx] }}"/></td>
+                <td><input name="aca_premium_{{ m }}" value="{{ inputs.aca_premium_monthly[idx] }}" data-aca-premium data-month="{{ m }}"/></td>
+                <td><input name="aca_aptc_{{ m }}" value="{{ inputs.aca_aptc_monthly[idx] }}" data-aca-aptc data-month="{{ m }}"/></td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+
+      <h2>Estimated tax payments</h2>
+      <div class="grid3">
+        {% for i in range(1, 7) %}
+          {% set existing = inputs.estimated_payments[i-1] if inputs.estimated_payments|length >= i else {} %}
+          <label>Date<br/><input name="est_pay_date_{{ i }}" value="{{ existing.date if existing else '' }}" placeholder="YYYY-MM-DD"/></label>
+          <label>Amount<br/><input name="est_pay_amount_{{ i }}" value="{{ existing.amount if existing else '' }}"/></label>
+        {% endfor %}
+      </div>
+
+      <h2>Tax parameter overrides (JSON)</h2>
+      <textarea name="overrides_json" rows="8" style="width:100%">{{ overrides_text }}</textarea>
+      <div class="muted">Leave empty to use the base year parameter file. Invalid JSON will be rejected.</div>
+
+      {% set doc_overrides = inputs.tax_doc_overrides or {} %}
+      <h2>Tax documents (applied)</h2>
+      <div class="muted">Totals below come from confirmed tax documents. When enabled, they are the primary source of truth.</div>
+      <div style="margin-top:6px;">
+        <label>
+          <input type="checkbox" name="docs_primary" {% if inputs.docs_primary %}checked{% endif %}/>
+          Use tax documents as primary source (recommended)
+        </label>
+      </div>
+      <div class="table-wrap" style="margin-top:8px;">
+        <table>
+          <thead>
+            <tr>
+              <th>Field</th>
+              <th>Amount</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr><td>W-2 wages</td><td class="num ui-tabular-nums">{{ doc_overrides.w2_wages_total|usd }}</td></tr>
+            <tr><td>W-2 withholding</td><td class="num ui-tabular-nums">{{ doc_overrides.w2_withholding_total|usd }}</td></tr>
+            <tr><td>IRA distributions</td><td class="num ui-tabular-nums">{{ doc_overrides.ira_distributions_total|usd }}</td></tr>
+            <tr><td>IRA withholding</td><td class="num ui-tabular-nums">{{ doc_overrides.ira_withholding_total|usd }}</td></tr>
+            <tr><td>Interest income</td><td class="num ui-tabular-nums">{{ doc_overrides.interest_total|usd }}</td></tr>
+            <tr><td>Dividends (ordinary)</td><td class="num ui-tabular-nums">{{ doc_overrides.dividends_ordinary_total|usd }}</td></tr>
+            <tr><td>Dividends (qualified)</td><td class="num ui-tabular-nums">{{ doc_overrides.dividends_qualified_total|usd }}</td></tr>
+            <tr><td>Capital gain distributions</td><td class="num ui-tabular-nums">{{ doc_overrides.cap_gain_dist_total|usd }}</td></tr>
+            <tr><td>K-1 ordinary income</td><td class="num ui-tabular-nums">{{ doc_overrides.k1_ordinary_total|usd }}</td></tr>
+            <tr><td>K-1 interest</td><td class="num ui-tabular-nums">{{ doc_overrides.k1_interest_total|usd }}</td></tr>
+            <tr><td>K-1 dividends</td><td class="num ui-tabular-nums">{{ doc_overrides.k1_dividends_total|usd }}</td></tr>
+            <tr><td>K-1 rental</td><td class="num ui-tabular-nums">{{ doc_overrides.k1_rental_total|usd }}</td></tr>
+            <tr><td>K-1 other</td><td class="num ui-tabular-nums">{{ doc_overrides.k1_other_total|usd }}</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      {% set manual_aca_premium_total = (manual_overrides.get("aca_premium_monthly") or [])|sum %}
+      {% set manual_aca_aptc_total = (manual_overrides.get("aca_aptc_monthly") or [])|sum %}
+      {% set manual_aca_slcsp_total = (manual_overrides.get("aca_slcsp_monthly") or [])|sum %}
+      <h2>Manual overrides (explicit)</h2>
+      <div class="muted">Overrides take priority over tax documents only when enabled.</div>
+      <div class="table-wrap" style="margin-top:8px;">
+        <table>
+          <thead>
+            <tr>
+              <th>Override</th>
+              <th>Category</th>
+              <th>Value</th>
+              <th>Current source</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><input type="checkbox" name="manual_override_enable_w2_wages_total" {% if manual_overrides.get("w2_wages_total") is not none %}checked{% endif %}/></td>
+              <td>W-2 wages</td>
+              <td><input name="manual_override_w2_wages_total" value="{{ manual_overrides.get('w2_wages_total', '') }}"/></td>
+              <td><span class="ui-badge ui-badge--outline">{{ sources.get("w2_wages_total", "investor")|capitalize }}</span></td>
+            </tr>
+            <tr>
+              <td><input type="checkbox" name="manual_override_enable_w2_withholding_total" {% if manual_overrides.get("w2_withholding_total") is not none %}checked{% endif %}/></td>
+              <td>W-2 withholding</td>
+              <td><input name="manual_override_w2_withholding_total" value="{{ manual_overrides.get('w2_withholding_total', '') }}"/></td>
+              <td><span class="ui-badge ui-badge--outline">{{ sources.get("w2_withholding_total", "investor")|capitalize }}</span></td>
+            </tr>
+            <tr>
+              <td><input type="checkbox" name="manual_override_enable_ira_distributions_total" {% if manual_overrides.get("ira_distributions_total") is not none %}checked{% endif %}/></td>
+              <td>IRA distributions</td>
+              <td><input name="manual_override_ira_distributions_total" value="{{ manual_overrides.get('ira_distributions_total', '') }}"/></td>
+              <td><span class="ui-badge ui-badge--outline">{{ sources.get("ira_distributions_total", "investor")|capitalize }}</span></td>
+            </tr>
+            <tr>
+              <td><input type="checkbox" name="manual_override_enable_ira_withholding_total" {% if manual_overrides.get("ira_withholding_total") is not none %}checked{% endif %}/></td>
+              <td>IRA withholding</td>
+              <td><input name="manual_override_ira_withholding_total" value="{{ manual_overrides.get('ira_withholding_total', '') }}"/></td>
+              <td><span class="ui-badge ui-badge--outline">{{ sources.get("ira_withholding_total", "investor")|capitalize }}</span></td>
+            </tr>
+            <tr>
+              <td><input type="checkbox" name="manual_override_enable_interest_total" {% if manual_overrides.get("interest_total") is not none %}checked{% endif %}/></td>
+              <td>Interest income</td>
+              <td><input name="manual_override_interest_total" value="{{ manual_overrides.get('interest_total', '') }}"/></td>
+              <td><span class="ui-badge ui-badge--outline">{{ sources.get("interest_total", "investor")|capitalize }}</span></td>
+            </tr>
+            <tr>
+              <td><input type="checkbox" name="manual_override_enable_dividends_ordinary_total" {% if manual_overrides.get("dividends_ordinary_total") is not none %}checked{% endif %}/></td>
+              <td>Dividends (ordinary)</td>
+              <td><input name="manual_override_dividends_ordinary_total" value="{{ manual_overrides.get('dividends_ordinary_total', '') }}"/></td>
+              <td><span class="ui-badge ui-badge--outline">{{ sources.get("dividends_ordinary_total", "investor")|capitalize }}</span></td>
+            </tr>
+            <tr>
+              <td><input type="checkbox" name="manual_override_enable_dividends_qualified_total" {% if manual_overrides.get("dividends_qualified_total") is not none %}checked{% endif %}/></td>
+              <td>Dividends (qualified)</td>
+              <td><input name="manual_override_dividends_qualified_total" value="{{ manual_overrides.get('dividends_qualified_total', '') }}"/></td>
+              <td><span class="ui-badge ui-badge--outline">{{ sources.get("dividends_qualified_total", "investor")|capitalize }}</span></td>
+            </tr>
+            <tr>
+              <td><input type="checkbox" name="manual_override_enable_cap_gain_dist_total" {% if manual_overrides.get("cap_gain_dist_total") is not none %}checked{% endif %}/></td>
+              <td>Capital gain distributions</td>
+              <td><input name="manual_override_cap_gain_dist_total" value="{{ manual_overrides.get('cap_gain_dist_total', '') }}"/></td>
+              <td><span class="ui-badge ui-badge--outline">{{ sources.get("cap_gain_dist_total", "investor")|capitalize }}</span></td>
+            </tr>
+            <tr>
+              <td><input type="checkbox" name="manual_override_enable_k1_total" {% if manual_overrides.get("k1_total") is not none %}checked{% endif %}/></td>
+              <td>K-1 income (total)</td>
+              <td><input name="manual_override_k1_total" value="{{ manual_overrides.get('k1_total', '') }}"/></td>
+              <td><span class="ui-badge ui-badge--outline">{{ sources.get("k1_total", "investor")|capitalize }}</span></td>
+            </tr>
+            <tr>
+              <td><input type="checkbox" name="manual_override_enable_aca_premium_total" {% if manual_overrides.get("aca_premium_monthly") is not none %}checked{% endif %}/></td>
+              <td>ACA premium (total)</td>
+              <td><input name="manual_override_aca_premium_total" value="{{ manual_aca_premium_total if manual_aca_premium_total else '' }}"/></td>
+              <td><span class="ui-badge ui-badge--outline">{{ sources.get("aca_premium_monthly", "investor")|capitalize }}</span></td>
+            </tr>
+            <tr>
+              <td><input type="checkbox" name="manual_override_enable_aca_aptc_total" {% if manual_overrides.get("aca_aptc_monthly") is not none %}checked{% endif %}/></td>
+              <td>ACA APTC (total)</td>
+              <td><input name="manual_override_aca_aptc_total" value="{{ manual_aca_aptc_total if manual_aca_aptc_total else '' }}"/></td>
+              <td><span class="ui-badge ui-badge--outline">{{ sources.get("aca_aptc_monthly", "investor")|capitalize }}</span></td>
+            </tr>
+            <tr>
+              <td><input type="checkbox" name="manual_override_enable_aca_slcsp_total" {% if manual_overrides.get("aca_slcsp_monthly") is not none %}checked{% endif %}/></td>
+              <td>ACA SLCSP (total)</td>
+              <td><input name="manual_override_aca_slcsp_total" value="{{ manual_aca_slcsp_total if manual_aca_slcsp_total else '' }}"/></td>
+              <td><span class="ui-badge ui-badge--outline">{{ sources.get("aca_slcsp_monthly", "investor")|capitalize }}</span></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div style="margin-top:10px;">
+        <button type="submit">Save inputs</button>
+      </div>
+    </form>
+  </div>
+
+  <div class="box">
+    <h2>Tax events (auto-tagged)</h2>
+    {% if summaries|length == 0 %}
+      <div class="muted">No tax-relevant activity detected for this year.</div>
+    {% else %}
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Account</th>
+              <th>Taxpayer</th>
+              <th>IRA gross distributions</th>
+              <th>IRA withholding</th>
+              <th>Trust distributions</th>
+              <th>Trust dividend tax</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in summaries %}
+              <tr>
+                <td>{{ row.account_name }}</td>
+                <td class="muted">{{ row.taxpayer }} ({{ row.taxpayer_type }})</td>
+                <td class="num ui-tabular-nums">{{ row.ira_distributions_gross|usd }}</td>
+                <td class="num ui-tabular-nums">{{ row.ira_withholding|usd }}</td>
+                <td class="num ui-tabular-nums">{{ row.trust_distributions|usd }}</td>
+                <td class="num ui-tabular-nums">{{ row.other_withholding|usd }}</td>
+                <td><a href="/taxes/inputs?year={{ year }}&account_id={{ row.account_id }}#tax-details">Details</a></td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% endif %}
+
+    {% if selected_account_id %}
+      <div id="tax-details" style="margin-top:14px;">
+        <h3>Tax details{% if selected_summary %} · {{ selected_summary.account_name }}{% endif %}</h3>
+        <div class="muted">Auto-tagged entries shown below. You can override tags if needed.</div>
+        {% if tx_rows|length == 0 and other_withholding_rows|length == 0 %}
+          <div class="muted" style="margin-top:8px;">No tax events found for this account in {{ year }}.</div>
+        {% endif %}
+        {% if tx_rows|length %}
+          <form method="post" action="/taxes/inputs/tags">
+            <input type="hidden" name="year" value="{{ year }}" />
+            <input type="hidden" name="return_to" value="/taxes/inputs?year={{ year }}&account_id={{ selected_account_id }}#tax-details" />
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Date</th>
+                    <th>Account</th>
+                    <th>Amount</th>
+                    <th>Description</th>
+                    <th>Tag</th>
+                    <th>Note</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {% for tx, acct, tag in tx_rows %}
+                    <tr>
+                      <td>{{ tx.date }}</td>
+                      <td>{{ acct.name }}</td>
+                      <td class="num ui-tabular-nums">{{ tx.amount|usd }}</td>
+                      <td class="muted">{{ (tx.lot_links_json or {}).get("description") or tx.ticker or "" }}</td>
+                      <td>
+                        <select name="tag_{{ tx.id }}">
+                          <option value="">—</option>
+                          {% for cat in tag_categories %}
+                            <option value="{{ cat }}" {% if tag and tag.category == cat %}selected{% endif %}>{{ tag_labels.get(cat, cat) }}</option>
+                          {% endfor %}
+                        </select>
+                      </td>
+                      <td><input name="note_{{ tx.id }}" value="{{ tag.note if tag else '' }}"/></td>
+                    </tr>
+                  {% endfor %}
+                </tbody>
+              </table>
+            </div>
+            <div style="margin-top:10px;">
+              <button type="submit">Save tags</button>
+              <a href="/taxes/inputs?year={{ year }}" style="margin-left:12px;">Back to summary</a>
+            </div>
+          </form>
+        {% endif %}
+
+        {% if other_withholding_rows|length %}
+          <div style="margin-top:16px;">
+            <h4>Trust dividend tax details</h4>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Date</th>
+                    <th>Source</th>
+                    <th>Amount</th>
+                    <th>Description</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {% for row in other_withholding_rows %}
+                    <tr>
+                      <td>{{ row.date }}</td>
+                      <td class="muted">{{ row.source }}</td>
+                      <td class="num ui-tabular-nums">{{ row.amount|usd }}</td>
+                      <td class="muted">{{ row.description }}</td>
+                    </tr>
+                  {% endfor %}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        {% endif %}
+      </div>
+    {% endif %}
+  </div>
+  <script>
+    (() => {
+      const syncFromJan = (inputs) => {
+        if (!inputs.length) return;
+        const jan = inputs.find((el) => el.dataset.month === "1");
+        if (!jan) return;
+        const apply = () => {
+          const v = jan.value;
+          inputs.forEach((el) => {
+            if (el !== jan) el.value = v;
+          });
+        };
+        jan.addEventListener("input", apply);
+        apply();
+      };
+
+      syncFromJan(Array.from(document.querySelectorAll("input[data-aca-premium]")));
+      syncFromJan(Array.from(document.querySelectorAll("input[data-aca-aptc]")));
+    })();
+  </script>
+  {% include "partials/tax_documents_modal.html" %}
+{% endblock %}

@@ -67,6 +67,48 @@
         </tr>
       {% endfor %}
     </table>
+
+    <h2>Account Breakdown</h2>
+    {% for r in summary.rows %}
+      <h3>{{ r.taxpayer }} <span class="muted">({{ r.taxpayer_type }})</span></h3>
+      {% set acct_rows = r.accounts or [] %}
+      {% if not acct_rows or acct_rows|length == 0 %}
+        <p class="muted">No account-level rows for this taxpayer.</p>
+      {% else %}
+        <table>
+          <tr>
+            <th>Account</th>
+            <th>ST realized</th><th>LT realized</th><th>Unknown realized</th><th>Total realized</th>
+            <th>Disallowed loss (wash)</th><th>Net taxable</th><th>Additional tax due</th>
+            <th>Coverage</th><th>Note</th><th>Details</th>
+          </tr>
+          {% for a in acct_rows %}
+            <tr>
+              <td>{{ a.account_name or a.provider_account_id }}</td>
+              <td class="muted">{{ a.st_realized|usd }}</td>
+              <td class="muted">{{ a.lt_realized|usd }}</td>
+              <td class="muted">{{ a.unknown_realized|usd }}</td>
+              <td class="muted">{{ a.realized_total|usd }}</td>
+              <td class="muted">{{ a.disallowed_loss|usd }}</td>
+              <td class="muted">{{ a.net_taxable|usd }}</td>
+              <td>{{ a.additional_tax_due|usd }}</td>
+              <td class="muted">
+                closed_lot={{ a.coverage.closed_lot_rows_count }};
+                wash={{ a.coverage.wash_rows_count }};
+                linked={{ a.coverage.wash_linked_rows_count }}
+              </td>
+              <td class="muted">{{ a.note or "" }}</td>
+              <td class="muted">
+                {% if a.account_id %}
+                  <a href="/tax/broker/realized-gains?scope={{ scope }}&year={{ year }}&account_id={{ a.account_id }}">View</a>
+                {% else %}
+                  —
+                {% endif %}
+              </td>
+            </tr>
+          {% endfor %}
+        </table>
+      {% endif %}
+    {% endfor %}
   {% endif %}
 {% endblock %}
-

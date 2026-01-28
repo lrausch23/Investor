@@ -178,6 +178,12 @@
   {% endif %}
 
   <div style="display:flex; gap:10px; flex-wrap:wrap; margin-top:10px">
+    {% if status_u == "DISABLED" %}
+      <form method="post" action="/sync/connections/{{ conn.id }}/enable">
+        <input type="hidden" name="note" value="Enabled from connection detail page"/>
+        <button class="btn btn--primary" type="submit">Enable connection</button>
+      </form>
+    {% endif %}
     <form method="post" action="/sync/connections/{{ conn.id }}/test">
       <button class="btn btn--secondary" type="submit" {% if status_u != "ACTIVE" %}disabled{% endif %}>Test connection</button>
     </form>
@@ -197,6 +203,10 @@
             <button class="dropdown__danger" type="submit" role="menuitem">Disable connection</button>
           </form>
         {% else %}
+          <form method="post" action="/sync/connections/{{ conn.id }}/enable">
+            <input type="hidden" name="note" value="Enabled from connection detail page"/>
+            <button class="dropdown__item-btn" type="submit" role="menuitem">Enable connection</button>
+          </form>
           <form method="post" action="/sync/connections/{{ conn.id }}/delete" data-confirm-delete data-conn-name="{{ conn.name|e }}">
             <input type="hidden" name="note" value="Deleted from connection detail page"/>
             <button class="dropdown__danger" type="submit" role="menuitem">Delete connection</button>

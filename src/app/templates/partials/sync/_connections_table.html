@@ -144,11 +144,16 @@
                       {% if uses_credentials %}
                         <a class="dropdown__item" href="/sync/connections/{{ c.id }}/auth">Credentials</a>
                       {% endif %}
-                      <form method="post" action="/sync/connections/{{ c.id }}/disable" data-confirm-disable data-conn-name="{{ c.name|e }}">
-                        <input type="hidden" name="note" value="Disabled from Connections list"/>
-                        <button class="dropdown__danger" type="submit" role="menuitem">Disable</button>
-                      </form>
-                      {% if status_u == "DISABLED" %}
+                      {% if status_u != "DISABLED" %}
+                        <form method="post" action="/sync/connections/{{ c.id }}/disable" data-confirm-disable data-conn-name="{{ c.name|e }}">
+                          <input type="hidden" name="note" value="Disabled from Connections list"/>
+                          <button class="dropdown__danger" type="submit" role="menuitem">Disable</button>
+                        </form>
+                      {% else %}
+                        <form method="post" action="/sync/connections/{{ c.id }}/enable">
+                          <input type="hidden" name="note" value="Enabled from Connections list"/>
+                          <button class="dropdown__item-btn" type="submit" role="menuitem">Enable</button>
+                        </form>
                         <form method="post" action="/sync/connections/{{ c.id }}/delete" data-confirm-delete data-conn-name="{{ c.name|e }}">
                           <input type="hidden" name="note" value="Deleted from Connections list"/>
                           <button class="dropdown__danger" type="submit" role="menuitem">Delete</button>
@@ -159,6 +164,10 @@
                 </div>
                 {% if not is_active %}
                   <div class="ui-muted" style="margin-top:6px">Disabled connections are excluded from metrics and cannot sync.</div>
+                  <form method="post" action="/sync/connections/{{ c.id }}/enable" style="margin-top:8px">
+                    <input type="hidden" name="note" value="Enabled from Connections list"/>
+                    <button class="btn btn--secondary" type="submit">Enable connection</button>
+                  </form>
                 {% endif %}
               </td>
             </tr>

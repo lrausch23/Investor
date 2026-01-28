@@ -753,6 +753,61 @@ class IBFlexOfflineAdapter(BrokerAdapter):
                         # Import DETAIL rows only to avoid double counting.
                         if level == "SUMMARY":
                             continue
+
+                        if level == "SYMBOL_SUMMARY":
+                            acct = _get_any(row, ["account", "account_name", "accountid", "clientaccountid", "accountnumber"])
+                            provider_account_id = f"IBFLEX:{acct}" if acct else "IBFLEX-1"
+                            symbol = _get_any(row, ["symbol", "ticker", "underlyingsymbol"])
+                            if not symbol:
+                                continue
+                            date_s = _get_any(
+                                row,
+                                [
+                                    "reportdate",
+                                    "report date",
+                                    "trade_date",
+                                    "tradedate",
+                                    "datetime",
+                                    "date/time",
+                                    "date time",
+                                ],
+                            )
+                            d = None
+                            if date_s:
+                                try:
+                                    d = _parse_date(date_s)
+                                except Exception:
+                                    d = None
+                            if d is None:
+                                d = end_date
+
+                            qty = _as_float_or_none(_get_any(row, ["qty", "quantity", "shares", "units"]))
+                            cost_basis = _as_float_or_none(_get_any(row, ["costbasis", "costbasismoney", "cost basis", "cost basis money"]))
+                            realized = _as_float_or_none(_get_any(row, ["fifopnlrealized", "fifo pnl realized", "fifopnlrealizedpl"]))
+                            proceeds = _as_float_or_none(_get_any(row, ["proceeds", "trade money", "trademoney", "netcash", "net cash"]))
+                            if proceeds is None and cost_basis is not None and realized is not None:
+                                proceeds = cost_basis + realized
+                            ccy = _get_any(row, ["currency", "currencyprimary", "ccy"])
+
+                            items.append(
+                                {
+                                    "record_kind": "BROKER_SYMBOL_SUMMARY",
+                                    "provider_account_id": provider_account_id,
+                                    "date": d.isoformat(),
+                                    "symbol": symbol,
+                                    "qty": qty,
+                                    "cost_basis": cost_basis,
+                                    "realized_pl": realized,
+                                    "proceeds": proceeds,
+                                    "currency": ccy,
+                                    "source_file": p.name,
+                                    "source_row": row_idx + 1,
+                                    "source_file_hash": f.file_hash,
+                                    "raw_row": row,
+                                }
+                            )
+                            continue
+
                         date_s = _get_any(row, ["date", "activitydate", "trade_date", "tradedate", "settledate", "datetime", "date/time", "date time"])
                         # Some multi-detail rows (notably WASH_SALE) may not populate TradeDate/DateTime; fall back
                         # to the broker timestamps for "when realized" etc so rows can still be imported and filtered by year.

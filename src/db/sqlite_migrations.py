@@ -121,6 +121,44 @@ def ensure_sqlite_schema(engine: Engine) -> None:
         if "taxpayer_entity_id" not in cols:
             _add_column(engine, "broker_lot_closures", "taxpayer_entity_id INTEGER")
 
+    if "broker_symbol_summaries" not in existing_tables:
+        try:
+            with engine.begin() as conn:
+                conn.execute(
+                    text(
+                        """
+                        CREATE TABLE broker_symbol_summaries (
+                            id INTEGER PRIMARY KEY,
+                            connection_id INTEGER NOT NULL,
+                            provider_account_id VARCHAR(200) NOT NULL,
+                            symbol VARCHAR(32) NOT NULL,
+                            as_of_date DATE NOT NULL,
+                            quantity NUMERIC(20,6),
+                            cost_basis NUMERIC(20,2),
+                            proceeds NUMERIC(20,2),
+                            realized_pl NUMERIC(20,2),
+                            currency VARCHAR(16),
+                            source_file_hash VARCHAR(100) NOT NULL,
+                            source_row INTEGER NOT NULL,
+                            raw_json TEXT NOT NULL,
+                            created_at DATETIME NOT NULL
+                        )
+                        """
+                    )
+                )
+                conn.execute(
+                    text(
+                        "CREATE UNIQUE INDEX ux_broker_symbol_summary ON broker_symbol_summaries(connection_id, source_file_hash, source_row)"
+                    )
+                )
+                conn.execute(
+                    text(
+                        "CREATE INDEX ix_broker_symbol_summary_scope ON broker_symbol_summaries(connection_id, provider_account_id, symbol, as_of_date)"
+                    )
+                )
+        except Exception:
+            pass
+
     if "expense_transactions" in existing_tables:
         cols = _table_columns(engine, "expense_transactions")
         if "category_hint" not in cols:
@@ -152,6 +190,67 @@ def ensure_sqlite_schema(engine: Engine) -> None:
         ]:
             if name not in cols:
                 _add_column(engine, "external_file_ingests", ddl)
+
+    if "household_entities" not in existing_tables:
+        try:
+            with engine.begin() as conn:
+                conn.execute(
+                    text(
+                        """
+                        CREATE TABLE household_entities (
+                            id INTEGER PRIMARY KEY,
+                            tax_year INTEGER NOT NULL,
+                            entity_type VARCHAR(20) NOT NULL,
+                            display_name VARCHAR(200) NOT NULL,
+                            tin_last4 VARCHAR(4),
+                            notes TEXT,
+                            created_at DATETIME NOT NULL,
+                            updated_at DATETIME NOT NULL
+                        )
+                        """
+                    )
+                )
+                conn.execute(text("CREATE INDEX ix_household_entities_year ON household_entities(tax_year)"))
+                conn.execute(
+                    text(
+                        "CREATE UNIQUE INDEX ux_household_entities_year_type_name ON household_entities(tax_year, entity_type, display_name)"
+                    )
+                )
+        except Exception:
+            pass
+
+    if "tax_documents" in existing_tables:
+        cols = _table_columns(engine, "tax_documents")
+        if "owner_entity_id" not in cols:
+            _add_column(engine, "tax_documents", "owner_entity_id INTEGER")
+        if "is_authoritative" not in cols:
+            _add_column(engine, "tax_documents", "is_authoritative BOOLEAN")
+
+    if "tax_facts" in existing_tables:
+        cols = _table_columns(engine, "tax_facts")
+        if "owner_entity_id" not in cols:
+            _add_column(engine, "tax_facts", "owner_entity_id INTEGER")
+
+    if "tax_reconciliation_snapshots" not in existing_tables:
+        try:
+            with engine.begin() as conn:
+                conn.execute(
+                    text(
+                        """
+                        CREATE TABLE tax_reconciliation_snapshots (
+                            id INTEGER PRIMARY KEY,
+                            tax_year INTEGER NOT NULL,
+                            created_at DATETIME NOT NULL,
+                            summary_json JSON NOT NULL,
+                            document_ids JSON NOT NULL,
+                            notes TEXT
+                        )
+                        """
+                    )
+                )
+                conn.execute(text("CREATE INDEX ix_tax_reconcile_year ON tax_reconciliation_snapshots(tax_year)"))
+        except Exception:
+            pass
 
     if "external_liability_snapshots" not in existing_tables:
         try:

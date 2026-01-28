@@ -1,0 +1,669 @@
+<div class="cashbills-modal" id="taxDocsModal" aria-hidden="true">
+  <div class="cashbills-modal__overlay" data-modal-close="true"></div>
+  <div class="cashbills-modal__dialog" role="dialog" aria-modal="true" aria-labelledby="taxDocsTitle">
+    <div class="cashbills-modal__header">
+      <div>
+        <div class="ui-section-title" id="taxDocsTitle">Upload tax documents</div>
+      </div>
+      <div class="cashbills-modal__actions">
+        <button class="btn" id="taxDocsClose" type="button">Close</button>
+      </div>
+    </div>
+    <div class="cashbills-modal__body">
+      <div class="ui-tabs" style="margin-bottom:10px;">
+        <button class="ui-tab ui-tab--active" data-tax-doc-step="upload" type="button">Upload</button>
+        <button class="ui-tab" data-tax-doc-step="extract" type="button">Extract</button>
+        <button class="ui-tab" data-tax-doc-step="assign" type="button">Assign owners</button>
+        <button class="ui-tab" data-tax-doc-step="review" type="button">Review</button>
+        <button class="ui-tab" data-tax-doc-step="apply" type="button">Reconcile &amp; Apply</button>
+      </div>
+
+      <div id="tax-doc-step-upload">
+        <div class="muted">Upload PDFs for W-2, 1099s, K-1, 1095-A, etc. Multiple files allowed.</div>
+        <div style="margin-top:10px;">
+          <div id="taxDocDropZone" style="border:1px dashed #9ca3af; border-radius:10px; padding:18px; text-align:center; cursor:pointer;">
+            <div><b>Drag &amp; drop PDFs here</b></div>
+            <div class="muted">or click to browse</div>
+          </div>
+          <input id="taxDocFile" type="file" accept="application/pdf" multiple style="margin-top:10px;" />
+          <button class="btn btn--primary" id="taxDocUploadBtn" type="button">Upload</button>
+        </div>
+        <div id="taxDocUploadStatus" class="muted" style="margin-top:8px;"></div>
+        <div id="taxDocListUpload" style="margin-top:12px;"></div>
+      </div>
+
+      <div id="tax-doc-step-extract" style="display:none;">
+        <div class="muted">Run extraction for uploaded documents (OCR will be used when needed).</div>
+        <div style="margin-top:10px;">
+          <button class="btn btn--secondary" id="taxDocExtractAllBtn" type="button">Extract all</button>
+        </div>
+        <div id="taxDocListExtract" style="margin-top:12px;"></div>
+      </div>
+
+      <div id="tax-doc-step-assign" style="display:none;">
+        <div class="muted">Assign each document to the correct household entity before confirmation.</div>
+        <div id="taxDocAssignList" style="margin-top:12px;"></div>
+      </div>
+
+      <div id="tax-doc-step-review" style="display:none;">
+        <div class="muted">Review extracted fields and confirm documents before applying.</div>
+        <div id="taxDocReviewList" style="margin-top:12px;"></div>
+      </div>
+
+      <div id="tax-doc-step-apply" style="display:none;">
+        <div class="muted">Review differences between tax docs and Investor estimates, then apply.</div>
+        <div id="taxDocReconcile" style="margin-top:12px;"></div>
+        <div style="margin-top:10px;">
+          <label>
+            <input type="checkbox" id="taxDocPrimaryToggle" checked disabled />
+            Apply tax documents as primary truth for {{ year }}
+          </label>
+        </div>
+        <div style="margin-top:10px;">
+          <button class="btn btn--primary" id="taxDocApplyBtn" type="button">Apply &amp; regenerate CPA Pack</button>
+        </div>
+        <div id="taxDocApplyStatus" class="muted" style="margin-top:8px;"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+  (() => {
+    const modal = document.getElementById("taxDocsModal");
+    if (!modal) return;
+    const closeBtn = document.getElementById("taxDocsClose");
+    const uploadBtn = document.getElementById("taxDocUploadBtn");
+    const uploadInput = document.getElementById("taxDocFile");
+    const dropZone = document.getElementById("taxDocDropZone");
+    const uploadStatus = document.getElementById("taxDocUploadStatus");
+    const extractAllBtn = document.getElementById("taxDocExtractAllBtn");
+    const assignList = document.getElementById("taxDocAssignList");
+    const reviewList = document.getElementById("taxDocReviewList");
+    const applyBtn = document.getElementById("taxDocApplyBtn");
+    const applyStatus = document.getElementById("taxDocApplyStatus");
+    const reconcileEl = document.getElementById("taxDocReconcile");
+
+    const steps = ["upload", "extract", "assign", "review", "apply"];
+    const stepEls = {
+      upload: document.getElementById("tax-doc-step-upload"),
+      extract: document.getElementById("tax-doc-step-extract"),
+      assign: document.getElementById("tax-doc-step-assign"),
+      review: document.getElementById("tax-doc-step-review"),
+      apply: document.getElementById("tax-doc-step-apply"),
+    };
+
+    let currentYear = "{{ year }}";
+    let docsCache = [];
+    let entitiesCache = [];
+
+    const setStep = (step) => {
+      steps.forEach((s) => {
+        const btn = modal.querySelector(`[data-tax-doc-step="${s}"]`);
+        if (btn) btn.classList.toggle("ui-tab--active", s === step);
+        if (stepEls[s]) stepEls[s].style.display = s === step ? "" : "none";
+      });
+      if (step === "apply") {
+        renderReconcile();
+      }
+    };
+
+    const openModal = (year) => {
+      currentYear = year || currentYear;
+      modal.classList.add("is-open");
+      modal.setAttribute("aria-hidden", "false");
+      setStep("upload");
+      fetchEntities().then(fetchDocs);
+    };
+
+    const closeModal = () => {
+      modal.classList.remove("is-open");
+      modal.setAttribute("aria-hidden", "true");
+    };
+
+    const fetchDocs = async () => {
+      const res = await fetch(`/api/taxes/documents?tax_year=${currentYear}`);
+      const data = await res.json();
+      docsCache = data.documents || [];
+      renderUploadList();
+      renderExtractList();
+      renderAssignList();
+      renderReviewList();
+    };
+
+    const fetchEntities = async () => {
+      const res = await fetch(`/api/taxes/entities?tax_year=${currentYear}`);
+      const data = await res.json();
+      entitiesCache = data.entities || [];
+    };
+
+    const renderUploadList = () => {
+      const el = document.getElementById("taxDocListUpload");
+      if (!el) return;
+      if (!docsCache.length) {
+        el.innerHTML = "<div class='muted'>No documents uploaded yet.</div>";
+        return;
+      }
+      el.innerHTML = docsCache
+        .map((d) => `<div><b>${d.filename}</b> · ${d.doc_type} · ${d.status}</div>`)
+        .join("");
+    };
+
+    const renderExtractList = () => {
+      const el = document.getElementById("taxDocListExtract");
+      if (!el) return;
+      if (!docsCache.length) {
+        el.innerHTML = "<div class='muted'>No documents uploaded yet.</div>";
+        return;
+      }
+      el.innerHTML = docsCache
+        .map(
+          (d) => `
+            <div style="margin-bottom:8px;">
+              <b>${d.filename}</b> · ${d.doc_type} · ${d.status}
+              <button class="btn btn--secondary btn--sm" data-doc-extract="${d.id}">Extract</button>
+            </div>
+          `
+        )
+        .join("");
+      el.querySelectorAll("[data-doc-extract]").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          const id = btn.getAttribute("data-doc-extract");
+          const form = new FormData();
+          await fetch(`/api/taxes/documents/${id}/extract`, { method: "POST", body: form });
+          fetchDocs();
+        });
+      });
+    };
+
+    const renderAssignList = () => {
+      if (!assignList) return;
+      if (!docsCache.length) {
+        assignList.innerHTML = "<div class='muted'>No documents uploaded yet.</div>";
+        return;
+      }
+      const ownerOptions = (selectedId) =>
+        entitiesCache
+          .map(
+            (e) =>
+              `<option value="${e.id}" ${String(e.id) === String(selectedId) ? "selected" : ""}>${e.display_name} · ${e.entity_type}</option>`
+          )
+          .join("");
+      assignList.innerHTML = docsCache
+        .map((doc) => {
+          const suggested = doc.suggested_owner_entity_id;
+          const current = doc.owner_entity_id || suggested || "";
+          const suggestedLabel = entitiesCache.find((e) => String(e.id) === String(suggested));
+          return `
+            <div class="box" data-doc-assign="${doc.id}">
+              <div><b>${doc.filename}</b> · ${doc.doc_type}</div>
+              <div class="muted" style="margin-top:4px;">
+                Suggested: ${suggestedLabel ? `${suggestedLabel.display_name} · ${suggestedLabel.entity_type}` : "Unknown"}
+              </div>
+              <div style="margin-top:6px;">
+                <label>Owner
+                  <select data-doc-owner>
+                    <option value="">— Select —</option>
+                    ${ownerOptions(current)}
+                  </select>
+                </label>
+              </div>
+            </div>
+          `;
+        })
+        .join("");
+      assignList.querySelectorAll("[data-doc-assign]").forEach((row) => {
+        const docId = row.getAttribute("data-doc-assign");
+        const select = row.querySelector("[data-doc-owner]");
+        if (!select) return;
+        select.addEventListener("change", async () => {
+          const ownerId = select.value;
+          await fetch(`/api/taxes/documents/${docId}`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ owner_entity_id: ownerId || null }),
+          });
+          fetchDocs();
+        });
+      });
+    };
+
+    const docTypes = [
+      { value: "W2", label: "W-2" },
+      { value: "K1", label: "K-1" },
+      { value: "1099INT", label: "1099-INT" },
+      { value: "1099DIV", label: "1099-DIV" },
+      { value: "1099B", label: "1099-B" },
+      { value: "1099R", label: "1099-R" },
+      { value: "1095A", label: "1095-A" },
+      { value: "1098", label: "1098" },
+      { value: "SSA1099", label: "SSA-1099" },
+      { value: "OTHER", label: "Other" },
+      { value: "CUSTOM", label: "Custom…" },
+    ];
+    const factTypesByDoc = {
+      W2: ["WAGES", "FED_WITHHOLDING"],
+      K1: ["K1_ORD_INCOME", "K1_INTEREST", "K1_DIVIDENDS", "K1_RENTAL", "K1_OTHER"],
+      "1099INT": ["INT_INCOME"],
+      "1099DIV": ["DIV_ORDINARY", "DIV_QUALIFIED", "CAP_GAIN_DIST"],
+      "1099B": ["B_PROCEEDS", "B_COST_BASIS", "B_GAIN_LOSS"],
+      "1099R": ["IRA_DISTRIBUTION", "IRA_WITHHOLDING"],
+      "1095A": ["ACA_PREMIUM", "ACA_SLCSP", "ACA_APTC"],
+    };
+    const manualFieldDefs = {
+      W2: [
+        { key: "employer_name", label: "Employer name" },
+        { key: "employer_ein", label: "Employer EIN" },
+        { key: "employee_name", label: "Employee name" },
+        { key: "wages", label: "Box 1 wages" },
+        { key: "federal_withholding", label: "Box 2 federal withholding" },
+        { key: "ss_wages", label: "Box 3 Social Security wages" },
+        { key: "ss_withholding", label: "Box 4 Social Security tax withheld" },
+        { key: "medicare_wages", label: "Box 5 Medicare wages" },
+        { key: "medicare_withholding", label: "Box 6 Medicare tax withheld" },
+      ],
+      "1099R": [
+        { key: "payer_name", label: "Payer name" },
+        { key: "recipient_name", label: "Recipient name" },
+        { key: "gross_distribution", label: "Box 1 gross distribution" },
+        { key: "taxable_amount", label: "Box 2a taxable amount" },
+        { key: "federal_withholding", label: "Box 4 federal withholding" },
+      ],
+      "1099INT": [
+        { key: "payer_name", label: "Payer name" },
+        { key: "interest_income", label: "Box 1 interest income" },
+      ],
+      "1099DIV": [
+        { key: "payer_name", label: "Payer name" },
+        { key: "ordinary_dividends", label: "Box 1a ordinary dividends" },
+        { key: "qualified_dividends", label: "Box 1b qualified dividends" },
+        { key: "cap_gain_dist", label: "Box 2a capital gain distributions" },
+      ],
+      "1099B": [
+        { key: "payer_name", label: "Payer/Broker name" },
+        { key: "proceeds", label: "Proceeds" },
+        { key: "cost_basis", label: "Cost basis" },
+        { key: "gain_loss", label: "Gain or loss" },
+      ],
+      K1: [
+        { key: "entity_name", label: "Entity name" },
+        { key: "k1_ordinary_income", label: "Ordinary business income" },
+        { key: "k1_interest", label: "Interest income" },
+        { key: "k1_dividends", label: "Dividends" },
+        { key: "k1_rental", label: "Rental income" },
+        { key: "k1_other", label: "Other income" },
+      ],
+      "1095A": [
+        { key: "aca_premium_total", label: "Total premiums (A)" },
+        { key: "aca_slcsp_total", label: "Total SLCSP (B)" },
+        { key: "aca_aptc_total", label: "Total APTC (C)" },
+      ],
+      "1098": [
+        { key: "payer_name", label: "Lender name" },
+        { key: "mortgage_interest", label: "Mortgage interest received (Box 1)" },
+        { key: "points_paid", label: "Points paid (Box 6)" },
+        { key: "property_taxes", label: "Property taxes (Box 10)" },
+      ],
+      "SSA1099": [
+        { key: "payer_name", label: "Payer name" },
+        { key: "ssa_benefits", label: "Net benefits for year (Box 5)" },
+        { key: "federal_withholding", label: "Federal tax withheld (Box 6)" },
+      ],
+      OTHER: [
+        { key: "payer_name", label: "Payer/Issuer name" },
+        { key: "amount", label: "Amount" },
+        { key: "description", label: "Description" },
+      ],
+    };
+
+    const renderManualFields = (docType, presentKeys = new Set()) => {
+      const typeKey = docType === "CUSTOM" ? "OTHER" : docType;
+      const defs = manualFieldDefs[typeKey] || [];
+      if (!defs.length) {
+        return "<div class='muted'>No manual fields defined for this document type.</div>";
+      }
+      const missing = defs.filter((d) => !presentKeys.has(d.key));
+      if (!missing.length) {
+        return "<div class='muted'>All standard fields detected. Edit values above to correct extraction.</div>";
+      }
+      return `
+        <div class="muted">Manual entry (optional). Use to add missing fields.</div>
+        <table style="margin-top:6px;">
+          <thead>
+            <tr>
+              <th>Field</th>
+              <th>Value</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${missing
+              .map(
+                (f) => `
+              <tr>
+                <td class="muted">${f.label}</td>
+                <td><input data-manual-field="${f.key}" placeholder="${f.label}"/></td>
+              </tr>
+            `
+              )
+              .join("")}
+          </tbody>
+        </table>
+      `;
+    };
+
+    const renderReviewList = () => {
+      if (!reviewList) return;
+      if (!docsCache.length) {
+        reviewList.innerHTML = "<div class='muted'>No documents uploaded yet.</div>";
+        return;
+      }
+      reviewList.innerHTML = docsCache
+        .map((doc) => {
+          const fields = (doc.extraction && doc.extraction.extracted_json && doc.extraction.extracted_json.fields) || [];
+          const warnings = (doc.extraction && doc.extraction.warnings) || [];
+          const ownerOptions = (selectedId) =>
+            entitiesCache
+              .map(
+                (e) =>
+                  `<option value="${e.id}" ${String(e.id) === String(selectedId) ? "selected" : ""}>${e.display_name} · ${e.entity_type}</option>`
+              )
+              .join("");
+          const ownerSelected = doc.owner_entity_id || doc.suggested_owner_entity_id || "";
+          const factTypes = factTypesByDoc[doc.doc_type] || [];
+          const authoritativeChecked = doc.is_authoritative === true || (!doc.is_corrected && doc.is_authoritative == null);
+          const factOwnerRows = factTypes.length
+            ? `
+              <table style="margin-top:8px;">
+                <thead>
+                  <tr>
+                    <th>Fact type</th>
+                    <th>Owner override</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${factTypes
+                    .map(
+                      (fact) => `
+                      <tr>
+                        <td class="muted">${fact}</td>
+                        <td>
+                          <select data-fact-owner data-fact-type="${fact}">
+                            <option value="">Use document owner</option>
+                            ${ownerOptions("")}
+                          </select>
+                        </td>
+                      </tr>
+                    `
+                    )
+                    .join("")}
+                </tbody>
+              </table>
+            `
+            : "";
+          const presentKeys = new Set(fields.map((f) => String(f.key)));
+          const fieldsHtml =
+            fields.length === 0
+              ? `
+                <div class="muted">No extracted fields yet.</div>
+                <div data-manual-fields>${renderManualFields(doc.doc_type, presentKeys)}</div>
+              `
+              : `
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Field</th>
+                      <th>Value</th>
+                      <th>Confidence</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    ${fields
+                      .map((f) => {
+                        const value = f.value_confirmed ?? f.value_masked ?? f.value ?? "";
+                        const conf = f.confidence ? Math.round(f.confidence * 100) : 0;
+                        return `
+                          <tr>
+                            <td class="muted">${f.label || f.key}</td>
+                            <td><input data-field-key="${f.key}" value="${value}"/></td>
+                            <td class="muted">${conf}%</td>
+                          </tr>
+                        `;
+                      })
+                      .join("")}
+                  </tbody>
+                </table>
+                <div style="margin-top:8px;" data-manual-fields>${renderManualFields(doc.doc_type, presentKeys)}</div>
+              `;
+          const docTypeSelect = (doc.custom_doc_type && doc.doc_type === "OTHER") ? "CUSTOM" : doc.doc_type;
+          return `
+            <div class="box" data-doc-id="${doc.id}">
+              <div><b>${doc.filename}</b> · ${doc.doc_type}</div>
+              ${warnings.length ? `<div class="muted">Warnings: ${warnings.join(", ")}</div>` : ""}
+              <div style="margin-top:6px;">
+                <label>Doc type
+                  <select data-doc-type>
+                    ${docTypes
+                      .map((t) => {
+                        const selected = t.value === docTypeSelect ? "selected" : "";
+                        return `<option value="${t.value}" ${selected}>${t.label}</option>`;
+                      })
+                      .join("")}
+                  </select>
+                </label>
+                <label style="margin-left:12px;" data-doc-custom-wrap>
+                  Custom type
+                  <input data-doc-custom-type value="${doc.custom_doc_type || ""}" placeholder="e.g., 1099-NEC"/>
+                </label>
+                <label style="margin-left:12px;">Owner
+                  <select data-doc-owner>
+                    <option value="">— Select —</option>
+                    ${ownerOptions(ownerSelected)}
+                  </select>
+                </label>
+                <label style="margin-left:12px;">
+                  <input type="checkbox" data-doc-confirm ${doc.status === "CONFIRMED" ? "checked" : ""}/> Confirm
+                </label>
+                <label style="margin-left:12px;">
+                  <input type="checkbox" data-doc-corrected ${doc.is_corrected ? "checked" : ""}/> Corrected
+                </label>
+                <label style="margin-left:12px;">
+                  <input type="checkbox" data-doc-authoritative ${authoritativeChecked ? "checked" : ""}/> Authoritative
+                </label>
+              </div>
+              <div style="margin-top:6px;">${fieldsHtml}</div>
+              ${factOwnerRows}
+            </div>
+          `;
+        })
+        .join("");
+      reviewList.querySelectorAll("[data-doc-id]").forEach((row) => {
+        const typeSelect = row.querySelector("[data-doc-type]");
+        const customWrap = row.querySelector("[data-doc-custom-wrap]");
+        const manualWrap = row.querySelector("[data-manual-fields]");
+        if (!typeSelect || !customWrap) return;
+        const toggleCustom = () => {
+          const show = typeSelect.value === "CUSTOM";
+          customWrap.style.display = show ? "inline-block" : "none";
+        };
+        const updateManualFields = () => {
+          if (!manualWrap) return;
+          const keys = new Set(
+            Array.from(row.querySelectorAll("input[data-field-key]")).map((input) =>
+              String(input.getAttribute("data-field-key") || "")
+            )
+          );
+          manualWrap.innerHTML = renderManualFields(typeSelect.value, keys);
+        };
+        typeSelect.addEventListener("change", toggleCustom);
+        typeSelect.addEventListener("change", updateManualFields);
+        toggleCustom();
+        updateManualFields();
+      });
+    };
+
+    const renderReconcile = async () => {
+      if (!reconcileEl) return;
+      reconcileEl.innerHTML = "<div class='muted'>Loading reconciliation...</div>";
+      const res = await fetch(`/api/taxes/reconcile?tax_year=${currentYear}`);
+      const data = await res.json();
+      const rec = data.reconciliation || {};
+      const rows = rec.rows || [];
+      if (!rows.length) {
+        reconcileEl.innerHTML = "<div class='muted'>No reconciliation data available yet.</div>";
+        return;
+      }
+      const fmt = new Intl.NumberFormat(undefined, { style: "currency", currency: "USD" });
+      reconcileEl.innerHTML = `
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Category</th>
+                <th>Tax docs</th>
+                <th>Investor estimate</th>
+                <th>Delta</th>
+                <th>Source used</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${rows
+                .map(
+                  (row) => `
+                  <tr>
+                    <td>${row.label}</td>
+                    <td class="num ui-tabular-nums">${fmt.format(row.docs_total || 0)}</td>
+                    <td class="num ui-tabular-nums">${fmt.format(row.investor_total || 0)}</td>
+                    <td class="num ui-tabular-nums">${fmt.format(row.delta || 0)}</td>
+                    <td class="muted">${row.source_used}</td>
+                  </tr>
+                `
+                )
+                .join("")}
+            </tbody>
+          </table>
+        </div>
+      `;
+    };
+
+    const applyDocs = async () => {
+      if (!reviewList) return;
+      const docs = [];
+      reviewList.querySelectorAll("[data-doc-id]").forEach((docEl) => {
+        const id = parseInt(docEl.getAttribute("data-doc-id"), 10);
+        const confirmed = !!docEl.querySelector("[data-doc-confirm]")?.checked;
+        const docType = docEl.querySelector("[data-doc-type]")?.value || "OTHER";
+        const isCorrected = !!docEl.querySelector("[data-doc-corrected]")?.checked;
+        const isAuthoritative = !!docEl.querySelector("[data-doc-authoritative]")?.checked;
+        const ownerId = docEl.querySelector("[data-doc-owner]")?.value || "";
+        const customDocType = docEl.querySelector("[data-doc-custom-type]")?.value || "";
+        const fields = {};
+        docEl.querySelectorAll("input[data-field-key]").forEach((input) => {
+          fields[input.getAttribute("data-field-key")] = input.value;
+        });
+        const manualFields = {};
+        docEl.querySelectorAll("input[data-manual-field]").forEach((input) => {
+          const key = input.getAttribute("data-manual-field");
+          if (key && input.value) {
+            manualFields[key] = input.value;
+          }
+        });
+        const factOwners = {};
+        docEl.querySelectorAll("[data-fact-owner]").forEach((sel) => {
+          const factType = sel.getAttribute("data-fact-type");
+          const owner = sel.value;
+          if (factType && owner) {
+            factOwners[factType] = parseInt(owner, 10);
+          }
+        });
+        docs.push({
+          id,
+          confirmed,
+          doc_type: docType,
+          custom_doc_type: docType === "CUSTOM" ? customDocType : "",
+          is_corrected: isCorrected,
+          is_authoritative: isAuthoritative,
+          owner_entity_id: ownerId,
+          fields,
+          manual_fields: manualFields,
+          fact_owners: factOwners,
+        });
+      });
+      applyStatus.textContent = "Applying...";
+      const res = await fetch(`/api/taxes/documents/apply`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tax_year: currentYear, documents: docs }),
+      });
+      const data = await res.json();
+      applyStatus.textContent = data.ok ? "Applied. Refreshing..." : "Apply failed.";
+      if (data.ok) {
+        window.location.reload();
+      }
+    };
+
+    document.querySelectorAll(".js-tax-docs-open").forEach((btn) => {
+      btn.addEventListener("click", () => openModal(btn.getAttribute("data-tax-year")));
+    });
+    document.querySelectorAll("[data-tax-doc-step]").forEach((btn) => {
+      btn.addEventListener("click", () => setStep(btn.getAttribute("data-tax-doc-step")));
+    });
+    if (closeBtn) closeBtn.addEventListener("click", closeModal);
+    modal.addEventListener("click", (e) => {
+      if (e.target && e.target.getAttribute("data-modal-close")) closeModal();
+    });
+
+    const uploadFiles = async (files) => {
+      if (!files || !files.length) return;
+      const form = new FormData();
+      form.append("tax_year", currentYear);
+      Array.from(files).forEach((f) => form.append("files", f));
+      uploadStatus.textContent = "Uploading...";
+      const res = await fetch("/api/taxes/documents/upload", { method: "POST", body: form });
+      const data = await res.json();
+      uploadStatus.textContent = data.ok ? "Upload complete." : "Upload failed.";
+      if (uploadInput) uploadInput.value = "";
+      fetchDocs();
+    };
+
+    if (uploadBtn) {
+      uploadBtn.addEventListener("click", async () => {
+        if (!uploadInput) return;
+        uploadFiles(uploadInput.files);
+      });
+    }
+
+    if (dropZone) {
+      dropZone.addEventListener("click", () => {
+        if (uploadInput) uploadInput.click();
+      });
+      dropZone.addEventListener("dragover", (e) => {
+        e.preventDefault();
+        dropZone.style.borderColor = "#2563eb";
+        dropZone.style.background = "#eff6ff";
+      });
+      dropZone.addEventListener("dragleave", () => {
+        dropZone.style.borderColor = "#9ca3af";
+        dropZone.style.background = "transparent";
+      });
+      dropZone.addEventListener("drop", (e) => {
+        e.preventDefault();
+        dropZone.style.borderColor = "#9ca3af";
+        dropZone.style.background = "transparent";
+        uploadFiles(e.dataTransfer ? e.dataTransfer.files : []);
+      });
+    }
+
+    if (extractAllBtn) {
+      extractAllBtn.addEventListener("click", async () => {
+        for (const doc of docsCache) {
+          await fetch(`/api/taxes/documents/${doc.id}/extract`, { method: "POST", body: new FormData() });
+        }
+        fetchDocs();
+      });
+    }
+
+    if (applyBtn) {
+      applyBtn.addEventListener("click", applyDocs);
+    }
+  })();
+</script>
