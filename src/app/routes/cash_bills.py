@@ -718,6 +718,21 @@ def recurring_update(
     return {"status": "ok"}
 
 
+@api_router.delete("/recurring/{bill_id}")
+def recurring_delete(
+    bill_id: int,
+    session: Session = Depends(db_session),
+    actor: str = Depends(require_actor),
+):
+    bill = session.query(RecurringBill).filter(RecurringBill.id == bill_id).one_or_none()
+    if bill is None:
+        raise HTTPException(status_code=404, detail="Bill not found.")
+    session.query(RecurringBillRule).filter(RecurringBillRule.recurring_bill_id == bill_id).delete()
+    session.delete(bill)
+    session.commit()
+    return {"status": "ok", "bill_id": int(bill_id)}
+
+
 @api_router.get("/card-recurring/summary")
 def card_recurring_summary(
     request: Request,

@@ -437,7 +437,10 @@
           const docTypeSelect = (doc.custom_doc_type && doc.doc_type === "OTHER") ? "CUSTOM" : doc.doc_type;
           return `
             <div class="box" data-doc-id="${doc.id}">
-              <div><b>${doc.filename}</b> · ${doc.doc_type}</div>
+              <div style="display:flex; justify-content:space-between; gap:10px; align-items:center;">
+                <div><b>${doc.filename}</b> · ${doc.doc_type}</div>
+                <button class="btn btn--secondary btn--sm" type="button" data-doc-delete="${doc.id}">Remove</button>
+              </div>
               ${warnings.length ? `<div class="muted">Warnings: ${warnings.join(", ")}</div>` : ""}
               <div style="margin-top:6px;">
                 <label>Doc type
@@ -498,6 +501,17 @@
         typeSelect.addEventListener("change", updateManualFields);
         toggleCustom();
         updateManualFields();
+      });
+      reviewList.querySelectorAll("[data-doc-delete]").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          const docId = btn.getAttribute("data-doc-delete");
+          if (!docId) return;
+          if (!confirm("Remove this tax document? This will delete extracted facts and remove it from the tax year.")) {
+            return;
+          }
+          await fetch(`/api/taxes/documents/${docId}`, { method: "DELETE" });
+          fetchDocs();
+        });
       });
     };
 

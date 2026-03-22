@@ -341,15 +341,21 @@
       <tr><td>IRA net distributions</td><td class="num ui-tabular-nums">{{ s.ordinary_breakdown.ira_distributions_net|usd }}</td></tr>
       <tr><td>W-2 wages</td><td class="num ui-tabular-nums">{{ s.ordinary_breakdown.w2_wages|usd }}</td></tr>
       <tr><td>Yoga net profit</td><td class="num ui-tabular-nums">{{ s.ordinary_breakdown.yoga_net_profit|usd }}</td></tr>
-      <tr><td>Pass-through distributions (manual)</td><td class="num ui-tabular-nums">{{ s.ordinary_breakdown.trust_passthrough_gross|usd }}</td></tr>
-      <tr><td>Pass-through fees</td><td class="num ui-tabular-nums">{{ s.ordinary_breakdown.trust_fees|usd }}</td></tr>
+      <tr><td>Pass-through distributions (manual + LLC/Trust)</td><td class="num ui-tabular-nums">{{ s.ordinary_breakdown.trust_passthrough_gross|usd }}</td></tr>
+      <tr><td>Pass-through expenses</td><td class="num ui-tabular-nums">{{ s.ordinary_breakdown.trust_fees|usd }}</td></tr>
       <tr><td>Pass-through distributions (net)</td><td class="num ui-tabular-nums">{{ s.ordinary_breakdown.trust_passthrough|usd }}</td></tr>
+      <tr><td class="muted">LLC/Trust input income</td><td class="num ui-tabular-nums">{{ s.ordinary_breakdown.entity_inputs_income|usd }}</td></tr>
+      <tr><td class="muted">LLC/Trust input expenses</td><td class="num ui-tabular-nums">{{ s.ordinary_breakdown.entity_inputs_expenses|usd }}</td></tr>
+      <tr><td class="muted">LLC/Trust professional fees</td><td class="num ui-tabular-nums">{{ s.ordinary_breakdown.entity_inputs_professional_fees|usd }}</td></tr>
+      <tr><td class="muted">LLC/Trust taxes paid</td><td class="num ui-tabular-nums">{{ s.ordinary_breakdown.entity_inputs_taxes_paid|usd }}</td></tr>
+      <tr><td class="muted">LLC/Trust net (inputs)</td><td class="num ui-tabular-nums">{{ s.ordinary_breakdown.entity_inputs_net|usd }}</td></tr>
       <tr><td>K-1 income</td><td class="num ui-tabular-nums">{{ s.ordinary_breakdown.k1_income|usd }}</td></tr>
-      <tr><td>Interest (pass-through)</td><td class="num ui-tabular-nums">{{ s.ordinary_breakdown.interest_pass_through|usd }}</td></tr>
+      <tr><td>Interest (trust pass-through)</td><td class="num ui-tabular-nums">{{ s.ordinary_breakdown.interest_pass_through|usd }}</td></tr>
+      <tr><td>Interest (ArtYoga)</td><td class="num ui-tabular-nums">{{ s.ordinary_breakdown.interest_art_yoga|usd }}</td></tr>
       <tr><td>Interest (other)</td><td class="num ui-tabular-nums">{{ s.ordinary_breakdown.interest_other|usd }}</td></tr>
       <tr><td>Dividends (pass-through)</td><td class="num ui-tabular-nums">{{ s.ordinary_breakdown.dividends_pass_through|usd }}</td></tr>
       <tr><td>Dividends (other)</td><td class="num ui-tabular-nums">{{ s.ordinary_breakdown.dividends_other|usd }}</td></tr>
-      <tr><td>Pass-through income (interest+dividends)</td><td class="num ui-tabular-nums">{{ s.ordinary_breakdown.pass_through_income|usd }}</td></tr>
+      <tr><td>Trust pass-through income (interest+dividends)</td><td class="num ui-tabular-nums">{{ s.ordinary_breakdown.pass_through_income|usd }}</td></tr>
       <tr><td><b>Total ordinary income</b></td><td class="num ui-tabular-nums"><b>{{ s.ordinary_income|usd }}</b></td></tr>
     </table>
     <div class="muted" style="margin-top:8px;">
@@ -361,33 +367,94 @@
     {% if trust_pnl_details|length == 0 %}
       <div class="muted">No pass-through account income found for {{ year }}.</div>
     {% else %}
-      <div class="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th>Account</th>
-              <th>Taxpayer</th>
-              <th>Capital gains (adj.)</th>
-              <th>Dividends</th>
-              <th>Interest</th>
-              <th>Total</th>
-            </tr>
-          </thead>
-          <tbody>
-            {% for row in trust_pnl_details %}
+      {% if trust_pnl_trust|length > 0 %}
+        <div class="muted" style="margin-bottom:6px;"><b>Trust accounts</b></div>
+        <div class="table-wrap">
+          <table>
+            <thead>
               <tr>
-                <td>{{ row.account_name }}</td>
-                <td class="muted">{{ row.taxpayer }}</td>
-                <td class="num ui-tabular-nums">{{ row.capital_gains|usd }}</td>
-                <td class="num ui-tabular-nums">{{ row.dividends|usd }}</td>
-                <td class="num ui-tabular-nums">{{ row.interest|usd }}</td>
-                <td class="num ui-tabular-nums">{{ row.total|usd }}</td>
+                <th>Account</th>
+                <th>Taxpayer</th>
+                <th>Capital gains (adj.)</th>
+                <th>Dividends</th>
+                <th>Interest</th>
+                <th>Total</th>
               </tr>
-            {% endfor %}
-          </tbody>
-        </table>
-      </div>
-      <div style="margin-top:8px;"><b>Total trust income (gross)</b> {{ s.ordinary_breakdown.trust_pnl_gross|usd }}</div>
+            </thead>
+            <tbody>
+              {% for row in trust_pnl_trust %}
+                <tr>
+                  <td>{{ row.account_name }}</td>
+                  <td class="muted">{{ row.taxpayer }}</td>
+                  <td class="num ui-tabular-nums">{{ row.capital_gains|usd }}</td>
+                  <td class="num ui-tabular-nums">{{ row.dividends|usd }}</td>
+                  <td class="num ui-tabular-nums">{{ row.interest|usd }}</td>
+                  <td class="num ui-tabular-nums">{{ row.total|usd }}</td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      {% endif %}
+      {% if trust_pnl_art_yoga|length > 0 %}
+        <div class="muted" style="margin:12px 0 6px;"><b>ArtYoga LLC</b></div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Account</th>
+                <th>Taxpayer</th>
+                <th>Capital gains (adj.)</th>
+                <th>Dividends</th>
+                <th>Interest</th>
+                <th>Total</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for row in trust_pnl_art_yoga %}
+                <tr>
+                  <td>{{ row.account_name }}</td>
+                  <td class="muted">{{ row.taxpayer }}</td>
+                  <td class="num ui-tabular-nums">{{ row.capital_gains|usd }}</td>
+                  <td class="num ui-tabular-nums">{{ row.dividends|usd }}</td>
+                  <td class="num ui-tabular-nums">{{ row.interest|usd }}</td>
+                  <td class="num ui-tabular-nums">{{ row.total|usd }}</td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      {% endif %}
+      {% if trust_pnl_business_other|length > 0 %}
+        <div class="muted" style="margin:12px 0 6px;"><b>Other business / LLC accounts</b></div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Account</th>
+                <th>Taxpayer</th>
+                <th>Capital gains (adj.)</th>
+                <th>Dividends</th>
+                <th>Interest</th>
+                <th>Total</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for row in trust_pnl_business_other %}
+                <tr>
+                  <td>{{ row.account_name }}</td>
+                  <td class="muted">{{ row.taxpayer }}</td>
+                  <td class="num ui-tabular-nums">{{ row.capital_gains|usd }}</td>
+                  <td class="num ui-tabular-nums">{{ row.dividends|usd }}</td>
+                  <td class="num ui-tabular-nums">{{ row.interest|usd }}</td>
+                  <td class="num ui-tabular-nums">{{ row.total|usd }}</td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      {% endif %}
+      <div style="margin-top:8px;"><b>Total pass-through income (gross)</b> {{ s.ordinary_breakdown.trust_pnl_gross|usd }}</div>
       {% if year == 2025 %}
         <div class="muted" style="margin-top:8px;">Trust cutoff applied from Jun 6, 2025 (trust accounts only).</div>
       {% endif %}

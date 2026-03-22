@@ -309,6 +309,38 @@ class AuditLog(Base):
     note: Mapped[Optional[str]] = mapped_column(Text)
 
 
+class NativeWorkspaceState(Base):
+    __tablename__ = "native_workspace_state"
+    __table_args__ = (
+        UniqueConstraint("scope", name="uq_native_workspace_scope"),
+        Index("ix_native_workspace_updated_at", "updated_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    scope: Mapped[str] = mapped_column(String(20), nullable=False)  # household|trust|personal
+    scenario_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    notes_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list, nullable=False)
+    updated_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=utcnow, nullable=False)
+    updated_by: Mapped[Optional[str]] = mapped_column(String(200))
+
+
+class NativePlannerRun(Base):
+    __tablename__ = "native_planner_runs"
+    __table_args__ = (
+        Index("ix_native_planner_runs_scope_created_at", "scope", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    scope: Mapped[str] = mapped_column(String(20), nullable=False)  # household|trust|personal
+    title: Mapped[str] = mapped_column(String(200), nullable=False, default="Scenario Run")
+    scenario_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    notes_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list, nullable=False)
+    actions_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list, nullable=False)
+    summary_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=utcnow, nullable=False)
+    created_by: Mapped[Optional[str]] = mapped_column(String(200))
+
+
 class TaxAssumptionsSet(Base):
     __tablename__ = "tax_assumptions"
 

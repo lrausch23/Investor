@@ -104,6 +104,51 @@ Set in `.env`:
 PARTIAL_DATASET_THRESHOLD=100000
 ```
 
+## Native Snapshot API (Investor-Xcode)
+
+For the macOS native client, the backend now exposes a normalized snapshot endpoint:
+
+```bash
+GET /api/native/snapshot?scope=household
+GET /api/native/snapshot?scope=trust
+GET /api/native/snapshot?scope=personal
+```
+
+Native workspace state (planner scenario + notes):
+
+```bash
+GET  /api/native/workspace?scope=household
+POST /api/native/workspace?scope=household
+```
+
+Native planner run history (save/restore points):
+
+```bash
+GET  /api/native/planner-runs?scope=household&limit=25
+POST /api/native/planner-runs?scope=household
+GET  /api/native/planner-runs/{run_id}
+POST /api/native/planner-runs/{run_id}/restore
+```
+
+Native holdings lot drilldown:
+
+```bash
+GET /api/native/holdings/drilldown?scope=household&account_id=123&symbol=AAPL
+```
+
+Native sync diagnostics timeline/action center:
+
+```bash
+GET /api/native/sync-diagnostics?scope=household&limit_runs=6
+```
+
+Notes:
+- Uses the same auth behavior as other app routes (Basic auth if `APP_PASSWORD` is set).
+- Supports optional `as_of=YYYY-MM-DD`.
+- Snapshot endpoint is powered by `src/core/native_snapshot.py`, which is also reused by the file exporter in `Investor-Xcode`.
+- Workspace updates are audited in `AuditLog` as entity `NATIVE_WORKSPACE_STATE`.
+- Planner runs are audited in `AuditLog` as entity `NATIVE_PLANNER_RUN`.
+
 ## Core Concepts
 
 ### Buckets

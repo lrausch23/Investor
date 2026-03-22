@@ -219,6 +219,37 @@ async def update_tax_document(
     doc_payload = serialize_tax_document(doc, extraction)
     return JSONResponse({"ok": True, "document": doc_payload})
 
+
+@router.delete("/documents/{doc_id}")
+def delete_tax_document(
+    doc_id: int,
+    session: Session = Depends(db_session),
+    actor: str = Depends(require_actor),
+):
+    doc = session.query(TaxDocument).filter(TaxDocument.id == int(doc_id)).one_or_none()
+    if doc is None:
+        return JSONResponse(status_code=404, content={"ok": False, "error": "Document not found"})
+    tax_year = int(doc.tax_year)
+    raw_path = doc.raw_file_path
+    session.query(TaxFact).filter(TaxFact.source_doc_id == doc.id).delete(synchronize_session=False)
+    session.query(TaxDocumentExtraction).filter(TaxDocumentExtraction.tax_document_id == doc.id).delete(
+        synchronize_session=False
+    )
+    session.delete(doc)
+    session.commit()
+    if raw_path:
+        try:
+            Path(raw_path).unlink(missing_ok=True)
+        except Exception:
+            pass
+    inputs_row = get_or_create_tax_inputs(session, year=tax_year)
+    data = dict(inputs_row.data_json or {})
+    data["tax_doc_overrides"] = aggregate_tax_doc_overrides(session, tax_year=tax_year)
+    inputs_row.data_json = data
+    inputs_row.updated_at = dt.datetime.utcnow()
+    session.commit()
+    return JSONResponse({"ok": True})
+
 @router.post("/documents/apply")
 async def apply_tax_documents(
     request: Request,

@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 
 from dotenv import load_dotenv
+load_dotenv()
+
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -27,13 +29,11 @@ from src.app.routes.tax_documents import router as tax_documents_router
 from src.app.routes.taxlots import router as taxlots_router
 from src.app.routes.sync import router as sync_router
 from src.app.routes.api_rj import router as api_rj_router
+from src.app.routes.api_native import router as api_native_router
 from src.app.auth import auth_status_label
 from src.db.init_db import init_db
-from src.utils.time import format_local, format_local_date
 from src.utils.money import format_usd
-
-
-load_dotenv()
+from src.utils.time import format_local, format_local_date
 
 BASE_DIR = Path(__file__).resolve().parent
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
@@ -80,6 +80,7 @@ def create_app() -> FastAPI:
     app.include_router(taxlots_router)
     app.include_router(sync_router)
     app.include_router(api_rj_router)
+    app.include_router(api_native_router)
     return app
 
 

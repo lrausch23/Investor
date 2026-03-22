@@ -313,6 +313,7 @@ def _default_inputs() -> dict[str, Any]:
         "estimated_payments": [],
         "aca_premium_monthly": [0.0] * 12,
         "aca_aptc_monthly": [0.0] * 12,
+        "entity_financials": {},
         "docs_primary": True,
         "tax_manual_overrides": {},
         "aca_enabled": True,
@@ -370,6 +371,27 @@ def normalize_tax_inputs(data: dict[str, Any] | None) -> dict[str, Any]:
     base["safe_harbor_multiplier"] = _float(base.get("safe_harbor_multiplier") or 1.0)
     base["aca_enabled"] = _bool(base.get("aca_enabled"), default=True)
     base["docs_primary"] = _bool(base.get("docs_primary"), default=True)
+    entity_financials = base.get("entity_financials") or {}
+    if isinstance(entity_financials, dict):
+        cleaned: dict[str, Any] = {}
+        for key, val in entity_financials.items():
+            try:
+                ent_id = str(int(key))
+            except Exception:
+                continue
+            if not isinstance(val, dict):
+                continue
+            cleaned[ent_id] = {
+                "income": _float(val.get("income")),
+                "expenses": _float(val.get("expenses")),
+                "interest_income": _float(val.get("interest_income")),
+                "capital_gains": _float(val.get("capital_gains")),
+                "professional_fees": _float(val.get("professional_fees")),
+                "taxes_paid": _float(val.get("taxes_paid")),
+            }
+        base["entity_financials"] = cleaned
+    else:
+        base["entity_financials"] = {}
     manual_overrides = base.get("tax_manual_overrides") or {}
     if isinstance(manual_overrides, dict):
         for key in ("aca_premium_monthly", "aca_aptc_monthly", "aca_slcsp_monthly"):
@@ -555,6 +577,37 @@ def _pass_through_labels(session: Session, *, year: int) -> set[str]:
         if "LLC" in label.upper().replace(".", ""):
             names.add(label)
     return names
+
+
+def _pass_through_label_sets(session: Session, *, year: int) -> tuple[set[str], set[str]]:
+    trust_labels: set[str] = set()
+    art_yoga_labels: set[str] = set()
+    acct_rows = (
+        session.query(Account, TaxpayerEntity)
+        .join(TaxpayerEntity, TaxpayerEntity.id == Account.taxpayer_entity_id)
+        .all()
+    )
+    for acct, tp in acct_rows:
+        acct_name = (acct.name or "").strip()
+        if not acct_name:
+            continue
+        tp_type = str(tp.type or "").upper()
+        if tp_type == "TRUST":
+            trust_labels.add(acct_name)
+        if "ARTYOGA" in acct_name.upper().replace(" ", ""):
+            art_yoga_labels.add(acct_name)
+
+    ent_rows = session.query(HouseholdEntity).filter(HouseholdEntity.tax_year == int(year)).all()
+    for ent in ent_rows:
+        label = (ent.display_name or "").strip()
+        if not label:
+            continue
+        ent_type = str(ent.entity_type or "").upper()
+        if ent_type == "TRUST":
+            trust_labels.add(label)
+        if ent_type == "BUSINESS" and "ARTYOGA" in label.upper().replace(" ", ""):
+            art_yoga_labels.add(label)
+    return trust_labels, art_yoga_labels
 
 
 def _connection_ids_for_household(session: Session, *, include_trust: bool, start: dt.date, end: dt.date) -> list[int]:
@@ -1192,12 +1245,60 @@ def build_tax_dashboard(
     w2_withholding = _clamp_month_list(inputs.get("daughter_w2_withholding_monthly"))
     trust_passthrough_gross = _clamp_month_list(inputs.get("trust_passthrough_monthly")) if include_trust else [0.0] * 12
     trust_fees = _clamp_month_list(inputs.get("trust_fees_monthly")) if include_trust else [0.0] * 12
+    entity_financials = inputs.get("entity_financials") or {}
+    entity_income_total = 0.0
+    entity_expenses_total = 0.0
+    entity_interest_total = 0.0
+    entity_capital_gains_total = 0.0
+    entity_prof_total = 0.0
+    entity_taxes_total = 0.0
+    if isinstance(entity_financials, dict):
+        for row in entity_financials.values():
+            if not isinstance(row, dict):
+                continue
+            entity_income_total += _float(row.get("income"))
+            entity_expenses_total += _float(row.get("expenses"))
+            entity_interest_total += _float(row.get("interest_income"))
+            entity_capital_gains_total += _float(row.get("capital_gains"))
+            entity_prof_total += _float(row.get("professional_fees"))
+            entity_taxes_total += _float(row.get("taxes_paid"))
+    if include_trust and (entity_income_total or entity_expenses_total or entity_prof_total or entity_taxes_total):
+        add_gross = entity_income_total / 12.0
+        add_fees = (entity_expenses_total + entity_prof_total + entity_taxes_total) / 12.0
+        trust_passthrough_gross = [trust_passthrough_gross[i] + add_gross for i in range(12)]
+        trust_fees = [trust_fees[i] + add_fees for i in range(12)]
     trust_passthrough = [max(0.0, trust_passthrough_gross[i] - trust_fees[i]) for i in range(12)]
     aca_premium = _clamp_month_list(inputs.get("aca_premium_monthly"))
     aca_aptc = _clamp_month_list(inputs.get("aca_aptc_monthly"))
 
     dividends_monthly = dividend_income
     interest_monthly = interest_income
+    if include_trust and (entity_interest_total or entity_capital_gains_total):
+        pass_through_labels = _pass_through_labels(session, year=year)
+        add_entity_interest = entity_interest_total
+        add_entity_cap_gains = entity_capital_gains_total
+        if pass_through_labels:
+            try:
+                int_rows = list_interest_details(session, year=year)
+                for row in int_rows:
+                    if row.get("account_name") in pass_through_labels and abs(float(row.get("amount") or 0.0)) > 0:
+                        add_entity_interest = 0.0
+                        break
+            except Exception:
+                pass
+            try:
+                cap_rows = capital_gains_summary_by_account(session, year=year)
+                for row in cap_rows:
+                    if row.get("account_name") in pass_through_labels and abs(float(row.get("realized_with_wash") or 0.0)) > 0:
+                        add_entity_cap_gains = 0.0
+                        break
+            except Exception:
+                pass
+        if add_entity_interest or add_entity_cap_gains:
+            add_interest = add_entity_interest / 12.0
+            add_cap_gains = add_entity_cap_gains / 12.0
+            interest_monthly = [interest_monthly[i] + add_interest for i in range(12)]
+            st_gains = [st_gains[i] + add_cap_gains for i in range(12)]
 
     k1_monthly = [0.0] * 12
     doc_qual_override: float | None = None
@@ -1494,18 +1595,36 @@ def build_tax_dashboard(
     trust_pnl_gross = float(trust_pnl.get("gross") or 0.0)
     trust_pnl_net = max(0.0, trust_pnl_gross - totals["trust_fees"])
 
-    pass_through_labels = _pass_through_labels(session, year=year)
+    trust_labels, art_yoga_labels = _pass_through_label_sets(session, year=year)
     pass_through_div = 0.0
     pass_through_int = 0.0
-    if pass_through_labels:
+    art_yoga_div = 0.0
+    art_yoga_int = 0.0
+    if trust_labels or art_yoga_labels:
         div_rows = list_dividend_details(session, year=year)
         int_rows = list_interest_details(session, year=year)
-        pass_through_div = sum(float(r.get("amount") or 0.0) for r in div_rows if r.get("account_name") in pass_through_labels)
-        pass_through_int = sum(float(r.get("amount") or 0.0) for r in int_rows if r.get("account_name") in pass_through_labels)
+        if trust_labels:
+            pass_through_div = sum(
+                float(r.get("amount") or 0.0) for r in div_rows if r.get("account_name") in trust_labels
+            )
+            pass_through_int = sum(
+                float(r.get("amount") or 0.0) for r in int_rows if r.get("account_name") in trust_labels
+            )
+        if art_yoga_labels:
+            art_yoga_div = sum(
+                float(r.get("amount") or 0.0) for r in div_rows if r.get("account_name") in art_yoga_labels
+            )
+            art_yoga_int = sum(
+                float(r.get("amount") or 0.0) for r in int_rows if r.get("account_name") in art_yoga_labels
+            )
         if pass_through_div > totals["dividends"]:
             pass_through_div = totals["dividends"]
         if pass_through_int > totals["interest"]:
             pass_through_int = totals["interest"]
+        if art_yoga_div > totals["dividends"]:
+            art_yoga_div = max(0.0, totals["dividends"] - pass_through_div)
+        if art_yoga_int > totals["interest"]:
+            art_yoga_int = max(0.0, totals["interest"] - pass_through_int)
 
     se_tax_total, se_deduction_total = compute_se_tax(totals["yoga_net_profit"], params, year_filing)
     breakdown_total = compute_tax_breakdown(
@@ -1578,10 +1697,19 @@ def build_tax_dashboard(
             "trust_pnl_gross": trust_pnl_gross,
             "trust_pnl_net": trust_pnl_net,
             "trust_fees": totals["trust_fees"],
+            "entity_inputs_income": entity_income_total,
+            "entity_inputs_expenses": entity_expenses_total,
+            "entity_inputs_interest_income": entity_interest_total,
+            "entity_inputs_capital_gains": entity_capital_gains_total,
+            "entity_inputs_professional_fees": entity_prof_total,
+            "entity_inputs_taxes_paid": entity_taxes_total,
+            "entity_inputs_net": (entity_income_total + entity_interest_total + entity_capital_gains_total)
+            - (entity_expenses_total + entity_prof_total + entity_taxes_total),
             "k1_income": totals.get("k1_income", 0.0),
             "interest": totals["interest"],
             "interest_pass_through": pass_through_int,
-            "interest_other": max(0.0, totals["interest"] - pass_through_int),
+            "interest_art_yoga": art_yoga_int,
+            "interest_other": max(0.0, totals["interest"] - pass_through_int - art_yoga_int),
             "dividends": totals["dividends"],
             "dividends_pass_through": pass_through_div,
             "dividends_other": max(0.0, totals["dividends"] - pass_through_div),
@@ -2578,6 +2706,7 @@ def list_trust_pnl_details(session: Session, *, year: int) -> list[dict[str, Any
 
     trust_account_names = {acct.name for acct, _tp in acct_rows if acct.name in pass_through_labels}
     taxpayer_by_acct = {acct.name: tp.name for acct, tp in acct_rows if acct.name in pass_through_labels}
+    taxpayer_type_by_acct = {acct.name: str(tp.type or "") for acct, tp in acct_rows if acct.name in pass_through_labels}
     if not trust_account_names:
         return []
 
@@ -2586,6 +2715,7 @@ def list_trust_pnl_details(session: Session, *, year: int) -> list[dict[str, Any
         totals[acct_name] = {
             "account_name": acct_name,
             "taxpayer": taxpayer_by_acct.get(acct_name, ""),
+            "taxpayer_type": taxpayer_type_by_acct.get(acct_name, ""),
             "capital_gains": 0.0,
             "dividends": 0.0,
             "interest": 0.0,

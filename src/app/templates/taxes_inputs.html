@@ -106,7 +106,7 @@
                 {% endif %}
               </th>
               <th>Trust income (gross)</th>
-              <th>Trust fees</th>
+              <th>Trust expenses</th>
               <th>
                 ACA premium
                 {% if sources.get("aca_premium_monthly") %}
@@ -133,6 +133,51 @@
                 <td><input name="trust_fees_{{ m }}" value="{{ inputs.trust_fees_monthly[idx] }}"/></td>
                 <td><input name="aca_premium_{{ m }}" value="{{ inputs.aca_premium_monthly[idx] }}" data-aca-premium data-month="{{ m }}"/></td>
                 <td><input name="aca_aptc_{{ m }}" value="{{ inputs.aca_aptc_monthly[idx] }}" data-aca-aptc data-month="{{ m }}"/></td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+
+      <h2>LLC &amp; Trust annual inputs</h2>
+      <div class="muted">Enter annual totals per entity. These are distributed evenly across months for monitoring and included in pass-through net income.</div>
+      <div class="table-wrap" style="margin-top:8px;">
+        <table>
+          <thead>
+            <tr>
+              <th>Entity</th>
+              <th>Type</th>
+              <th>Income</th>
+              <th>Expenses</th>
+              <th>Interest income</th>
+              <th>Capital gain</th>
+              <th>Professional fees</th>
+              <th>Taxes paid</th>
+              <th>Net</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% set entity_financials = inputs.entity_financials or {} %}
+            {% for ent in entity_rows %}
+              {% set ent_key = ent.id|string %}
+              {% set row = entity_financials.get(ent_key, {}) %}
+              {% set income = row.get('income', 0) %}
+              {% set expenses = row.get('expenses', 0) %}
+              {% set interest = row.get('interest_income', 0) %}
+              {% set cap_gains = row.get('capital_gains', 0) %}
+              {% set prof = row.get('professional_fees', 0) %}
+              {% set taxes = row.get('taxes_paid', 0) %}
+              {% set net = (income + interest + cap_gains) - (expenses + prof + taxes) %}
+              <tr>
+                <td>{{ ent.display_name }}</td>
+                <td class="muted">{{ ent.entity_type }}</td>
+                <td><input name="entity_income_{{ ent.id }}" value="{{ income }}"/></td>
+                <td><input name="entity_expenses_{{ ent.id }}" value="{{ expenses }}"/></td>
+                <td><input name="entity_interest_income_{{ ent.id }}" value="{{ interest }}"/></td>
+                <td><input name="entity_capital_gains_{{ ent.id }}" value="{{ cap_gains }}"/></td>
+                <td><input name="entity_professional_fees_{{ ent.id }}" value="{{ prof }}"/></td>
+                <td><input name="entity_taxes_paid_{{ ent.id }}" value="{{ taxes }}"/></td>
+                <td class="num ui-tabular-nums">{{ net|usd }}</td>
               </tr>
             {% endfor %}
           </tbody>

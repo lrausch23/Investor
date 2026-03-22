@@ -43,7 +43,7 @@ def init_db() -> None:
             ("SPOUSE", "Tamila"),
             ("DEPENDENT", "Milana"),
             ("TRUST", "Trust"),
-            ("BUSINESS", "ArtYoga (Schedule C)"),
+            ("BUSINESS", "ArtYoga LLC"),
             ("HOUSEHOLD", "Household"),
         ]
         created = False

@@ -410,16 +410,25 @@
     },
   };
 
-  const clampDate = (iso) => {
-    const d = new Date(iso);
-    if (Number.isNaN(d.getTime())) return new Date();
-    return d;
-  };
-
   const parseDate = (iso) => {
     if (!iso) return null;
-    const d = new Date(iso);
+    if (iso instanceof Date) return iso;
+    const raw = String(iso).trim();
+    const dateOnly = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (dateOnly) {
+      const year = Number(dateOnly[1]);
+      const month = Number(dateOnly[2]);
+      const day = Number(dateOnly[3]);
+      const d = new Date(year, month - 1, day);
+      return Number.isNaN(d.getTime()) ? null : d;
+    }
+    const d = new Date(raw);
     return Number.isNaN(d.getTime()) ? null : d;
+  };
+
+  const clampDate = (iso) => {
+    const d = parseDate(iso);
+    return d || new Date();
   };
 
   const daysInMonth = (year, monthIndex) => new Date(year, monthIndex + 1, 0).getDate();
@@ -678,15 +687,65 @@
     return 0;
   };
 
-  const getRecurringDueDate = (bill) => bill.due_date || bill.last_payment_date || null;
+  const getRecurringDueDate = (bill) => bill.due_date || bill.last_payment_date || bill.last_charge_date || null;
+
+  const dueDayFromBill = (bill) => {
+    const dueDayRaw = bill.due_day_of_month != null ? Number(bill.due_day_of_month) : null;
+    return dueDayRaw || dayOfMonthFromIso(getRecurringDueDate(bill));
+  };
+
+  const effectiveDateForMonth = (item, year, monthIndex, paidDateKey) => {
+    const paidRaw = item && paidDateKey ? item[paidDateKey] : null;
+    if (paidRaw) {
+      const paid = clampDate(paidRaw);
+      if (paid.getFullYear() === year && paid.getMonth() === monthIndex) {
+        return paid;
+      }
+    }
+    const day = dueDayFromBill(item);
+    if (!day) return null;
+    return dueDateForMonth(year, monthIndex, day);
+  };
+
+  const nextDueDateForPaid = (item, asOfDate) => {
+    const day = dueDayFromBill(item);
+    if (!day) return null;
+    return dueDateForMonth(asOfDate.getFullYear(), asOfDate.getMonth() + 1, day);
+  };
+
+  const resolveRecurringDisplay = (bill, asOfDate, statusFilter, rangeDays) => {
+    let status = getRecurringStatus(bill);
+    let dueSource = getRecurringDueDate(bill);
+    if (statusFilter === "upcoming" && status === "paid") {
+      const nextDue = nextDueDateForPaid(bill, asOfDate);
+      if (nextDue) {
+        dueSource = toIsoDate(nextDue);
+        const days = daysBetween(asOfDate, nextDue);
+        status = days <= 7 ? "due_soon" : "upcoming";
+      }
+    }
+    if (statusFilter === "paid" && status === "paid" && bill.last_payment_date) {
+      dueSource = bill.last_payment_date;
+    }
+    if (statusFilter === "all" && status === "paid") {
+      const nextDue = nextDueDateForPaid(bill, asOfDate);
+      if (nextDue) {
+        const days = daysBetween(asOfDate, nextDue);
+        if (days >= 0 && (rangeDays == null || days <= rangeDays)) {
+          dueSource = toIsoDate(nextDue);
+          status = days <= 7 ? "due_soon" : "upcoming";
+        }
+      }
+    }
+    return { status, dueSource };
+  };
 
   const filterRecurringBills = (bills, asOfDate, rangeDays, statusFilter) => {
     const priority = { overdue: 0, due_soon: 1, upcoming: 2, paid: 3, unknown: 4 };
     return bills
       .filter((b) => {
-        const status = getRecurringStatus(b);
+        let { status, dueSource } = resolveRecurringDisplay(b, asOfDate, statusFilter, rangeDays);
         if (!matchesStatusFilter(status, statusFilter)) return false;
-        const dueSource = getRecurringDueDate(b);
         if (!dueSource) return statusFilter === "unknown" || statusFilter === "all";
         const due = clampDate(dueSource);
         const days = daysBetween(asOfDate, due);
@@ -694,12 +753,12 @@
         return withinRange(days, rangeDays, status);
       })
       .sort((a, b) => {
-        const aStatus = getRecurringStatus(a);
-        const bStatus = getRecurringStatus(b);
+        const aStatus = resolveRecurringDisplay(a, asOfDate, statusFilter, rangeDays).status;
+        const bStatus = resolveRecurringDisplay(b, asOfDate, statusFilter, rangeDays).status;
         const priDiff = (priority[aStatus] ?? 5) - (priority[bStatus] ?? 5);
         if (priDiff !== 0) return priDiff;
-        const aDue = getRecurringDueDate(a);
-        const bDue = getRecurringDueDate(b);
+        const aDue = resolveRecurringDisplay(a, asOfDate, statusFilter, rangeDays).dueSource;
+        const bDue = resolveRecurringDisplay(b, asOfDate, statusFilter, rangeDays).dueSource;
         if (!aDue && !bDue) return (a.name || "").localeCompare(b.name || "");
         if (!aDue) return 1;
         if (!bDue) return -1;
@@ -839,38 +898,32 @@
 
     bills.forEach((b) => {
       const status = getRecurringStatus(b);
-      if (isCurrentMonth && status === "paid") return;
-      const dueDayRaw = b.due_day_of_month != null ? Number(b.due_day_of_month) : null;
-      const dueDay = dueDayRaw || dayOfMonthFromIso(getRecurringDueDate(b));
-      const dueDate = dueDateFromDay(dueDay);
+      const dueDate = effectiveDateForMonth(b, year, monthIndex, status === "paid" ? "last_payment_date" : null);
       if (!dueDate || dueDate.getDate() !== dayNum) return;
       const label = (b.name || "").trim() || "Bill";
       const accountLabel = accountLabelFromRow(b) || b.source_account_name || "Checking";
-      addItem("Monthly bill", label, accountLabel, expectedAmount(b));
+      const amount = status === "paid" && b.last_payment_amount != null ? Number(b.last_payment_amount) || 0 : expectedAmount(b);
+      addItem("Monthly bill", label, accountLabel, amount);
     });
 
     charges.forEach((c) => {
       const status = normalizeStatus(c.status || "unknown");
-      if (isCurrentMonth && status === "paid") return;
-      const dueDayRaw = c.due_day_of_month != null ? Number(c.due_day_of_month) : null;
-      const dueDay = dueDayRaw || dayOfMonthFromIso(c.due_date || c.last_charge_date);
-      const dueDate = dueDateFromDay(dueDay);
+      const dueDate = effectiveDateForMonth(c, year, monthIndex, status === "paid" ? "last_charge_date" : null);
       if (!dueDate || dueDate.getDate() !== dayNum) return;
       const label = formatChargeLabel(c.name, c.merchant_display, c.description_sample);
       const accountLabel = accountLabelFromRow(c) || c.source_account_name || "Card";
-      addItem("Card charge", label, accountLabel, expectedChargeAmount(c));
+      const amount = status === "paid" && c.last_charge_amount != null ? Number(c.last_charge_amount) || 0 : expectedChargeAmount(c);
+      addItem("Card charge", label, accountLabel, amount);
     });
 
     cardBills.forEach((b) => {
       if (!b || !b.due_date) return;
-      if (isCurrentMonth) {
-        const status = deriveStatus(b, asOfDate);
-        if (status === "paid") return;
-      }
-      const due = parseDate(b.due_date);
+      const status = deriveStatus(b, asOfDate);
+      const due = effectiveDateForMonth(b, year, monthIndex, status === "paid" ? "last_payment_date" : null);
       if (!due) return;
       if (due.getFullYear() !== year || due.getMonth() !== monthIndex || due.getDate() !== dayNum) return;
-      addItem("Card bill", formatCardBillLabel(b), "", billLiquidityAmount(b));
+      const amount = status === "paid" && b.last_payment_amount != null ? Number(b.last_payment_amount) || 0 : billLiquidityAmount(b);
+      addItem("Card bill", formatCardBillLabel(b), "", amount);
     });
 
     return items;
@@ -899,31 +952,27 @@
 
     bills.forEach((b) => {
       const status = getRecurringStatus(b);
-      if (isCurrentMonth && status === "paid") return;
-      const dueDayRaw = b.due_day_of_month != null ? Number(b.due_day_of_month) : null;
-      const dueDay = dueDayRaw || dayOfMonthFromIso(getRecurringDueDate(b));
-      const dueDate = dueDateFromDay(dueDay);
+      const dueDate = effectiveDateForMonth(b, year, monthIndex, status === "paid" ? "last_payment_date" : null);
       if (!dueDate) return;
-      addAmount(dueDate, expectedAmount(b));
+      const amount = status === "paid" && b.last_payment_amount != null ? Number(b.last_payment_amount) || 0 : expectedAmount(b);
+      addAmount(dueDate, amount);
     });
 
     charges.forEach((c) => {
       const status = normalizeStatus(c.status || "unknown");
-      if (isCurrentMonth && status === "paid") return;
-      const dueDayRaw = c.due_day_of_month != null ? Number(c.due_day_of_month) : null;
-      const dueDay = dueDayRaw || dayOfMonthFromIso(c.due_date || c.last_charge_date);
-      const dueDate = dueDateFromDay(dueDay);
+      const dueDate = effectiveDateForMonth(c, year, monthIndex, status === "paid" ? "last_charge_date" : null);
       if (!dueDate) return;
-      addAmount(dueDate, expectedChargeAmount(c));
+      const amount = status === "paid" && c.last_charge_amount != null ? Number(c.last_charge_amount) || 0 : expectedChargeAmount(c);
+      addAmount(dueDate, amount);
     });
 
     cardBills.forEach((b) => {
       if (!b || !b.due_date) return;
-      if (isCurrentMonth) {
-        const status = deriveStatus(b, asOfDate);
-        if (status === "paid") return;
-      }
-      addAmount(b.due_date, billLiquidityAmount(b));
+      const status = deriveStatus(b, asOfDate);
+      const dueDate = effectiveDateForMonth(b, year, monthIndex, status === "paid" ? "last_payment_date" : null);
+      if (!dueDate) return;
+      const amount = status === "paid" && b.last_payment_amount != null ? Number(b.last_payment_amount) || 0 : billLiquidityAmount(b);
+      addAmount(dueDate, amount);
     });
 
     const dowLabels = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -1247,13 +1296,14 @@
     }
     const tableRows = rows
       .map((b) => {
-        const status = getRecurringStatus(b);
+        const display = resolveRecurringDisplay(b, asOfDate, state.status, state.rangeDays);
+        const status = display.status;
         const statusLabel = COPY.statuses[status] || status;
         const overdueClass = status === "overdue" ? " cashbills-badge--overdue" : "";
         const statusClass =
           (status === "overdue" ? "ui-badge--bad" : status === "due_soon" ? "ui-badge--risk" : status === "paid" ? "ui-badge--safe" : "ui-badge--neutral") +
           overdueClass;
-        const dueSource = getRecurringDueDate(b);
+        const dueSource = display.dueSource;
         let dueCell = `<div>—</div><button class="btn btn--link js-set-due" data-bill-id="${b.id}">Set due date</button>`;
         if (dueSource) {
           const due = clampDate(dueSource);
@@ -1342,15 +1392,17 @@
     }
     const tableRows = rows
       .map((c) => {
-        const status = normalizeStatus(c.status || "unknown");
+        const display = resolveRecurringDisplay(c, asOfDate, state.status, state.rangeDays);
+        const status = display.status;
         const statusLabel = COPY.statuses[status] || status;
         const overdueClass = status === "overdue" ? " cashbills-badge--overdue" : "";
         const statusClass =
           (status === "overdue" ? "ui-badge--bad" : status === "due_soon" ? "ui-badge--risk" : status === "paid" ? "ui-badge--safe" : "ui-badge--neutral") +
           overdueClass;
         let dueCell = `<div>—</div><button class="btn btn--link js-set-card-due" data-charge-id="${c.id}">Set charge day</button>`;
-        if (c.due_date) {
-          const due = clampDate(c.due_date);
+        const dueSource = display.dueSource || c.due_date;
+        if (dueSource) {
+          const due = clampDate(dueSource);
           const days = daysBetween(asOfDate, due);
           let daysLabel = days === 0 ? "Due today" : days < 0 ? `${Math.abs(days)}d overdue` : `${days}d left`;
           let daysClass = days < 0 ? "ui-badge--bad cashbills-badge--overdue" : days <= 7 ? "ui-badge--risk" : "ui-badge--outline";
@@ -1358,7 +1410,7 @@
             status === "paid"
               ? `<span class="ui-badge ui-badge--safe">Paid</span>`
               : `<span class="ui-badge ${statusClass}">${statusLabel}</span><span class="ui-badge ${daysClass}">${daysLabel}</span>`;
-          dueCell = `<div>${formatDate(c.due_date)}</div><div class="cashbills-due-meta">${dueMeta}</div>`;
+          dueCell = `<div>${formatDate(dueSource)}</div><div class="cashbills-due-meta">${dueMeta}</div>`;
         }
         const expected = formatExpectedDisplay(c);
         const expectedTitle =
@@ -1535,8 +1587,16 @@
       : `<div class="ui-muted">—</div>`;
 
     const scopedCardBills = state.data ? applyScope(state.data.bills || [], state.scope) : [];
+    const calendarBills =
+      state.recurringBills && state.recurringBills.length
+        ? state.recurringBills
+        : (state.recurringAllBills || []).filter((b) => b && b.is_active !== false);
+    const calendarCardCharges =
+      state.cardRecurringCharges && state.cardRecurringCharges.length
+        ? state.cardRecurringCharges
+        : (state.cardRecurringAllCharges || []).filter((c) => c && c.is_active !== false);
     const calendarHtml = totalsReady
-      ? buildMonthlyCalendar(state.recurringBills || [], state.cardRecurringCharges || [], scopedCardBills, asOfDate, state.calendarMonthOffset)
+      ? buildMonthlyCalendar(calendarBills, calendarCardCharges, scopedCardBills, asOfDate, state.calendarMonthOffset)
       : `<div class="ui-muted" style="margin-top:12px">Calendar loading...</div>`;
 
     let depositsHtml = "";
@@ -2032,9 +2092,17 @@
     if (!context || context.year == null || context.monthIndex == null || context.day == null) return;
     const asOfDate = clampDate(state.asOfDate);
     const scopedCardBills = state.data ? applyScope(state.data.bills || [], state.scope) : [];
+    const calendarBills =
+      state.recurringBills && state.recurringBills.length
+        ? state.recurringBills
+        : (state.recurringAllBills || []).filter((b) => b && b.is_active !== false);
+    const calendarCardCharges =
+      state.cardRecurringCharges && state.cardRecurringCharges.length
+        ? state.cardRecurringCharges
+        : (state.cardRecurringAllCharges || []).filter((c) => c && c.is_active !== false);
     state.calendarModalItems = collectCalendarDayItems(
-      state.recurringBills || [],
-      state.cardRecurringCharges || [],
+      calendarBills,
+      calendarCardCharges,
       scopedCardBills,
       asOfDate,
       context.year,
@@ -2631,6 +2699,9 @@
   const updateBill = (billId, payload) =>
     fetchJson(`/api/cash-bills/recurring/${billId}`, { method: "PATCH", body: JSON.stringify(payload) });
 
+  const deleteBill = (billId) =>
+    fetchJson(`/api/cash-bills/recurring/${billId}`, { method: "DELETE" });
+
   const activateCardSuggestion = (payload) =>
     fetchJson("/api/cash-bills/card-recurring/activate", { method: "POST", body: JSON.stringify(payload) });
 
@@ -2818,6 +2889,7 @@
               </div>
               <div class="cashbills-modal__actions-row">
                 <button class="btn btn--secondary js-bill-edit" data-bill-id="${bill.id}">Edit</button>
+                <button class="btn js-bill-delete" data-bill-id="${bill.id}">Delete</button>
               </div>
             </div>
             ${editForm}
@@ -3782,6 +3854,7 @@
         const saveBtn = e.target.closest(".js-bill-save");
         const recentSaveBtn = e.target.closest(".js-recent-save");
         const updateBtn = e.target.closest(".js-bill-update");
+        const deleteBtn = e.target.closest(".js-bill-delete");
         if (addBtn) {
           const idx = Number(addBtn.getAttribute("data-index"));
           state.modalEdit = { kind: "suggestion", index: idx };
@@ -3894,6 +3967,22 @@
             amount_max: form.querySelector(".bill-max")?.value || null,
           };
           updateBill(billId, payload)
+            .then(() => {
+              state.modalEdit = null;
+              refreshRecurringSummary();
+              loadRecurringAll();
+            })
+            .catch(() => renderModal());
+          return;
+        }
+        if (deleteBtn) {
+          const billId = Number(deleteBtn.getAttribute("data-bill-id"));
+          if (!deleteBtn.dataset.confirm) {
+            deleteBtn.dataset.confirm = "1";
+            deleteBtn.textContent = "Confirm delete";
+            return;
+          }
+          deleteBill(billId)
             .then(() => {
               state.modalEdit = null;
               refreshRecurringSummary();

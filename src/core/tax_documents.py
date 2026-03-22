@@ -217,6 +217,7 @@ def _normalize_name(value: str | None) -> str:
 
 def ensure_household_entities(session: Session, *, tax_year: int) -> list[HouseholdEntity]:
     existing = session.query(HouseholdEntity).filter(HouseholdEntity.tax_year == int(tax_year)).all()
+    existing = _merge_artyoga_entity(session, existing)
     existing_pairs = {(str(row.entity_type), str(row.display_name)) for row in existing}
     created = False
     for entity_type, name in DEFAULT_HOUSEHOLD_ENTITIES:
@@ -234,6 +235,38 @@ def ensure_household_entities(session: Session, *, tax_year: int) -> list[Househ
         session.commit()
         existing = session.query(HouseholdEntity).filter(HouseholdEntity.tax_year == int(tax_year)).all()
     return existing
+
+
+def _merge_artyoga_entity(session: Session, entities: list[HouseholdEntity]) -> list[HouseholdEntity]:
+    if not entities:
+        return entities
+    def _find(display_name: str) -> HouseholdEntity | None:
+        target = display_name.strip().lower()
+        for row in entities:
+            if str(row.display_name or "").strip().lower() == target:
+                return row
+        return None
+
+    schedule = _find("ArtYoga (Schedule C)")
+    llc = _find("ArtYoga LLC")
+    changed = False
+    if schedule:
+        if llc is None:
+            schedule.display_name = "ArtYoga LLC"
+            changed = True
+        else:
+            session.query(TaxDocument).filter(TaxDocument.owner_entity_id == schedule.id).update(
+                {"owner_entity_id": llc.id}
+            )
+            session.query(TaxFact).filter(TaxFact.owner_entity_id == schedule.id).update(
+                {"owner_entity_id": llc.id}
+            )
+            session.delete(schedule)
+            changed = True
+    if changed:
+        session.commit()
+        entities = session.query(HouseholdEntity).filter(HouseholdEntity.tax_year == entities[0].tax_year).all()
+    return entities
 
 
 def list_household_entities(session: Session, *, tax_year: int) -> list[dict[str, Any]]:

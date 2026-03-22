@@ -86,6 +86,10 @@ def _safe_return_to(value: str, *, default: str) -> str:
     return s
 
 
+async def _form_data(request: Request) -> dict[str, Any]:
+    return dict(await request.form())
+
+
 @router.get("")
 def taxes_overview(
     request: Request,
@@ -97,7 +101,28 @@ def taxes_overview(
     auto_tag_tax_transactions(session, year=year)
     dashboard = build_tax_dashboard(session, year=year)
     tax_years = available_tax_years(session, default_year=year)
+    entity_rows = list_household_entities(session, tax_year=year)
+    entity_rows = [
+        row
+        for row in entity_rows
+        if row.get("entity_type") in {"TRUST", "BUSINESS"}
+        or "LLC" in str(row.get("display_name") or "").upper().replace(".", "")
+    ]
     trust_pnl_details = list_trust_pnl_details(session, year=year)
+    trust_pnl_trust = [row for row in trust_pnl_details if str(row.get("taxpayer_type") or "").upper() == "TRUST"]
+    trust_pnl_business = [row for row in trust_pnl_details if str(row.get("taxpayer_type") or "").upper() != "TRUST"]
+    trust_pnl_art_yoga = [
+        row for row in trust_pnl_business if "ARTYOGA" in str(row.get("account_name") or "").upper().replace(" ", "")
+    ]
+    trust_pnl_business_other = [row for row in trust_pnl_business if row not in trust_pnl_art_yoga]
+    trust_pnl_art_yoga = [
+        row for row in trust_pnl_business if "ARTYOGA" in str(row.get("account_name") or "").upper().replace(" ", "")
+    ]
+    trust_pnl_business_other = [row for row in trust_pnl_business if row not in trust_pnl_art_yoga]
+    trust_pnl_art_yoga = [
+        row for row in trust_pnl_business if "ARTYOGA" in str(row.get("account_name") or "").upper().replace(" ", "")
+    ]
+    trust_pnl_business_other = [row for row in trust_pnl_business if row not in trust_pnl_art_yoga]
 
     from src.app.main import templates
 
@@ -111,6 +136,10 @@ def taxes_overview(
             "tax_years": tax_years,
             "dashboard": dashboard,
             "trust_pnl_details": trust_pnl_details,
+            "trust_pnl_trust": trust_pnl_trust,
+            "trust_pnl_business": trust_pnl_business,
+            "trust_pnl_art_yoga": trust_pnl_art_yoga,
+            "trust_pnl_business_other": trust_pnl_business_other,
         },
     )
 
@@ -132,6 +161,13 @@ def taxes_inputs(
         inputs["tax_doc_overrides"] = live_doc_overrides
     dashboard = build_tax_dashboard(session, year=year)
     tax_years = available_tax_years(session, default_year=year)
+    entity_rows = list_household_entities(session, tax_year=year)
+    entity_rows = [
+        row
+        for row in entity_rows
+        if row.get("entity_type") in {"TRUST", "BUSINESS"}
+        or "LLC" in str(row.get("display_name") or "").upper().replace(".", "")
+    ]
 
     account_id_raw = (request.query_params.get("account_id") or "").strip()
     account_id = int(account_id_raw) if account_id_raw.isdigit() else None
@@ -232,6 +268,7 @@ def taxes_inputs(
             "profile": profile,
             "inputs": inputs,
             "dashboard": dashboard,
+            "entity_rows": entity_rows,
             "summaries": summaries,
             "selected_account_id": account_id,
             "selected_summary": selected_summary,
@@ -366,7 +403,7 @@ def taxes_inputs_update(
     est_pay_amount_5: str = Form(default=""),
     est_pay_date_6: str = Form(default=""),
     est_pay_amount_6: str = Form(default=""),
-    **form: Any,
+    form: dict[str, Any] = Depends(_form_data),
 ):
     profile = get_or_create_tax_profile(session, year=year)
     inputs_row = get_or_create_tax_inputs(session, year=year)
@@ -550,6 +587,35 @@ def taxes_inputs_update(
         total = _manual_value("aca_slcsp_total")
         manual_overrides["aca_slcsp_monthly"] = [total / 12.0] * 12
 
+    entity_financials: dict[str, dict[str, float]] = {}
+    entity_field_map = {
+        "entity_income_": "income",
+        "entity_expenses_": "expenses",
+        "entity_interest_income_": "interest_income",
+        "entity_capital_gains_": "capital_gains",
+        "entity_professional_fees_": "professional_fees",
+        "entity_taxes_paid_": "taxes_paid",
+    }
+    for key, value in form.items():
+        for prefix, field in entity_field_map.items():
+            if not key.startswith(prefix):
+                continue
+            ent_id = key[len(prefix) :].strip()
+            if not ent_id.isdigit():
+                continue
+            entry = entity_financials.setdefault(
+                ent_id,
+                {
+                    "income": 0.0,
+                    "expenses": 0.0,
+                    "interest_income": 0.0,
+                    "capital_gains": 0.0,
+                    "professional_fees": 0.0,
+                    "taxes_paid": 0.0,
+                },
+            )
+            entry[field] = _parse_float(str(value))
+
     data = {
         "yoga_net_profit_monthly": yoga_monthly,
         "yoga_expense_ratio": _parse_float(yoga_expense_ratio, default=0.3),
@@ -571,6 +637,7 @@ def taxes_inputs_update(
         "magi_override": _parse_float(magi_override) if magi_override.strip() else None,
         "ira_withholding_override": _parse_float(ira_withholding_override) if ira_withholding_override.strip() else None,
         "estimated_payments": est_payments,
+        "entity_financials": entity_financials,
         "tax_doc_overrides": (inputs_old or {}).get("tax_doc_overrides", {}),
         "tax_manual_overrides": manual_overrides,
         "tax_parameter_overrides": overrides,
@@ -611,7 +678,7 @@ def taxes_tags_update(
     actor: str = Depends(require_actor),
     year: int = Form(...),
     return_to: str = Form(default="/taxes/inputs"),
-    **form: Any,
+    form: dict[str, Any] = Depends(_form_data),
 ):
     updated = 0
     deleted = 0
@@ -661,7 +728,26 @@ def taxes_cpa_pack(
     dividend_summary = dividend_summary_by_account(session, year=year)
     interest_details = list_interest_details(session, year=year)
     interest_summary = interest_summary_by_account(session, year=year)
+    interest_summary_art_yoga = [
+        row
+        for row in interest_summary
+        if "ARTYOGA" in str(row.get("account_name") or "").upper().replace(" ", "")
+    ]
+    interest_summary_other = [row for row in interest_summary if row not in interest_summary_art_yoga]
+    interest_details_art_yoga = [
+        row
+        for row in interest_details
+        if "ARTYOGA" in str(row.get("account_name") or "").upper().replace(" ", "")
+    ]
+    interest_details_other = [row for row in interest_details if row not in interest_details_art_yoga]
     trust_pnl_details = list_trust_pnl_details(session, year=year)
+    trust_pnl_trust = [row for row in trust_pnl_details if str(row.get("taxpayer_type") or "").upper() == "TRUST"]
+    trust_pnl_business = [row for row in trust_pnl_details if str(row.get("taxpayer_type") or "").upper() != "TRUST"]
+    trust_pnl_art_yoga = [
+        row for row in trust_pnl_business if "ARTYOGA" in str(row.get("account_name") or "").upper().replace(" ", "")
+    ]
+    trust_pnl_business_other = [row for row in trust_pnl_business if row not in trust_pnl_art_yoga]
+    trust_fee_details: list[dict[str, Any]] = []
     capital_gains_details = list_capital_gains_details(session, year=year)
     capital_gains_summary = capital_gains_summary_by_account(session, year=year)
     wash_sale_details = list_wash_sale_details(session, year=year)
@@ -669,10 +755,33 @@ def taxes_cpa_pack(
     ira_withholding_details = list_ira_tax_details(session, year=year, category="IRA_WITHHOLDING")
     w2_withholding_details = list_w2_withholding_details(session, year=year, inputs=dashboard.inputs)
     other_withholding_details = list_other_withholding_details(session, year=year)
+    other_withholding_summary: list[dict[str, Any]] = []
+    if other_withholding_details:
+        summary_map: dict[tuple[str, str], dict[str, Any]] = {}
+        for row in other_withholding_details:
+            acct = str(row.get("account_name") or "Unknown")
+            taxpayer = str(row.get("taxpayer") or "")
+            key = (acct, taxpayer)
+            entry = summary_map.get(key)
+            if entry is None:
+                entry = {"account_name": acct, "taxpayer": taxpayer, "total": 0.0, "count": 0}
+                summary_map[key] = entry
+            entry["total"] += float(row.get("amount") or 0.0)
+            entry["count"] += 1
+        other_withholding_summary = sorted(
+            summary_map.values(),
+            key=lambda r: (-(r.get("total") or 0.0), r.get("account_name") or ""),
+        )
     estimated_payment_details = list_estimated_payment_details(session, year=year, inputs=dashboard.inputs)
     doc_summary = tax_docs_summary(session, tax_year=year)
     doc_overrides = aggregate_tax_doc_overrides(session, tax_year=year)
     entity_rows = list_household_entities(session, tax_year=year)
+    entity_rows = [
+        row
+        for row in entity_rows
+        if row.get("entity_type") in {"TRUST", "BUSINESS"}
+        or "LLC" in str(row.get("display_name") or "").upper().replace(".", "")
+    ]
     entity_map = {int(row["id"]): row for row in entity_rows}
     doc_entity_totals = []
     for owner_id, totals in (doc_overrides.get("by_entity") or {}).items():
@@ -688,6 +797,63 @@ def taxes_cpa_pack(
             }
         )
     reconcile = build_tax_reconciliation(session, tax_year=year)
+
+    def _clamp_months(values: Any) -> list[float]:
+        if not isinstance(values, list):
+            return [0.0] * 12
+        out = []
+        for idx in range(12):
+            try:
+                out.append(float(values[idx]))
+            except Exception:
+                out.append(0.0)
+        return out
+
+    inputs = dashboard.inputs if getattr(dashboard, "inputs", None) is not None else {}
+    trust_fees_monthly = _clamp_months((inputs or {}).get("trust_fees_monthly"))
+    for idx, amount in enumerate(trust_fees_monthly, start=1):
+        if abs(amount) <= 0:
+            continue
+        trust_fee_details.append(
+            {
+                "source": "Manual trust expenses",
+                "account_name": "Trust (monthly input)",
+                "taxpayer": "TRUST",
+                "date": dt.date(year, idx, 1),
+                "amount": float(amount),
+            }
+        )
+    entity_financials = (inputs or {}).get("entity_financials") or {}
+    if isinstance(entity_financials, dict):
+        for ent_id, row in entity_financials.items():
+            if not isinstance(row, dict):
+                continue
+            fees = float(row.get("expenses") or 0.0) + float(row.get("professional_fees") or 0.0) + float(
+                row.get("taxes_paid") or 0.0
+            )
+            if abs(fees) <= 0:
+                continue
+            ent = entity_map.get(int(ent_id)) if str(ent_id).isdigit() else None
+            label = ent.get("display_name") if ent else f"Entity {ent_id}"
+            ent_type = ent.get("entity_type") if ent else ""
+            trust_fee_details.append(
+                {
+                    "source": "Entity inputs",
+                    "account_name": label,
+                    "taxpayer": ent_type,
+                    "date": None,
+                    "amount": fees,
+                }
+            )
+    trust_fee_art_yoga = [
+        row for row in trust_fee_details if "ARTYOGA" in str(row.get("account_name") or "").upper().replace(" ", "")
+    ]
+    trust_fee_trust = [
+        row
+        for row in trust_fee_details
+        if row not in trust_fee_art_yoga and str(row.get("taxpayer") or "").upper() == "TRUST"
+    ]
+    trust_fee_other = [row for row in trust_fee_details if row not in trust_fee_art_yoga and row not in trust_fee_trust]
 
     def _doc_relevant(row: dict[str, Any]) -> bool:
         if row.get("status") != "CONFIRMED":
@@ -743,7 +909,19 @@ def taxes_cpa_pack(
             "dividend_summary_by_account": dividend_summary,
             "interest_details": interest_details,
             "interest_summary_by_account": interest_summary,
+            "interest_summary_art_yoga": interest_summary_art_yoga,
+            "interest_summary_other": interest_summary_other,
+            "interest_details_art_yoga": interest_details_art_yoga,
+            "interest_details_other": interest_details_other,
             "trust_pnl_details": trust_pnl_details,
+            "trust_pnl_trust": trust_pnl_trust,
+            "trust_pnl_business": trust_pnl_business,
+            "trust_pnl_art_yoga": trust_pnl_art_yoga,
+            "trust_pnl_business_other": trust_pnl_business_other,
+            "trust_fee_details": trust_fee_details,
+            "trust_fee_trust": trust_fee_trust,
+            "trust_fee_art_yoga": trust_fee_art_yoga,
+            "trust_fee_other": trust_fee_other,
             "capital_gains_details": capital_gains_details,
             "capital_gains_summary_by_account": capital_gains_summary,
             "wash_sale_details": wash_sale_details,
@@ -751,10 +929,12 @@ def taxes_cpa_pack(
             "ira_withholding_details": ira_withholding_details,
             "w2_withholding_details": w2_withholding_details,
             "other_withholding_details": other_withholding_details,
+            "other_withholding_summary_by_account": other_withholding_summary,
             "estimated_payment_details": estimated_payment_details,
             "tax_doc_summary": doc_summary,
             "tax_doc_entity_totals": doc_entity_totals,
             "tax_reconciliation": reconcile,
+            "entity_rows": entity_rows,
             "mailto_href": mailto_href,
             "print_view": request.query_params.get("print") == "1",
         },
