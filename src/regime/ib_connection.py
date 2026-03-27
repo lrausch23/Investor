@@ -340,11 +340,12 @@ def get_ib_backend(
 
         with _LIVE_BACKENDS_LOCK:
             backend = _LIVE_BACKENDS.get(int(portfolio_id))
-            if backend is not None:
-                setattr(backend, "_client_id", getattr(backend, "_client_id", derived_client_id))
+            if backend is not None and backend.is_connected():
                 return backend
             backend = LiveIBBackend(account_id=account_id)
             setattr(backend, "_client_id", derived_client_id)
-            _LIVE_BACKENDS[int(portfolio_id)] = backend
+            connected = backend.connect(config.host, config.port, derived_client_id)
+            if connected:
+                _LIVE_BACKENDS[int(portfolio_id)] = backend
             return backend
     return get_mock_ib_backend(portfolio_id, starting_cash=starting_cash)

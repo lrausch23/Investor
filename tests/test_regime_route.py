@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import time
 from types import SimpleNamespace
 from pathlib import Path
 import pandas as pd
@@ -511,3 +512,55 @@ def test_docs_route_includes_search_and_script(monkeypatch) -> None:
     assert 'id="docs-search"' in response.text
     assert 'data-doc-section' in response.text
     assert 'src="/static/docs.js' in response.text
+
+
+def test_ibkr_monitoring_falls_back_when_adapter_times_out(monkeypatch) -> None:
+    def slow_adapter(runtime, portfolio_id):
+        del runtime, portfolio_id
+        time.sleep(0.05)
+        return None
+
+    runtime = _fake_runtime()
+    runtime["get_paper_portfolio"] = lambda portfolio_id: {
+        "id": int(portfolio_id),
+        "name": "IBKR Sandbox",
+        "starting_budget": 100000.0,
+        "current_cash": 95000.0,
+        "broker_type": "ibkr",
+        "status": "Active",
+    }
+    monkeypatch.setattr(regime_route, "_load_hmm_runtime", lambda: (runtime, None))
+    monkeypatch.setattr(regime_route, "_get_broker_adapter", slow_adapter)
+    monkeypatch.setattr(regime_route, "_ADAPTER_TIMEOUT", 0.01)
+    client = TestClient(create_app())
+    response = client.get("/regime/paper-portfolio/2/monitoring")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["connection"]["connected"] is False
+    assert "cached data" in payload["connection"]["note"]
+
+
+def test_ibkr_precheck_returns_error_when_adapter_times_out(monkeypatch) -> None:
+    def slow_adapter(runtime, portfolio_id):
+        del runtime, portfolio_id
+        time.sleep(0.05)
+        return None
+
+    runtime = _fake_runtime()
+    runtime["get_paper_portfolio"] = lambda portfolio_id: {
+        "id": int(portfolio_id),
+        "name": "IBKR Sandbox",
+        "starting_budget": 100000.0,
+        "current_cash": 95000.0,
+        "broker_type": "ibkr",
+        "status": "Active",
+    }
+    monkeypatch.setattr(regime_route, "_load_hmm_runtime", lambda: (runtime, None))
+    monkeypatch.setattr(regime_route, "_get_broker_adapter", slow_adapter)
+    monkeypatch.setattr(regime_route, "_ADAPTER_TIMEOUT", 0.01)
+    client = TestClient(create_app())
+    response = client.post("/regime/paper-portfolio/2/plans/precheck")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["plans"] == []
+    assert "connection unavailable" in payload["error"].lower()

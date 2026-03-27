@@ -12,7 +12,7 @@ import sqlite3
 import threading
 import time
 import uuid
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError, as_completed
 from dataclasses import asdict, dataclass, is_dataclass
 from typing import Any
 from urllib.parse import parse_qs
@@ -45,6 +45,7 @@ _JOB_TTL_SECONDS = 600
 _MIN_REGIME_DAYS = 5
 _MIN_SIGNAL_PROBABILITY = 0.70
 _DEFAULT_FRONTIER_BATCH_SIZE = 5
+_ADAPTER_TIMEOUT = 15
 _JOBS: dict[str, "RegimeJob"] = {}
 _JOBS_LOCK = threading.Lock()
 _DISCOVERY_JOBS: dict[str, "DiscoveryJob"] = {}
@@ -1093,6 +1094,21 @@ def _get_broker_adapter(runtime: dict[str, Any], portfolio_id: int) -> Any:
             client_id=int(getattr(backend, "_client_id", config.client_id)),
         )
     return runtime["PaperBrokerAdapter"](portfolio_id)
+
+
+def _get_broker_adapter_safe(runtime: dict[str, Any], portfolio_id: int) -> Any:
+    pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ibkr-adapter")
+    try:
+        future = pool.submit(_get_broker_adapter, runtime, portfolio_id)
+        return future.result(timeout=_ADAPTER_TIMEOUT)
+    except FuturesTimeoutError:
+        logger.warning("IBKR adapter connection timed out for portfolio %s after %ss", portfolio_id, _ADAPTER_TIMEOUT)
+        return None
+    except Exception as exc:
+        logger.warning("IBKR adapter connection failed for portfolio %s: %s", portfolio_id, exc)
+        return None
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
 
 
 def _prune_jobs(now: dt.datetime | None = None) -> None:
@@ -3283,11 +3299,18 @@ def _paper_portfolio_payload(runtime: dict[str, Any], portfolio_id: int) -> dict
         raise HTTPException(status_code=404, detail="Paper portfolio not found.")
     broker_status = None
     if str(portfolio.get("broker_type") or "paper").lower() == "ibkr":
-        adapter = _get_broker_adapter(runtime, portfolio_id)
-        broker_status = {
-            "connection": "connected" if adapter and adapter.health().get("connected") else "disconnected",
-            "market_hours": adapter.health().get("market_hours") if adapter else "closed",
-        }
+        adapter = _get_broker_adapter_safe(runtime, portfolio_id)
+        if adapter is not None:
+            try:
+                health = adapter.health()
+                broker_status = {
+                    "connection": "connected" if health.get("connected") else "disconnected",
+                    "market_hours": health.get("market_hours", "closed"),
+                }
+            except Exception:
+                broker_status = {"connection": "disconnected", "market_hours": "closed"}
+        else:
+            broker_status = {"connection": "unavailable", "market_hours": "closed"}
     return {
         "portfolio": _json_ready(portfolio),
         "summary": _json_ready(runtime["get_paper_portfolio_summary"](portfolio_id)),
@@ -3424,36 +3447,64 @@ def regime_paper_monitoring(
     portfolio = runtime["get_paper_portfolio"](portfolio_id)
     if portfolio is None:
         raise HTTPException(status_code=404, detail="Paper portfolio not found.")
-    adapter = _get_broker_adapter(runtime, portfolio_id)
-    summary = adapter.get_account_summary()
-    positions = adapter.get_positions()
+    adapter = _get_broker_adapter_safe(runtime, portfolio_id)
+    connected = bool(adapter is not None and getattr(getattr(adapter, "_manager", None), "backend", None) and adapter._manager.backend.is_connected())
+    if connected:
+        try:
+            summary = adapter.get_account_summary()
+            positions = adapter.get_positions()
+            connection = adapter.health()
+        except Exception as exc:
+            logger.warning("Monitoring data fetch failed for portfolio %s: %s", portfolio_id, exc)
+            connected = False
+    if not connected:
+        summary_data = runtime["get_paper_portfolio_summary"](portfolio_id)
+        summary = {
+            "portfolio_id": portfolio_id,
+            "equity": float(summary_data.get("current_value") or portfolio.get("starting_budget") or 100000.0),
+            "cash": float(portfolio.get("current_cash") or portfolio.get("starting_budget") or 100000.0),
+            "buying_power": 0.0,
+            "exposure_pct": float(summary_data.get("exposure_pct") or 0.0),
+            "maintenance_margin": 0.0,
+            "unrealized_pnl": float(summary_data.get("unrealized_pnl") or 0.0),
+            "daily_pnl": 0.0,
+            "net_liquidation": float(summary_data.get("current_value") or portfolio.get("starting_budget") or 100000.0),
+            "total_cash": float(portfolio.get("current_cash") or portfolio.get("starting_budget") or 100000.0),
+        }
+        positions = [_json_ready(p) for p in runtime["get_paper_positions"](portfolio_id, status="Open")]
+        connection = {"connected": False, "market_hours": "closed", "note": "IBKR connection unavailable — showing cached data"}
     pending_orders = [
         plan for plan in runtime["get_trade_plans"](portfolio_id, status="all")
         if str(plan.get("status") or "") in {"Submitted", "Partially Filled"}
     ]
     guardrails = runtime["DEFAULT_RISK_GUARDRAILS"]
+    summary_exposure = float(summary.get("exposure_pct") if isinstance(summary, dict) else getattr(summary, "exposure_pct", 0.0) or 0.0)
+    summary_daily_pnl = float(summary.get("daily_pnl") if isinstance(summary, dict) else getattr(summary, "daily_pnl", 0.0) or 0.0)
+    max_total_exposure_pct = float(getattr(guardrails, "max_total_exposure_pct", 0.0) or 0.0)
+    daily_loss_limit = float(getattr(guardrails, "daily_loss_limit", 0.0) or 0.0)
+    max_trades_per_day = int(getattr(guardrails, "max_trades_per_day", 0) or 0)
     payload = {
         "account": _json_ready(summary),
         "positions": _json_ready(positions),
         "pending_orders": _json_ready(pending_orders),
         "guardrails": {
             "exposure_pct": {
-                "current": float(summary.exposure_pct or 0.0),
-                "limit": float(guardrails.max_total_exposure_pct),
-                "ok": float(summary.exposure_pct or 0.0) <= float(guardrails.max_total_exposure_pct),
+                "current": summary_exposure,
+                "limit": max_total_exposure_pct,
+                "ok": summary_exposure <= max_total_exposure_pct if max_total_exposure_pct > 0 else True,
             },
             "daily_pnl": {
-                "current": float(summary.daily_pnl or 0.0),
-                "limit": float(guardrails.daily_loss_limit),
-                "ok": abs(float(summary.daily_pnl or 0.0)) <= float(guardrails.daily_loss_limit) or float(summary.daily_pnl or 0.0) >= 0.0,
+                "current": summary_daily_pnl,
+                "limit": daily_loss_limit,
+                "ok": abs(summary_daily_pnl) <= daily_loss_limit or summary_daily_pnl >= 0.0 if daily_loss_limit > 0 else True,
             },
             "trades_today": {
                 "current": int(runtime["count_todays_trades"](portfolio_id)),
-                "limit": int(guardrails.max_trades_per_day),
-                "ok": int(runtime["count_todays_trades"](portfolio_id)) <= int(guardrails.max_trades_per_day),
+                "limit": max_trades_per_day,
+                "ok": int(runtime["count_todays_trades"](portfolio_id)) <= max_trades_per_day if max_trades_per_day > 0 else True,
             },
         },
-        "connection": _json_ready(adapter.health() if hasattr(adapter, "health") else {"market_hours": "n/a"}),
+        "connection": _json_ready(connection),
         "readiness": _json_ready(runtime["validate_ibkr_readiness"]()) if "validate_ibkr_readiness" in runtime else None,
     }
     return JSONResponse(content=payload)
@@ -3487,9 +3538,9 @@ def regime_paper_pending_orders(
     portfolio = runtime["get_paper_portfolio"](portfolio_id)
     if portfolio is None:
         raise HTTPException(status_code=404, detail="Paper portfolio not found.")
-    adapter = _get_broker_adapter(runtime, portfolio_id)
+    adapter = _get_broker_adapter_safe(runtime, portfolio_id)
     if adapter is None:
-        raise HTTPException(status_code=404, detail="Paper portfolio not found.")
+        return JSONResponse(content={"orders": [], "changed": [], "connection": "unavailable"})
     changed = []
     if str(portfolio.get("broker_type") or "paper").lower() == "ibkr":
         changed = runtime["poll_pending_orders"](adapter, portfolio_id)
@@ -3516,9 +3567,9 @@ def regime_paper_cancel_order(
         raise HTTPException(status_code=404, detail="Plan not found")
     if str(plan.get("status") or "") not in {"Submitted", "Partially Filled"}:
         raise HTTPException(status_code=400, detail=f"Cannot cancel plan in status: {plan.get('status')}")
-    adapter = _get_broker_adapter(runtime, portfolio_id)
+    adapter = _get_broker_adapter_safe(runtime, portfolio_id)
     if adapter is None:
-        raise HTTPException(status_code=404, detail="Paper portfolio not found.")
+        raise HTTPException(status_code=503, detail="IBKR connection unavailable.")
     broker_order_id = str(plan.get("broker_order_id") or "").strip()
     if not broker_order_id:
         raise HTTPException(status_code=400, detail="No broker order ID — plan not yet submitted")
@@ -3567,7 +3618,14 @@ def regime_paper_plan_precheck(
     if portfolio is None:
         raise HTTPException(status_code=404, detail="Paper portfolio not found.")
     plans = runtime["get_trade_plans"](portfolio_id, status="Pending")
-    adapter = _get_broker_adapter(runtime, portfolio_id)
+    adapter = _get_broker_adapter_safe(runtime, portfolio_id)
+    if adapter is None:
+        return JSONResponse(
+            content={
+                "plans": [],
+                "error": "IBKR connection unavailable. Cannot validate guardrails without a live connection.",
+            }
+        )
     checked: list[dict[str, Any]] = []
     for plan in plans:
         order = runtime["OrderRequest"](
@@ -3648,7 +3706,9 @@ def regime_paper_execute(
         raise HTTPException(status_code=409, detail="Paper portfolio is paused.")
     if status == "Closed":
         raise HTTPException(status_code=409, detail="Paper portfolio is closed.")
-    adapter = _get_broker_adapter(runtime, portfolio_id)
+    adapter = _get_broker_adapter_safe(runtime, portfolio_id)
+    if adapter is None:
+        return JSONResponse(content={"executed": [], "errors": ["IBKR connection unavailable."], "submitted": 0, "filled": 0})
     payload = runtime["execute_approved_plans_via_adapter"](
         portfolio_id,
         adapter,
