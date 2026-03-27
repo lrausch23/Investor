@@ -25,6 +25,12 @@ from src.regime import scheduled_runner as scheduled_runner_module
 @pytest.fixture()
 def temp_modules(tmp_path, monkeypatch):
     monkeypatch.setenv("HMM_DATA_DIR", str(tmp_path))
+    monkeypatch.delenv("IBKR_LIVE_BACKEND", raising=False)
+    monkeypatch.delenv("IBKR_PORT", raising=False)
+    monkeypatch.delenv("IBKR_HOST", raising=False)
+    monkeypatch.delenv("IBKR_CLIENT_ID", raising=False)
+    monkeypatch.delenv("IBKR_ACCOUNT_ID", raising=False)
+    monkeypatch.delenv("IBKR_TIMEOUT", raising=False)
     store = importlib.reload(persistence_module)
     monkeypatch.setattr(store, "DB_PATH", tmp_path / "regime_watch.db")
     config = importlib.reload(config_module)

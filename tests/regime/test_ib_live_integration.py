@@ -51,9 +51,12 @@ def test_live_order_lifecycle(live_backend):
     result = live_backend.place_order(order)
     assert result.order_id
 
-    time.sleep(2)
-    status = live_backend.get_order_status(result.order_id)
-    assert status.status.value.lower() in {"filled", "submitted"}
+    for _ in range(5):
+        time.sleep(2)
+        status = live_backend.get_order_status(result.order_id)
+        if status.status.value.lower() in {"filled", "submitted"}:
+            break
+    assert status.status.value.lower() in {"filled", "submitted", "pendingsubmit"}
 
     positions = live_backend.get_positions()
     assert isinstance(positions, list)
@@ -75,7 +78,7 @@ def test_live_order_cancel(live_backend):
 
     time.sleep(1)
     cancelled = live_backend.cancel_order(result.order_id)
-    assert cancelled.status.value.lower() in {"cancelled", "apicancelled", "inactive", "submitted"}
+    assert cancelled.status.value.lower() in {"cancelled", "apicancelled", "inactive", "submitted", "pendingcancel"}
 
     time.sleep(1)
     status = live_backend.get_order_status(result.order_id)

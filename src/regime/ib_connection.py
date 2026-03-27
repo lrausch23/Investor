@@ -317,7 +317,17 @@ def get_ib_backend(
     config: IBKRConfig = DEFAULT_IBKR_CONFIG,
 ) -> IBConnectionBackend:
     if live:
+        import asyncio
+
         from .ib_live_backend import LiveIBBackend
+
+        # ib_insync requires an asyncio event loop. FastAPI sync endpoints
+        # run in AnyIO worker threads that lack one, so ensure a loop exists.
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
 
         backend = LiveIBBackend(account_id=account_id)
         backend.connect(config.host, config.port, config.client_id)

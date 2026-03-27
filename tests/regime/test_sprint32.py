@@ -73,11 +73,18 @@ def test_paper_account_guard_rejects_live_account() -> None:
 
 
 def test_paper_account_guard_allows_paper_account() -> None:
+    from src.regime import ibkr_adapter as ibkr_adapter_module
+
     backend = MockIBBackend(account_id="DUP579027", starting_cash=100000.0)
     adapter = IBKRBrokerAdapter(backend, 1)
+    original = ibkr_adapter_module.is_market_open
+    ibkr_adapter_module.is_market_open = lambda now=None: True
     request = OrderRequest(portfolio_id=1, ticker="SPY", action="Buy", quantity=1.0)
-    result = adapter.submit_order(request)
-    assert result.status in {"filled", "submitted", "partially_filled"}
+    try:
+        result = adapter.submit_order(request)
+        assert result.status in {"filled", "submitted", "partially_filled"}
+    finally:
+        ibkr_adapter_module.is_market_open = original
 
 
 def test_cancel_order_route(monkeypatch) -> None:

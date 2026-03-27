@@ -553,7 +553,9 @@ def compute_benchmark_comparison(
                 threads=False,
             )
         close = frame["Close"].dropna() if frame is not None and not frame.empty and "Close" in frame.columns else pd.Series(dtype=float)
-        benchmark_return = float((close.iloc[-1] - close.iloc[0]) / close.iloc[0]) if len(close) >= 2 and float(close.iloc[0]) else None
+        _close_first = float(close.iloc[0].item() if hasattr(close.iloc[0], "item") else close.iloc[0]) if len(close) else 0.0
+        _close_last = float(close.iloc[-1].item() if hasattr(close.iloc[-1], "item") else close.iloc[-1]) if len(close) else 0.0
+        benchmark_return = float((_close_last - _close_first) / _close_first) if len(close) >= 2 and _close_first else None
     except Exception as exc:
         logger.warning("Unable to compute paper-trading benchmark comparison.", exc_info=exc)
         benchmark_return = None
