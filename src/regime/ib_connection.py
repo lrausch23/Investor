@@ -244,6 +244,7 @@ class IBConnectionManager:
         self.host = host
         self.port = port
         self.client_id = client_id
+        self._connect_lock = threading.Lock()
 
     def connect(self) -> bool:
         for attempt in range(3):
@@ -279,11 +280,14 @@ class IBConnectionManager:
     def ensure_connected(self) -> bool:
         if self.backend.is_connected():
             return True
-        logger.warning("IBKR connection lost, attempting reconnect...")
-        restored = self.connect()
-        if restored:
-            logger.info("IBKR connection restored")
-        return restored
+        with self._connect_lock:
+            if self.backend.is_connected():
+                return True
+            logger.warning("IBKR connection lost, attempting reconnect...")
+            restored = self.connect()
+            if restored:
+                logger.info("IBKR connection restored")
+            return restored
 
     def health_check(self) -> dict[str, object]:
         return {
