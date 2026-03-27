@@ -115,6 +115,32 @@ def test_get_ib_backend_live_true_import(temp_modules) -> None:
     sys.modules.setdefault("ib_insync", SimpleNamespace(IB=_FakeIB))
     backend = ib_connection.get_ib_backend(1, live=True, account_id=config.DEFAULT_IBKR_CONFIG.account_id)
     assert backend.__class__.__name__ == "LiveIBBackend"
+    assert getattr(backend, "_client_id", None) == 2
+
+
+def test_get_ib_backend_live_caches_per_portfolio(temp_modules) -> None:
+    _store, config, _ib_types, ib_connection, _ibkr, _paper, _scheduled = temp_modules
+    import sys
+
+    class _FakeIB:
+        def __init__(self):
+            self.orderStatusEvent = []
+            self.client = SimpleNamespace(getReqId=lambda: 1)
+
+        def connect(self, *args, **kwargs):
+            return True
+
+        def isConnected(self):
+            return False
+
+    sys.modules.setdefault("ib_insync", SimpleNamespace(IB=_FakeIB))
+    backend1 = ib_connection.get_ib_backend(2, live=True, account_id=config.DEFAULT_IBKR_CONFIG.account_id)
+    backend2 = ib_connection.get_ib_backend(2, live=True, account_id=config.DEFAULT_IBKR_CONFIG.account_id)
+    backend3 = ib_connection.get_ib_backend(3, live=True, account_id=config.DEFAULT_IBKR_CONFIG.account_id)
+    assert backend1 is backend2
+    assert backend1 is not backend3
+    assert getattr(backend1, "_client_id", None) == 3
+    assert getattr(backend3, "_client_id", None) == 4
 
 
 def test_ibkr_config_defaults(temp_modules) -> None:

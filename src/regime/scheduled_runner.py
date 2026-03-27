@@ -98,7 +98,13 @@ def run_scheduled_paper_plans() -> dict[str, Any]:
                 account_id=str(DEFAULT_IBKR_CONFIG.account_id),
                 starting_cash=float(portfolio.get("current_cash") or portfolio.get("starting_budget") or 100000.0),
             )
-            adapter = IBKRBrokerAdapter(backend, portfolio_id)
+            adapter = IBKRBrokerAdapter(
+                backend,
+                portfolio_id,
+                host=str(DEFAULT_IBKR_CONFIG.host),
+                port=int(DEFAULT_IBKR_CONFIG.port),
+                client_id=int(getattr(backend, "_client_id", DEFAULT_IBKR_CONFIG.client_id)),
+            )
             try:
                 polled = len(poll_pending_orders(adapter, portfolio_id))
             except Exception:
@@ -143,7 +149,13 @@ def run_end_of_day_processing() -> dict[str, Any]:
                 account_id=str(DEFAULT_IBKR_CONFIG.account_id),
                 starting_cash=float(portfolio.get("current_cash") or portfolio.get("starting_budget") or 100000.0),
             )
-            adapter = IBKRBrokerAdapter(backend, portfolio_id)
+            adapter = IBKRBrokerAdapter(
+                backend,
+                portfolio_id,
+                host=str(DEFAULT_IBKR_CONFIG.host),
+                port=int(DEFAULT_IBKR_CONFIG.port),
+                client_id=int(getattr(backend, "_client_id", DEFAULT_IBKR_CONFIG.client_id)),
+            )
             try:
                 poll_pending_orders(adapter, portfolio_id)
             except Exception:

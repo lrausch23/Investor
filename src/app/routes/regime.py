@@ -1090,7 +1090,7 @@ def _get_broker_adapter(runtime: dict[str, Any], portfolio_id: int) -> Any:
             portfolio_id,
             host=str(config.host),
             port=int(config.port),
-            client_id=int(config.client_id),
+            client_id=int(getattr(backend, "_client_id", config.client_id)),
         )
     return runtime["PaperBrokerAdapter"](portfolio_id)
 

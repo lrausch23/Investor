@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
+import threading
 import time
 from dataclasses import dataclass
 from typing import Callable, Protocol
@@ -297,6 +298,8 @@ class IBConnectionManager:
 
 
 _MOCK_BACKENDS: dict[int, MockIBBackend] = {}
+_LIVE_BACKENDS: dict[int, IBConnectionBackend] = {}
+_LIVE_BACKENDS_LOCK = threading.Lock()
 
 
 def get_mock_ib_backend(portfolio_id: int, *, starting_cash: float = 100000.0) -> MockIBBackend:
@@ -321,6 +324,8 @@ def get_ib_backend(
 
         from .ib_live_backend import LiveIBBackend
 
+        derived_client_id = int(config.client_id) + max(1, int(portfolio_id))
+
         # ib_insync requires an asyncio event loop. FastAPI sync endpoints
         # run in AnyIO worker threads that lack one, so ensure a loop exists.
         try:
@@ -329,7 +334,13 @@ def get_ib_backend(
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
 
-        backend = LiveIBBackend(account_id=account_id)
-        backend.connect(config.host, config.port, config.client_id)
-        return backend
+        with _LIVE_BACKENDS_LOCK:
+            backend = _LIVE_BACKENDS.get(int(portfolio_id))
+            if backend is not None:
+                setattr(backend, "_client_id", getattr(backend, "_client_id", derived_client_id))
+                return backend
+            backend = LiveIBBackend(account_id=account_id)
+            setattr(backend, "_client_id", derived_client_id)
+            _LIVE_BACKENDS[int(portfolio_id)] = backend
+            return backend
     return get_mock_ib_backend(portfolio_id, starting_cash=starting_cash)
