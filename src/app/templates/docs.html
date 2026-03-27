@@ -92,6 +92,57 @@
           <div class="docs-flow__arrow">→</div>
           <div class="docs-flow__box">Operator layer<br />Dashboard, docs, discovery, paper trading, IBKR monitoring</div>
         </div>
+        <h3>Technology Stack</h3>
+        <table class="docs-table">
+          <thead>
+            <tr><th>Layer</th><th>Technology</th><th>Purpose</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>Backend</td><td>Python 3.11+ / FastAPI / SQLAlchemy 2.0</td><td>REST API, ORM, data processing</td></tr>
+            <tr><td>Frontend</td><td>Jinja2 + HTMX + Vanilla JS + Plotly</td><td>Server-rendered templates with interactive charts</td></tr>
+            <tr><td>Database</td><td>SQLite (local-first)</td><td>Persistent storage, cache-first architecture</td></tr>
+            <tr><td>Regime Engine</td><td>hmmlearn + scikit-learn + numpy/pandas</td><td>HMM fitting, feature engineering, statistics</td></tr>
+            <tr><td>AI/LLM</td><td>anthropic + openai + google-genai + VADER</td><td>Frontier analysis, sentiment scoring</td></tr>
+            <tr><td>Broker APIs</td><td>ib_insync (IBKR) + plaid-python</td><td>Paper/live trading, bank account sync</td></tr>
+            <tr><td>Market Data</td><td>yfinance + Stooq (fallback)</td><td>OHLCV, VIX, 10Y yield, news</td></tr>
+            <tr><td>Reporting</td><td>Streamlit (optional) + reportlab (PDF)</td><td>Interactive dashboards, PDF export</td></tr>
+            <tr><td>Testing</td><td>pytest (649+ tests)</td><td>Unit, integration, and smoke tests</td></tr>
+          </tbody>
+        </table>
+        <h3>Module Breakdown <code>src/regime/</code></h3>
+        <table class="docs-table">
+          <thead>
+            <tr><th>Module</th><th>Lines</th><th>Purpose</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>persistence.py</td><td>1,844</td><td>Database layer — 12 tables, CRUD, audit trail</td></tr>
+            <tr><td>streamlit_app.py</td><td>1,150</td><td>Streamlit interactive dashboard</td></tr>
+            <tr><td>paper_trading.py</td><td>1,000</td><td>Paper trading simulation with guardrails</td></tr>
+            <tr><td>investor_adapter.py</td><td>900</td><td>Bridge to investor DB — tax-aware adjustments</td></tr>
+            <tr><td>signals.py</td><td>841</td><td>10-stage signal generation pipeline</td></tr>
+            <tr><td>broker_adapter.py</td><td>650</td><td>Abstract broker adapter + Paper/IBKR implementations</td></tr>
+            <tr><td>discovery.py</td><td>550</td><td>AI-powered supply-chain candidate discovery</td></tr>
+            <tr><td>cli.py</td><td>550</td><td>Typer CLI for all regime operations</td></tr>
+            <tr><td>llm_layer.py</td><td>493</td><td>AI verdict generation with multi-provider fallback</td></tr>
+            <tr><td>ib_connection.py</td><td>412</td><td>Interactive Brokers TWS/Gateway connection</td></tr>
+            <tr><td>hmm_engine.py</td><td>387</td><td>3-state HMM with walk-forward fitting</td></tr>
+            <tr><td>alerts.py</td><td>310</td><td>Real-time alert engine (regime, risk, signal, stop)</td></tr>
+            <tr><td>backtest.py</td><td>219</td><td>Walk-forward backtesting framework</td></tr>
+            <tr><td>data.py</td><td>209</td><td>Market data download (yfinance + macro)</td></tr>
+            <tr><td>digest.py</td><td>204</td><td>Weekly digest report generation</td></tr>
+            <tr><td>portfolio.py</td><td>202</td><td>Portfolio risk analysis (exposure, correlation)</td></tr>
+            <tr><td>config.py</td><td>148</td><td>Signal thresholds, discovery params, guardrails</td></tr>
+          </tbody>
+        </table>
+        <h3>Core Principles</h3>
+        <div class="docs-card-grid">
+          <article class="docs-mini-card"><h3>Local-First</h3><p>SQLite databases travel with the project directory. No external DB server required.</p></article>
+          <article class="docs-mini-card"><h3>Audit-First</h3><p>Every mutation logged to order_audit_trail. Full decision provenance.</p></article>
+          <article class="docs-mini-card"><h3>Explainability</h3><p>Every signal, verdict, and action is traceable to specific thresholds and rules.</p></article>
+          <article class="docs-mini-card"><h3>Tax-Aware</h3><p>LTCG protection, wash-sale detection, and tax-loss harvesting built into the decision pipeline.</p></article>
+          <article class="docs-mini-card"><h3>Cache-First</h3><p>TTL-gated caches for market data, earnings, crowd scores, and qualitative analysis.</p></article>
+          <article class="docs-mini-card"><h3>Safe-by-Default</h3><p>Guardrails block trades that exceed position, order, loss, or exposure limits.</p></article>
+        </div>
         <div class="docs-callout docs-callout--info">
           <strong>Decision rule:</strong> the dashboard never trusts a single subsystem. Quantitative outputs, qualitative overlays, tax data, and broker status are kept separate so failures degrade instead of cascading.
         </div>
@@ -114,6 +165,79 @@
           <h2>Architecture</h2>
           <p>The app is split into a FastAPI presentation layer, a Jinja2/vanilla-JS UI, and a domain package under <code>src/regime</code>.</p>
         </header>
+        <h3>8-Stage Data Flow Pipeline</h3>
+        <div class="docs-callout docs-callout--info">
+          <strong>Read top-to-bottom:</strong> each stage feeds the next. The pipeline runs daily at 09:30 AM, weekly on Friday PM, and on-demand via CLI or UI.
+        </div>
+        <details class="docs-detail" open>
+          <summary>Stage 1: Scheduler</summary>
+          <p>Triggers: daily 09:30 AM, weekly Friday PM, on-demand CLI/UI.</p>
+        </details>
+        <details class="docs-detail">
+          <summary>Stage 2: Data Collection (data.py)</summary>
+          <table class="docs-table">
+            <thead><tr><th>Source</th><th>Data</th><th>Notes</th></tr></thead>
+            <tbody>
+              <tr><td>yfinance</td><td>3yr OHLCV + Volume</td><td>Primary price source</td></tr>
+              <tr><td>Macro</td><td>VIX (^VIX) + 10Y Yield (^TNX)</td><td>Regime feature inputs</td></tr>
+              <tr><td>News</td><td>Catalysts for LLM</td><td>Fed to frontier analysis</td></tr>
+              <tr><td>Earnings</td><td>Next earnings date</td><td>24hr cache TTL</td></tr>
+            </tbody>
+          </table>
+          <p>Output: DataFrame <code>[price, high, low, volume, vix, yield_10y]</code></p>
+        </details>
+        <details class="docs-detail">
+          <summary>Stage 3: Regime Detection (hmm_engine.py)</summary>
+          <table class="docs-table">
+            <thead><tr><th>Parameter</th><th>Value</th></tr></thead>
+            <tbody>
+              <tr><td>Features</td><td><code>[return, volatility, trend, volume_zscore, vix_change, yield_change]</code></td></tr>
+              <tr><td>Training window</td><td>504 days (2 years)</td></tr>
+              <tr><td>Refit frequency</td><td>Every 21 days</td></tr>
+              <tr><td>States</td><td>3 (Bull / Neutral / Bear via regime_score)</td></tr>
+              <tr><td>Weekly model</td><td>Parallel HMM on W-FRI resampled data</td></tr>
+            </tbody>
+          </table>
+          <p>Metrics: probability, regime_days, transition_risk, expected_duration</p>
+        </details>
+        <details class="docs-detail">
+          <summary>Stage 4: Signal Generation (signals.py — 10 stages)</summary>
+          <p>Forward Curve → Regime Signal → Technical Analysis → Intra-Regime → Composite → Multi-Timeframe → Price Targets → Position Sizing → Confidence Score → Sentiment Momentum</p>
+          <p>See <a href="#tech-signals">Signal Rules Engine</a> for full stage detail.</p>
+        </details>
+        <details class="docs-detail">
+          <summary>Stage 5: AI Verdict (llm_layer.py)</summary>
+          <p>Build prompt (regime shift + catalysts + benchmark state) → Call Claude / GPT-4 / Gemini → Parse verdict → Thesis Check → Fallback to VADER heuristic if LLM unavailable.</p>
+          <p>See <a href="#tech-llm">Frontier Analysis</a> for provider details.</p>
+        </details>
+        <details class="docs-detail">
+          <summary>Stage 6: Tax-Aware Adjustment (investor_adapter.py)</summary>
+          <table class="docs-table">
+            <thead><tr><th>Adjustment</th><th>Rule</th></tr></thead>
+            <tbody>
+              <tr><td>LTCG Protection</td><td>Hold if ST→LT conversion within 30 days</td></tr>
+              <tr><td>Wash-Sale Warning</td><td>Flag if selling loss within 31-day window</td></tr>
+              <tr><td>Tax-Loss Harvesting</td><td>Flag opportunities on Buy signals</td></tr>
+            </tbody>
+          </table>
+          <p>Output: <code>adjusted_action + tax_note + ltcg_threshold_date</code></p>
+        </details>
+        <details class="docs-detail">
+          <summary>Stage 7: Persistence &amp; Alerting</summary>
+          <p>Save regime events → regime_events + regime_change_history. Signal snapshots for backtesting. Alerts: Regime Change / Transition Risk Spike / Signal Change / Stop Proximity. Audit trail → order_audit_trail (every mutation logged).</p>
+        </details>
+        <details class="docs-detail">
+          <summary>Stage 8: Execution &amp; Display</summary>
+          <table class="docs-table">
+            <thead><tr><th>Channel</th><th>Behavior</th></tr></thead>
+            <tbody>
+              <tr><td>Paper Trading</td><td>Budget allocation → guardrail checks → mock fill</td></tr>
+              <tr><td>IBKR Live</td><td>Async order submission → TWS/Gateway → fill reconciliation</td></tr>
+              <tr><td>Dashboard</td><td>FastAPI/Jinja regime page + optional Streamlit</td></tr>
+              <tr><td>Weekly Digest</td><td>Regime changes, divergences, tax alerts, action items</td></tr>
+            </tbody>
+          </table>
+        </details>
         <details class="docs-detail" open>
           <summary>Module boundaries</summary>
           <table class="docs-table">
@@ -128,11 +252,17 @@
             </tbody>
           </table>
         </details>
-        <div class="docs-code-block">
-<pre><code>FastAPI route → runtime loader → regime package → persistence/broker/data providers
-            ↓
-      Jinja shell + JSON payloads → vanilla JS renderers → localStorage UI state</code></pre>
-        </div>
+        <h3>Application Architecture</h3>
+        <table class="docs-table">
+          <thead><tr><th>Component</th><th>Port / Path</th><th>Purpose</th></tr></thead>
+          <tbody>
+            <tr><td>FastAPI</td><td>:8000</td><td>Primary web app, REST API, regime page, docs</td></tr>
+            <tr><td>Streamlit</td><td>:8501</td><td>Optional interactive dashboard for deeper analysis</td></tr>
+            <tr><td>SQLite</td><td>investor.db + data/regime/regime_watch.db</td><td>Local-first persistence</td></tr>
+            <tr><td>Scheduler</td><td>Daily 09:30 / Weekly Fri</td><td>Automated regime runs</td></tr>
+            <tr><td>CLI</td><td><code>python -m src.regime</code></td><td>On-demand analysis, scanning, backtesting</td></tr>
+          </tbody>
+        </table>
         <div class="docs-callout docs-callout--tip">
           <strong>Why in-app docs?</strong> The docs stay version-aligned with the deployed UI, share the same auth context, and can directly reference current route behavior.
         </div>
@@ -144,6 +274,23 @@
           <h2>HMM Regime Engine</h2>
           <p>The regime engine uses a 3-state Hidden Markov Model with adaptive fit windows and diagonal covariance to avoid the look-ahead bias removed in Sprint 20.</p>
         </header>
+        <h3>Feature Engineering</h3>
+        <table class="docs-table">
+          <thead>
+            <tr><th>Feature</th><th>Calculation</th><th>Window</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>Return</td><td>Daily log return: <code>ln(price_t / price_{t-1})</code></td><td>1 day</td></tr>
+            <tr><td>Volatility</td><td>Annualized: <code>rolling_std(return, 20) × √252</code></td><td>20 days</td></tr>
+            <tr><td>Trend</td><td>SMA ratio: <code>price / SMA(20) − 1</code></td><td>20 days</td></tr>
+            <tr><td>Volume Z-Score</td><td><code>(volume − rolling_mean) / rolling_std</code></td><td>20 days</td></tr>
+            <tr><td>VIX Change</td><td>Daily change in CBOE VIX index</td><td>1 day</td></tr>
+            <tr><td>10Y Yield Change</td><td>Daily change in US 10-Year Treasury yield</td><td>1 day</td></tr>
+          </tbody>
+        </table>
+        <div class="docs-callout docs-callout--info">
+          <strong>Macro weighting:</strong> VIX and yield features receive a 1.5× weighting multiplier when macro inputs are enabled.
+        </div>
         <table class="docs-table">
           <thead>
             <tr><th>Component</th><th>Current rule</th></tr>
@@ -154,6 +301,57 @@
             <tr><td>Covariance</td><td>Diagonal</td></tr>
             <tr><td>Fit strategy</td><td>Walk-forward with adaptive training-window retries on shorter histories</td></tr>
             <tr><td>Weekly overlay</td><td>Resampled weekly bars with fallback when insufficient rows exist</td></tr>
+          </tbody>
+        </table>
+        <h3>Walk-Forward HMM Parameters</h3>
+        <table class="docs-table">
+          <thead>
+            <tr><th>Parameter</th><th>Value</th><th>Purpose</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>Training Window</td><td>504 days (2 years)</td><td>Sufficient history for regime transitions</td></tr>
+            <tr><td>Refit Frequency</td><td>21 days (1 month)</td><td>Adapt to evolving market conditions</td></tr>
+            <tr><td>States (n_components)</td><td>3</td><td>Bull / Neutral / Bear</td></tr>
+            <tr><td>Covariance Type</td><td>diagonal</td><td>Feature independence for stability</td></tr>
+            <tr><td>Max Iterations</td><td>500</td><td>EM convergence threshold</td></tr>
+            <tr><td>Normalization</td><td>StandardScaler</td><td>Zero mean, unit variance per feature</td></tr>
+          </tbody>
+        </table>
+        <div class="docs-formula">
+          <strong>State Label Assignment</strong>
+          <p><code>regime_score = mean_return − 0.5 × expected_volatility</code></p>
+          <p>Highest score → Bull, lowest → Bear, middle → Neutral.</p>
+        </div>
+        <h3>Output Metrics</h3>
+        <table class="docs-table">
+          <thead><tr><th>Metric</th><th>Description</th></tr></thead>
+          <tbody>
+            <tr><td>latest_label</td><td>Current regime state (Bull / Neutral / Bear)</td></tr>
+            <tr><td>probability</td><td>Posterior probability of current state (0–100%)</td></tr>
+            <tr><td>regime_days</td><td>Consecutive days in current state</td></tr>
+            <tr><td>transition_risk</td><td>Probability of leaving current state within 5 days</td></tr>
+            <tr><td>expected_duration</td><td>Expected remaining days in current state</td></tr>
+            <tr><td>transition_matrix</td><td>3×3 state transition probabilities</td></tr>
+          </tbody>
+        </table>
+        <h3>Weekly Model</h3>
+        <table class="docs-table">
+          <thead><tr><th>Parameter</th><th>Value</th></tr></thead>
+          <tbody>
+            <tr><td>Training window</td><td>104 weeks (2 years)</td></tr>
+            <tr><td>Refit step</td><td>4 weeks</td></tr>
+            <tr><td>Window strategy</td><td>Adaptive (retries shorter windows on insufficient data)</td></tr>
+            <tr><td>Resampling</td><td>W-FRI (weekly, Friday close)</td></tr>
+          </tbody>
+        </table>
+        <h3>Multi-Timeframe Alignment</h3>
+        <table class="docs-table">
+          <thead><tr><th>Daily</th><th>Weekly</th><th>Tag</th><th>Implication</th></tr></thead>
+          <tbody>
+            <tr><td><span class="docs-badge docs-badge--bull">Bull</span></td><td><span class="docs-badge docs-badge--bull">Bull</span></td><td>Bull Aligned</td><td>High conviction — both timeframes agree</td></tr>
+            <tr><td><span class="docs-badge docs-badge--bull">Bull</span></td><td><span class="docs-badge docs-badge--bear">Bear</span></td><td>Bear Divergent</td><td>Rally within longer-term downtrend — reduce size</td></tr>
+            <tr><td><span class="docs-badge docs-badge--bear">Bear</span></td><td><span class="docs-badge docs-badge--bull">Bull</span></td><td>Bull Divergent</td><td>Pullback in uptrend — potential buy-the-dip</td></tr>
+            <tr><td><span class="docs-badge docs-badge--bear">Bear</span></td><td><span class="docs-badge docs-badge--bear">Bear</span></td><td>Bear Aligned</td><td>High conviction sell — both timeframes agree</td></tr>
           </tbody>
         </table>
         <div class="docs-callout docs-callout--warning">
@@ -172,16 +370,130 @@
           <p>The signal layer converts regime forecasts into actions, targets, warnings, and position sizes using explicit thresholds and downstream guardrails.</p>
         </header>
         <details class="docs-detail" open>
-          <summary>Primary action rules</summary>
+          <summary>Stage 1: Forward Regime Curve</summary>
+          <p><code>forward_regime_curve()</code> — Projects state probabilities 21 days forward via Markov matrix exponentiation.</p>
+          <div class="docs-formula">
+            <strong>Formula:</strong> <code>P(state, t+k) = P(state, t) × T^k</code> where T is the transition matrix and k is the forecast horizon (1–21 days).
+          </div>
+        </details>
+        <details class="docs-detail">
+          <summary>Stage 2: Forward Signal</summary>
+          <p><code>signal_from_forward_curve()</code> — Maps projected probabilities to action signals.</p>
           <table class="docs-table">
-            <thead>
-              <tr><th>Action</th><th>Typical conditions</th><th>Output</th></tr>
-            </thead>
+            <thead><tr><th>Condition</th><th>Signal</th><th>Requirements</th></tr></thead>
             <tbody>
-              <tr><td><span class="docs-badge docs-badge--bull">Strong Buy</span></td><td>High Bull probability, low transition risk, strong duration support</td><td>Aggressive entry, full targets, sizing suggestion</td></tr>
-              <tr><td><span class="docs-badge docs-badge--bull">Buy</span></td><td>Bull-tilting conditions without strongest gate</td><td>Entry zone, ATR stop, moderate sizing</td></tr>
-              <tr><td><span class="docs-badge docs-badge--neutral">Hold</span></td><td>Mixed or stable neutral conditions</td><td>No new entry target, monitoring stop</td></tr>
-              <tr><td><span class="docs-badge docs-badge--bear">Sell / Strong Sell</span></td><td>Bear state, adverse transition, or strong downside probabilities</td><td>Exit framing, risk-off guidance</td></tr>
+              <tr><td>Bull, low risk, stable, high prob</td><td><span class="docs-badge docs-badge--bull">Strong Buy</span></td><td>trans_risk &lt; 0.05, duration &gt; 15d, p_bull_5d ≥ 0.70</td></tr>
+              <tr><td>Bull, moderate risk</td><td><span class="docs-badge docs-badge--bull">Buy</span></td><td>trans_risk &lt; 0.15</td></tr>
+              <tr><td>Neutral, tilting bullish</td><td><span class="docs-badge docs-badge--bull">Buy</span></td><td>p_bull_5d &gt; 0.40</td></tr>
+              <tr><td>Bear, low risk, stable, high prob</td><td><span class="docs-badge docs-badge--bear">Strong Sell</span></td><td>trans_risk &lt; 0.05, duration &gt; 10d, p_bear_5d ≥ 0.70</td></tr>
+              <tr><td>Bear, moderate risk</td><td><span class="docs-badge docs-badge--bear">Sell</span></td><td>trans_risk &lt; 0.15</td></tr>
+              <tr><td>Bull/Neutral with emerging bear</td><td><span class="docs-badge docs-badge--bear">Sell</span></td><td>p_bear_5d &gt; 0.40</td></tr>
+              <tr><td>All other</td><td><span class="docs-badge docs-badge--neutral">Hold</span></td><td>—</td></tr>
+            </tbody>
+          </table>
+          <div class="docs-callout docs-callout--warning">
+            <strong>Earnings adjustment:</strong> Signal strength reduced by 0.15 when earnings fall within the holding period.
+          </div>
+        </details>
+        <details class="docs-detail">
+          <summary>Stage 3: Technical Analysis</summary>
+          <table class="docs-table">
+            <thead><tr><th>Indicator</th><th>Parameters</th><th>Usage</th></tr></thead>
+            <tbody>
+              <tr><td>RSI</td><td>14-period</td><td>Overbought (&gt;70) / Oversold (&lt;30) detection</td></tr>
+              <tr><td>MACD</td><td>12/26/9</td><td>Trend direction and momentum</td></tr>
+              <tr><td>Bollinger Bands</td><td>20-period, 2 std dev</td><td>Volatility envelope, mean reversion</td></tr>
+              <tr><td>ATR</td><td>14-period</td><td>Volatility measure for stops and targets</td></tr>
+              <tr><td>OBV</td><td>Cumulative</td><td>Volume-price confirmation</td></tr>
+            </tbody>
+          </table>
+        </details>
+        <details class="docs-detail">
+          <summary>Stage 4: Intra-Regime Signal</summary>
+          <p>Decision table by regime × condition → tactical signal. Examples:</p>
+          <table class="docs-table">
+            <thead><tr><th>Regime</th><th>Condition</th><th>Signal</th></tr></thead>
+            <tbody>
+              <tr><td><span class="docs-badge docs-badge--bull">Bull</span></td><td>RSI oversold + price near BB lower</td><td>Buy the dip</td></tr>
+              <tr><td><span class="docs-badge docs-badge--bull">Bull</span></td><td>RSI overbought + extended above BB upper</td><td>Take profits</td></tr>
+              <tr><td><span class="docs-badge docs-badge--bear">Bear</span></td><td>Rally into resistance</td><td>Sell the rally</td></tr>
+              <tr><td><span class="docs-badge docs-badge--bear">Bear</span></td><td>RSI extreme oversold + volume spike</td><td>Cover short</td></tr>
+              <tr><td><span class="docs-badge docs-badge--neutral">Neutral</span></td><td>No clear pattern</td><td>No clear signal</td></tr>
+            </tbody>
+          </table>
+        </details>
+        <details class="docs-detail">
+          <summary>Stage 5: Composite Signal</summary>
+          <p>Merges regime (forward) signal with technical (intra-regime) signal. Conflict resolution:</p>
+          <table class="docs-table">
+            <thead><tr><th>Forward Signal</th><th>Technical Signal</th><th>Resolution</th></tr></thead>
+            <tbody>
+              <tr><td>Buy / Strong Buy</td><td>Buy the dip</td><td>Strength +15–20% (confirmation)</td></tr>
+              <tr><td>Buy / Strong Buy</td><td>Take profits</td><td>Override → Hold (divergence)</td></tr>
+              <tr><td>Buy / Strong Buy</td><td>Stay defensive</td><td>Strength −20% (conflict)</td></tr>
+              <tr><td>Sell / Strong Sell</td><td>Sell the rally</td><td>Strength +15–20% (confirmation)</td></tr>
+              <tr><td>Sell / Strong Sell</td><td>Cover short</td><td>Override → Hold (divergence)</td></tr>
+              <tr><td>Hold</td><td>Any</td><td>Technical used as tiebreaker</td></tr>
+            </tbody>
+          </table>
+        </details>
+        <details class="docs-detail">
+          <summary>Stage 6: Price Targets &amp; Stops</summary>
+          <div class="docs-formula">
+            <strong>ATR Projection:</strong> <code>target = price ± (ATR × √holding_period × confidence_multiplier × reversion_factor)</code>
+          </div>
+          <table class="docs-table">
+            <thead><tr><th>Target Type</th><th>Derivation</th></tr></thead>
+            <tbody>
+              <tr><td>Entry</td><td>Bollinger Band proximity + regime direction</td></tr>
+              <tr><td>Exit</td><td>ATR projected move from entry</td></tr>
+              <tr><td>Stop</td><td>2 × ATR below entry (long) or above entry (short)</td></tr>
+            </tbody>
+          </table>
+        </details>
+        <details class="docs-detail">
+          <summary>Stage 7: Position Sizing</summary>
+          <div class="docs-formula">
+            <strong>Half-Kelly:</strong> <code>kelly_fraction = (win_prob × avg_win − loss_prob × avg_loss) / avg_win</code><br />
+            <code>position_size = 0.5 × kelly_fraction</code> (capped by portfolio constraints)
+          </div>
+          <p>Portfolio adjustments: regime exposure limits, sector concentration caps, correlation penalties.</p>
+        </details>
+        <details class="docs-detail">
+          <summary>Stage 8: Confidence Score</summary>
+          <div class="docs-formula">
+            <strong>Formula:</strong> <code>confidence = (regime_probability × 0.70 + signal_strength × 0.30) × 100</code>
+          </div>
+          <table class="docs-table">
+            <thead><tr><th>Score Range</th><th>Tier</th><th>Action Implication</th></tr></thead>
+            <tbody>
+              <tr><td>80–100</td><td>High</td><td>Full position sizing</td></tr>
+              <tr><td>60–79</td><td>Medium</td><td>Reduced sizing</td></tr>
+              <tr><td>40–59</td><td>Low</td><td>Monitor only</td></tr>
+              <tr><td>&lt;40</td><td>Very Low</td><td>No action</td></tr>
+            </tbody>
+          </table>
+        </details>
+        <details class="docs-detail">
+          <summary>Stage 9: Confidence Trajectory</summary>
+          <p>10-day linear regression on confidence scores. Slope thresholds: ±0.005.</p>
+          <table class="docs-table">
+            <thead><tr><th>Slope</th><th>Label</th></tr></thead>
+            <tbody>
+              <tr><td>&gt; +0.005</td><td>Improving</td></tr>
+              <tr><td>−0.005 to +0.005</td><td>Stable</td></tr>
+              <tr><td>&lt; −0.005</td><td>Deteriorating</td></tr>
+            </tbody>
+          </table>
+        </details>
+        <details class="docs-detail">
+          <summary>Stage 10: Sentiment Momentum</summary>
+          <p>VADER compound score on 30-day news window. Divergence detection:</p>
+          <table class="docs-table">
+            <thead><tr><th>Regime</th><th>Sentiment</th><th>Flag</th></tr></thead>
+            <tbody>
+              <tr><td><span class="docs-badge docs-badge--bull">Bull</span></td><td>Deteriorating</td><td>Bearish divergence — caution</td></tr>
+              <tr><td><span class="docs-badge docs-badge--bear">Bear</span></td><td>Improving</td><td>Bullish divergence — potential reversal</td></tr>
             </tbody>
           </table>
         </details>
@@ -204,6 +516,16 @@
           <h2>Frontier Analysis</h2>
           <p>The qualitative pipeline fetches recent catalysts, sentiment context, and thesis/theme context, then asks a configured frontier provider for institutional-style commentary.</p>
         </header>
+        <h3>Provider Hierarchy</h3>
+        <table class="docs-table">
+          <thead><tr><th>Priority</th><th>Provider</th><th>Model</th><th>Env Var (Key)</th><th>Env Var (Model)</th></tr></thead>
+          <tbody>
+            <tr><td>1</td><td>Anthropic</td><td>claude-sonnet-4-20250514</td><td>ANTHROPIC_API_KEY</td><td>ANTHROPIC_MODEL</td></tr>
+            <tr><td>2</td><td>OpenAI</td><td>gpt-4o</td><td>OPENAI_API_KEY</td><td>OPENAI_MODEL</td></tr>
+            <tr><td>3</td><td>Google</td><td>gemini-2.5-pro</td><td>GEMINI_API_KEY</td><td>GEMINI_MODEL</td></tr>
+            <tr><td>Fallback</td><td>VADER</td><td>N/A (local)</td><td>—</td><td>—</td></tr>
+          </tbody>
+        </table>
         <table class="docs-table">
           <thead>
             <tr><th>Provider mode</th><th>Behavior</th></tr>
@@ -233,6 +555,20 @@
   sentiment: {...}
 }</code></pre>
         </div>
+        <h3>Thesis Check Output</h3>
+        <table class="docs-table">
+          <thead><tr><th>Field</th><th>Values</th></tr></thead>
+          <tbody>
+            <tr><td>invalidates_thesis</td><td>true / false</td></tr>
+            <tr><td>action_bias</td><td>stay long / add / trim / exit / re-underwrite</td></tr>
+            <tr><td>urgency</td><td>low / medium / high</td></tr>
+          </tbody>
+        </table>
+        <h3>VADER Fallback Heuristic</h3>
+        <div class="docs-formula">
+          <strong>Base scores:</strong> Bull = 75, Neutral = 50, Bear = 25<br />
+          <code>heuristic_score = base + (probability × 15) + (sentiment_compound × 4)</code>
+        </div>
       </article>
 
       <article id="tech-persistence" class="docs-section" data-doc-section data-doc-title="Persistence Model">
@@ -252,6 +588,35 @@
             <tr><td>Discovery candidates</td><td>Watchlist and alpha pipeline lifecycle</td><td>Auto-expire after staleness window</td></tr>
             <tr><td>Paper / broker audit</td><td>Trade plans, executions, guardrail events</td><td>Persistent audit history</td></tr>
             <tr><td>Cache files</td><td>Last run, qualitative cache, PDF export source</td><td>TTL/version gated JSON artifacts</td></tr>
+          </tbody>
+        </table>
+        <h3>Database Schema (12 tables)</h3>
+        <table class="docs-table">
+          <thead><tr><th>Table</th><th>Key Columns</th><th>Purpose</th></tr></thead>
+          <tbody>
+            <tr><td>investment_theme</td><td>id, name, thesis, status</td><td>Portfolio themes with conviction</td></tr>
+            <tr><td>theme_ticker</td><td>theme_id, ticker, role, target_weight</td><td>Theme-ticker mapping with roles</td></tr>
+            <tr><td>regime_events</td><td>ticker, label, probability, timestamp</td><td>Daily regime snapshots</td></tr>
+            <tr><td>regime_change_history</td><td>ticker, from_label, to_label, date</td><td>Transition journal</td></tr>
+            <tr><td>sentiment_history</td><td>ticker, compound, label, date</td><td>VADER sentiment over time</td></tr>
+            <tr><td>signal_snapshots</td><td>ticker, signal, confidence, targets, date</td><td>Point-in-time signal records</td></tr>
+            <tr><td>discovery_watchlist</td><td>ticker, status, crowd_score, conviction</td><td>Discovery pipeline candidates</td></tr>
+            <tr><td>paper_portfolio</td><td>id, name, capital, mode, status</td><td>Paper trading accounts</td></tr>
+            <tr><td>paper_position</td><td>portfolio_id, ticker, shares, entry_price</td><td>Current paper positions</td></tr>
+            <tr><td>paper_trade_plan</td><td>portfolio_id, ticker, action, status</td><td>Pending/executed trade plans</td></tr>
+            <tr><td>daily_snapshot</td><td>portfolio_id, date, equity, exposure</td><td>End-of-day performance snapshots</td></tr>
+            <tr><td>order_audit_trail</td><td>order_id, action, details, timestamp</td><td>Complete mutation audit log</td></tr>
+          </tbody>
+        </table>
+        <h3>Cache Strategy</h3>
+        <table class="docs-table">
+          <thead><tr><th>Cache</th><th>TTL</th><th>Storage</th></tr></thead>
+          <tbody>
+            <tr><td>Earnings date</td><td>24 hours</td><td>In-memory dict</td></tr>
+            <tr><td>Crowd score</td><td>4 hours (14,400s)</td><td>In-memory dict with TTL eviction</td></tr>
+            <tr><td>Market data</td><td>Session / 3,600s</td><td>yfinance session cache</td></tr>
+            <tr><td>Regime analysis</td><td>3,600s</td><td>JSON cache file</td></tr>
+            <tr><td>Qualitative (LLM)</td><td>3,600s</td><td>JSON cache file</td></tr>
           </tbody>
         </table>
       </article>
@@ -281,6 +646,32 @@
             <tr><td>Paused / Closed portfolio</td><td>Blocks new execution even if plans exist</td></tr>
           </tbody>
         </table>
+        <h3>Risk Guardrails</h3>
+        <table class="docs-table">
+          <thead><tr><th>Guardrail</th><th>Default</th><th>Purpose</th></tr></thead>
+          <tbody>
+            <tr><td>Max position size</td><td>10%</td><td>No single stock &gt; 10% of portfolio</td></tr>
+            <tr><td>Max single order</td><td>$10,000</td><td>Fat-finger prevention</td></tr>
+            <tr><td>Daily loss limit</td><td>$5,000</td><td>Circuit breaker</td></tr>
+            <tr><td>Max trades/day</td><td>10</td><td>Overtrading prevention</td></tr>
+            <tr><td>Max total exposure</td><td>80%</td><td>20% cash reserve maintained</td></tr>
+            <tr><td>Min cash reserve</td><td>10%</td><td>Dry powder for opportunities</td></tr>
+          </tbody>
+        </table>
+        <h3>Budget Allocation by Conviction</h3>
+        <table class="docs-table">
+          <thead><tr><th>Conviction</th><th>Budget %</th><th>Core (50%)</th><th>Critical-Path (35%)</th><th>Speculative (15%, max 5%)</th></tr></thead>
+          <tbody>
+            <tr><td>5</td><td>30%</td><td>Up to 15%</td><td>Up to 10.5%</td><td>Up to 4.5%</td></tr>
+            <tr><td>4</td><td>15%</td><td>7.5%</td><td>5.25%</td><td>2.25%</td></tr>
+            <tr><td>3</td><td>10%</td><td>5%</td><td>3.5%</td><td>1.5%</td></tr>
+            <tr><td>2</td><td>5%</td><td>2.5%</td><td>1.75%</td><td>0.75%</td></tr>
+            <tr><td>1</td><td>0%</td><td>—</td><td>—</td><td>—</td></tr>
+          </tbody>
+        </table>
+        <div class="docs-callout docs-callout--warning">
+          <strong>Speculative absolute cap:</strong> Regardless of conviction, speculative role positions are hard-capped at 5% of total portfolio.
+        </div>
       </article>
 
       <article id="tech-frontend" class="docs-section" data-doc-section data-doc-title="Frontend Runtime">
@@ -300,6 +691,21 @@
             <tr><td>Docs navigation</td><td>Searches section titles, keeps hash + active section synchronized</td></tr>
           </tbody>
         </table>
+        <h3>FastAPI Route Table</h3>
+        <table class="docs-table">
+          <thead><tr><th>Route</th><th>Purpose</th></tr></thead>
+          <tbody>
+            <tr><td>/</td><td>Dashboard — portfolio overview</td></tr>
+            <tr><td>/holdings</td><td>Holdings management</td></tr>
+            <tr><td>/regime</td><td>Regime analysis page (main UI)</td></tr>
+            <tr><td>/momentum</td><td>Momentum analysis</td></tr>
+            <tr><td>/planner</td><td>Financial planner</td></tr>
+            <tr><td>/expenses</td><td>Expense tracking</td></tr>
+            <tr><td>/sync</td><td>Broker/bank sync</td></tr>
+            <tr><td>/reports</td><td>PDF report generation</td></tr>
+            <tr><td>/docs</td><td>This documentation page</td></tr>
+          </tbody>
+        </table>
       </article>
 
       <article id="tech-deployment" class="docs-section" data-doc-section data-doc-title="Deployment & Operations">
@@ -316,6 +722,53 @@
         <div class="docs-callout docs-callout--warning">
           <strong>Operational rule:</strong> if a full suite run fails from <code>/Volumes/T9</code> but passes from the Investor root, treat it as an invocation-path issue before debugging code.
         </div>
+        <h3>Installation</h3>
+        <div class="docs-code-block">
+<pre><code>git clone &lt;repo&gt; &amp;&amp; cd Investor
+python3 -m venv .venv &amp;&amp; source .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env  # Configure API keys
+python -m src.regime fixtures load
+make dev  # Starts FastAPI on :8000</code></pre>
+        </div>
+        <h3>Prerequisites</h3>
+        <table class="docs-table">
+          <thead><tr><th>Requirement</th><th>Version</th><th>Notes</th></tr></thead>
+          <tbody>
+            <tr><td>Python</td><td>3.11+</td><td>Required</td></tr>
+            <tr><td>pip / venv</td><td>Latest</td><td>Package management</td></tr>
+            <tr><td>SQLite</td><td>3.35+</td><td>Included with Python</td></tr>
+            <tr><td>Git</td><td>Any</td><td>Version control</td></tr>
+            <tr><td>Tesseract</td><td>Optional</td><td>OCR for PDF extraction</td></tr>
+          </tbody>
+        </table>
+        <h3>Makefile Targets</h3>
+        <table class="docs-table">
+          <thead><tr><th>Target</th><th>Command</th></tr></thead>
+          <tbody>
+            <tr><td><code>make venv</code></td><td>Create virtual environment</td></tr>
+            <tr><td><code>make install</code></td><td>Install dependencies</td></tr>
+            <tr><td><code>make env</code></td><td>Copy .env.example</td></tr>
+            <tr><td><code>make db-reset</code></td><td>Reset databases</td></tr>
+            <tr><td><code>make load-fixtures</code></td><td>Load test fixtures</td></tr>
+            <tr><td><code>make dev</code></td><td>Start FastAPI dev server</td></tr>
+            <tr><td><code>make test</code></td><td>Run full test suite</td></tr>
+            <tr><td><code>make check</code></td><td>Lint + type check</td></tr>
+            <tr><td><code>make clean</code></td><td>Remove caches and build artifacts</td></tr>
+          </tbody>
+        </table>
+        <h3>Network Safety</h3>
+        <div class="docs-callout docs-callout--danger">
+          <strong>NETWORK_ENABLED</strong> controls outbound access. When disabled, all HTTP calls (market data, LLM, broker) are blocked. Use <code>ALLOWED_OUTBOUND_HOSTS</code> for selective access.
+        </div>
+        <h3>CLI Commands</h3>
+        <div class="docs-code-block">
+<pre><code>python -m src.regime analyze NVDA          # Single ticker analysis
+python -m src.regime scan                   # Full universe scan
+python -m src.regime digest                 # Weekly digest report
+python -m src.regime backtest NVDA          # Walk-forward backtest
+streamlit run src/regime/streamlit_app.py   # Interactive dashboard</code></pre>
+        </div>
       </article>
 
       <article id="tech-config" class="docs-section" data-doc-section data-doc-title="Configuration Reference">
@@ -324,15 +777,44 @@
           <h2>Configuration Reference</h2>
           <p>Configuration is primarily environment-driven, with route defaults and config dataclasses controlling thresholds, providers, discovery scanning, and broker behavior.</p>
         </header>
+        <h3>Environment Variables</h3>
         <table class="docs-table">
-          <thead>
-            <tr><th>Setting family</th><th>Examples</th><th>Effect</th></tr>
-          </thead>
+          <thead><tr><th>Variable</th><th>Purpose</th><th>Required</th></tr></thead>
           <tbody>
-            <tr><td>Frontier providers</td><td><code>OPENAI_API_KEY</code>, <code>GEMINI_API_KEY</code>, <code>ANTHROPIC_API_KEY</code></td><td>Enables specific qualitative backends</td></tr>
-            <tr><td>Model overrides</td><td><code>OPENAI_MODEL</code>, <code>GEMINI_MODEL</code>, <code>ANTHROPIC_MODEL</code></td><td>Overrides default model tiers</td></tr>
-            <tr><td>Broker mode</td><td>paper, ibkr</td><td>Selects adapter and monitoring behavior</td></tr>
-            <tr><td>Signal thresholds</td><td>Dataclass-backed defaults</td><td>Tunes action gating and earnings penalty</td></tr>
+            <tr><td><code>HMM_DATA_DIR</code></td><td>Path to regime data directory</td><td>Yes</td></tr>
+            <tr><td><code>INVESTOR_DB_PATH</code></td><td>Path to main investor.db</td><td>Yes</td></tr>
+            <tr><td><code>ANTHROPIC_API_KEY</code></td><td>Claude API access</td><td>No (fallback chain)</td></tr>
+            <tr><td><code>ANTHROPIC_MODEL</code></td><td>Default: claude-sonnet-4-20250514</td><td>No</td></tr>
+            <tr><td><code>OPENAI_API_KEY</code></td><td>GPT-4 API access</td><td>No (fallback chain)</td></tr>
+            <tr><td><code>OPENAI_MODEL</code></td><td>Default: gpt-4o</td><td>No</td></tr>
+            <tr><td><code>GEMINI_API_KEY</code></td><td>Gemini API access</td><td>No (fallback chain)</td></tr>
+            <tr><td><code>GEMINI_MODEL</code></td><td>Default: gemini-2.5-pro</td><td>No</td></tr>
+            <tr><td><code>NETWORK_ENABLED</code></td><td>Enable/disable outbound HTTP</td><td>No (default: true)</td></tr>
+            <tr><td><code>ALLOWED_OUTBOUND_HOSTS</code></td><td>Whitelist for outbound access</td><td>No</td></tr>
+            <tr><td><code>APP_PASSWORD</code></td><td>App authentication password</td><td>Yes (production)</td></tr>
+            <tr><td><code>APP_SECRET_KEY</code></td><td>Session signing key</td><td>Yes (production)</td></tr>
+          </tbody>
+        </table>
+        <h3>Signal Thresholds (config.py SignalThresholds)</h3>
+        <table class="docs-table">
+          <thead><tr><th>Threshold</th><th>Value</th><th>Purpose</th></tr></thead>
+          <tbody>
+            <tr><td>strong_buy_max_transition_risk</td><td>0.05</td><td>Maximum transition risk for Strong Buy</td></tr>
+            <tr><td>strong_buy_min_duration</td><td>15 days</td><td>Minimum regime duration for Strong Buy</td></tr>
+            <tr><td>strong_buy_min_probability</td><td>0.70</td><td>Minimum probability for Strong Buy</td></tr>
+            <tr><td>buy_max_transition_risk</td><td>0.15</td><td>Maximum transition risk for Buy</td></tr>
+            <tr><td>neutral_bull_tilt_probability</td><td>0.40</td><td>Bull tilt threshold in Neutral regime</td></tr>
+            <tr><td>earnings_strength_penalty</td><td>0.15</td><td>Signal strength reduction near earnings</td></tr>
+          </tbody>
+        </table>
+        <h3>Discovery Thresholds (config.py DiscoveryThresholds)</h3>
+        <table class="docs-table">
+          <thead><tr><th>Threshold</th><th>Value</th><th>Purpose</th></tr></thead>
+          <tbody>
+            <tr><td>entry_signal_min_probability</td><td>≥ 55%</td><td>Minimum regime probability for entry signal</td></tr>
+            <tr><td>entry_signal_max_crowd_score</td><td>≤ 40</td><td>Maximum crowding score (lower = less crowded)</td></tr>
+            <tr><td>entry_signal_min_conviction</td><td>≥ 3</td><td>Minimum conviction tier for entry</td></tr>
+            <tr><td>crowd_cache_ttl_seconds</td><td>14,400 (4hr)</td><td>Crowd score cache duration</td></tr>
           </tbody>
         </table>
       </article>
@@ -344,12 +826,24 @@
           <p>Use this sequence when opening the dashboard cold.</p>
         </header>
         <ol class="docs-steps">
-          <li>Select the benchmark, period, portfolio scope, and account filter.</li>
-          <li>Pick holdings from the searchable list or add custom symbols.</li>
-          <li>Enable Frontier only if you want qualitative analysis and the extra latency is acceptable.</li>
-          <li>Run analysis and watch partial ticker cards stream in as the job progresses.</li>
-          <li>Move to Trading only after reviewing action items and quantitative warnings in Analysis.</li>
+          <li><strong>Install &amp; Launch</strong>
+            <div class="docs-code-block"><pre><code>git clone &lt;repo&gt; &amp;&amp; cd Investor
+python3 -m venv .venv &amp;&amp; source .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env  # Add your API keys
+python -m src.regime fixtures load
+make dev</code></pre></div>
+          </li>
+          <li><strong>Open Dashboard</strong> — Navigate to <code>http://localhost:8000</code></li>
+          <li><strong>Navigate to Regime Page</strong> — Click "Regime" in the top navigation bar</li>
+          <li><strong>Understand the Table</strong> — Read left to right: Regime → Probability → Signals → Action → Verdict → Stop. See <a href="#user-dashboard">Dashboard Orientation</a> for column details.</li>
+          <li><strong>Run First Analysis</strong>
+            <div class="docs-code-block"><pre><code>python -m src.regime analyze NVDA</code></pre></div>
+          </li>
         </ol>
+        <div class="docs-callout docs-callout--tip">
+          <strong>Tip:</strong> Streamlit provides richer interactive analysis. Run <code>streamlit run src/regime/streamlit_app.py</code> for deeper ticker exploration.
+        </div>
       </article>
 
       <article id="user-dashboard" class="docs-section" data-doc-section data-doc-title="Dashboard Orientation">
@@ -368,6 +862,34 @@
             <tr><td>Research</td><td>Theme management, discovery watchlists, supporting context</td></tr>
           </tbody>
         </table>
+        <h3>Column Reference (Regime Table)</h3>
+        <table class="docs-table">
+          <thead><tr><th>Column</th><th>What It Shows</th><th>How to Read It</th></tr></thead>
+          <tbody>
+            <tr><td>TICKER</td><td>Stock symbol</td><td>Click for detailed analysis card</td></tr>
+            <tr><td>REGIME</td><td>Daily HMM state</td><td><span class="docs-badge docs-badge--bull">Bull</span> (green) / <span class="docs-badge docs-badge--neutral">Neutral</span> (gray) / <span class="docs-badge docs-badge--bear">Bear</span> (red)</td></tr>
+            <tr><td>WEEKLY REGIME</td><td>Weekly HMM state + alignment</td><td>"Aligned" = daily &amp; weekly agree; "Divergent" = they disagree</td></tr>
+            <tr><td>PROBABILITY</td><td>HMM posterior probability (0–100%)</td><td>Higher = more confident. &gt;90% is very strong</td></tr>
+            <tr><td>COMPOSITE SIGNAL</td><td>Overall recommendation</td><td>Strong Buy → Buy → Hold → Sell → Strong Sell</td></tr>
+            <tr><td>FORWARD SIGNAL</td><td>21-day projected direction</td><td>Based on Markov chain forward curve</td></tr>
+            <tr><td>TECHNICAL SIGNAL</td><td>Short-term tactical guidance</td><td>"Buy the dip", "Stay defensive", "No clear signal" etc.</td></tr>
+            <tr><td>SENTIMENT</td><td>News sentiment trend (30-day VADER)</td><td>"improving", "stable", "deteriorating"</td></tr>
+            <tr><td>ACTION</td><td>Concrete action now</td><td>May be blank if regime too new or suppressed</td></tr>
+            <tr><td>REL. STRENGTH</td><td>Performance vs benchmark (SOXX)</td><td>"↑ Outperforming" or "↓ Lagging"</td></tr>
+            <tr><td>AI VERDICT</td><td>LLM-validated recommendation</td><td>"Entry" / "Hold" / "Exit" / "Hold — Regime too new"</td></tr>
+            <tr><td>STOP</td><td>Distance from stop-loss</td><td>"X% from stop" — smaller = closer = higher urgency</td></tr>
+          </tbody>
+        </table>
+        <h3>Color Coding</h3>
+        <table class="docs-table">
+          <thead><tr><th>Color</th><th>Meaning</th></tr></thead>
+          <tbody>
+            <tr><td><span class="docs-badge docs-badge--bull">Green</span></td><td>Bullish — buy signals, bull regime, outperforming</td></tr>
+            <tr><td><span class="docs-badge docs-badge--bear">Red</span></td><td>Bearish — sell signals, bear regime, lagging</td></tr>
+            <tr><td><span class="docs-badge docs-badge--neutral">Yellow/Gray</span></td><td>Neutral, hold, or suppressed</td></tr>
+            <tr><td style="color:#ea580c;font-weight:bold;">Orange</td><td>ACTION REQUIRED — trade plans needing review</td></tr>
+          </tbody>
+        </table>
       </article>
 
       <article id="user-regime" class="docs-section" data-doc-section data-doc-title="Running Regime Analysis">
@@ -384,6 +906,46 @@
           <li>Use “Show all holdings” only when you explicitly want historical breadth beyond current snapshots.</li>
           <li>Add custom symbols as comma, semicolon, newline, or whitespace-separated tickers. Share-class inputs like <code>BRK B</code> remain intact.</li>
         </ol>
+        <h3>Three Regime States</h3>
+        <div class="docs-card-grid">
+          <article class="docs-mini-card" style="border-left:4px solid #22c55e;">
+            <h3>Bull</h3>
+            <p>Uptrend detected. Typical signals: Buy / Strong Buy. Position sizing at full allocation.</p>
+          </article>
+          <article class="docs-mini-card" style="border-left:4px solid #94a3b8;">
+            <h3>Neutral</h3>
+            <p>No clear trend. Typical signals: Hold. Monitor for bullish or bearish tilt.</p>
+          </article>
+          <article class="docs-mini-card" style="border-left:4px solid #ef4444;">
+            <h3>Bear</h3>
+            <p>Downtrend detected. Typical signals: Sell / Strong Sell. Risk-off positioning.</p>
+          </article>
+        </div>
+        <h3>Daily vs Weekly Alignment</h3>
+        <table class="docs-table">
+          <thead><tr><th>Daily</th><th>Weekly</th><th>Tag</th><th>Meaning</th><th>Action Implication</th></tr></thead>
+          <tbody>
+            <tr><td><span class="docs-badge docs-badge--bull">Bull</span></td><td><span class="docs-badge docs-badge--bull">Bull</span></td><td>Bull Aligned</td><td>Strong uptrend both timeframes</td><td>High conviction, full size</td></tr>
+            <tr><td><span class="docs-badge docs-badge--bull">Bull</span></td><td><span class="docs-badge docs-badge--bear">Bear</span></td><td>Bear Divergent</td><td>Rally within longer-term downtrend</td><td>Reduced size, tighter stops</td></tr>
+            <tr><td><span class="docs-badge docs-badge--bear">Bear</span></td><td><span class="docs-badge docs-badge--bull">Bull</span></td><td>Bull Divergent</td><td>Pullback in uptrend</td><td>Potential buy-the-dip</td></tr>
+            <tr><td><span class="docs-badge docs-badge--bear">Bear</span></td><td><span class="docs-badge docs-badge--bear">Bear</span></td><td>Bear Aligned</td><td>Strong downtrend both timeframes</td><td>High conviction sell</td></tr>
+          </tbody>
+        </table>
+        <h3>Probability Interpretation</h3>
+        <table class="docs-table">
+          <thead><tr><th>Range</th><th>Confidence</th><th>Guidance</th></tr></thead>
+          <tbody>
+            <tr><td>90–100%</td><td>Very High</td><td>Strong conviction in current regime</td></tr>
+            <tr><td>75–89%</td><td>High</td><td>Good confidence, normal sizing</td></tr>
+            <tr><td>60–74%</td><td>Medium</td><td>Some uncertainty, consider reduced sizing</td></tr>
+            <tr><td>50–59%</td><td>Low</td><td>Near coin-flip — exercise caution</td></tr>
+          </tbody>
+        </table>
+        <h3>"Regime Too New" Suppression</h3>
+        <div class="docs-callout docs-callout--warning">
+          <strong>Configurable minimum days:</strong> Streamlit slider default is 3, range 1–10. Laszlo's preferred setting: <strong>5 days</strong>.<br /><br />
+          When <code>regime_days &lt; min_regime_days</code>, the AI Verdict is suppressed to <code>"Hold — Regime too new (Xd &lt; Yd minimum)"</code> and the Action column displays "—" (blank). This prevents whipsaw trades on false regime transitions.
+        </div>
       </article>
 
       <article id="user-signals" class="docs-section" data-doc-section data-doc-title="Reading Signals">
@@ -406,6 +968,36 @@
             <p>Risk/reward conflict, stop proximity, earnings risk, regime disagreement, tax drag.</p>
           </article>
         </div>
+        <h3>Signal Priority Hierarchy</h3>
+        <table class="docs-table">
+          <thead><tr><th>Priority</th><th>Signal</th><th>Role</th></tr></thead>
+          <tbody>
+            <tr><td>1 (highest)</td><td>AI Verdict</td><td>Final word — overrides all when active</td></tr>
+            <tr><td>2</td><td>Action</td><td>Concrete action after regime-age filter</td></tr>
+            <tr><td>3</td><td>Composite Signal</td><td>Merged regime + technical</td></tr>
+            <tr><td>4</td><td>Forward Signal</td><td>21-day Markov projection</td></tr>
+            <tr><td>5 (lowest)</td><td>Technical Signal</td><td>RSI/MACD/BB short-term tactical</td></tr>
+          </tbody>
+        </table>
+        <h3>Signal Suppression Rules</h3>
+        <table class="docs-table">
+          <thead><tr><th>Condition</th><th>What Happens</th><th>Why</th></tr></thead>
+          <tbody>
+            <tr><td>Regime &lt; min_days</td><td>"Hold — Regime too new"</td><td>Prevents whipsaw on false transitions</td></tr>
+            <tr><td>Probability below threshold</td><td>"Hold — Low confidence"</td><td>Model not confident enough</td></tr>
+            <tr><td>Signals conflict</td><td>Composite strength reduced 20%</td><td>Disagreement between regime and technicals</td></tr>
+            <tr><td>Earnings imminent</td><td>Signal strength reduced 15%</td><td>Binary event risk</td></tr>
+          </tbody>
+        </table>
+        <h3>Sentiment Column</h3>
+        <table class="docs-table">
+          <thead><tr><th>Label</th><th>Meaning</th><th>Divergence Implication</th></tr></thead>
+          <tbody>
+            <tr><td>Improving</td><td>30-day VADER trend positive</td><td>In Bear regime → bullish divergence (potential reversal)</td></tr>
+            <tr><td>Stable</td><td>No significant trend</td><td>Consistent with current regime</td></tr>
+            <tr><td>Deteriorating</td><td>30-day VADER trend negative</td><td>In Bull regime → bearish divergence (caution)</td></tr>
+          </tbody>
+        </table>
       </article>
 
       <article id="user-rules" class="docs-section" data-doc-section data-doc-title="Rules Engine Reference">
@@ -425,6 +1017,38 @@
             <tr><td>Relative strength</td><td>Should map to Outperforming / In-line / Lagging in the main table and banner</td></tr>
           </tbody>
         </table>
+        <h3>Decision Pipeline</h3>
+        <div class="docs-flow">
+          <div class="docs-flow__box">Raw Data</div>
+          <div class="docs-flow__arrow">→</div>
+          <div class="docs-flow__box">HMM</div>
+          <div class="docs-flow__arrow">→</div>
+          <div class="docs-flow__box">Forward + Technical</div>
+          <div class="docs-flow__arrow">→</div>
+          <div class="docs-flow__box">Composite</div>
+        </div>
+        <div class="docs-flow">
+          <div class="docs-flow__box">Regime Age Filter</div>
+          <div class="docs-flow__arrow">→</div>
+          <div class="docs-flow__box">AI Verdict</div>
+          <div class="docs-flow__arrow">→</div>
+          <div class="docs-flow__box">Dashboard Row</div>
+          <div class="docs-flow__arrow">&nbsp;</div>
+        </div>
+        <h3>AI Verdict Suppression Logic</h3>
+        <div class="docs-code-block">
+<pre><code>IF regime_days &lt; min_regime_days (default: 3, configurable 1-10):
+  → "Hold — Regime too new (Xd &lt; Yd minimum)"
+  → Action column = "—"
+
+IF probability &lt; min_signal_probability:
+  → "Hold — Low confidence (X% &lt; threshold)"
+  → Action column = "—"
+
+OTHERWISE:
+  → Display LLM verdict: "Entry" | "Hold" | "Exit"
+  → Action column reflects the verdict</code></pre>
+        </div>
       </article>
 
       <article id="user-paper" class="docs-section" data-doc-section data-doc-title="Paper Trading Workflow">
@@ -439,6 +1063,17 @@
           <li>Approve, reject, or modify plans after precheck badges and guardrails render.</li>
           <li>Execute approved trades and review the audit trail plus performance attribution.</li>
         </ol>
+        <h3>Position Sizing by Conviction × Role</h3>
+        <table class="docs-table">
+          <thead><tr><th>Conviction</th><th>Budget %</th><th>Core (50%)</th><th>Critical-Path (35%)</th><th>Speculative (15%, max 5%)</th></tr></thead>
+          <tbody>
+            <tr><td>5</td><td>30%</td><td>Up to 15%</td><td>Up to 10.5%</td><td>Up to 4.5%</td></tr>
+            <tr><td>4</td><td>15%</td><td>7.5%</td><td>5.25%</td><td>2.25%</td></tr>
+            <tr><td>3</td><td>10%</td><td>5%</td><td>3.5%</td><td>1.5%</td></tr>
+            <tr><td>2</td><td>5%</td><td>2.5%</td><td>1.75%</td><td>0.75%</td></tr>
+            <tr><td>1</td><td>0%</td><td>—</td><td>—</td><td>—</td></tr>
+          </tbody>
+        </table>
       </article>
 
       <article id="user-discovery" class="docs-section" data-doc-section data-doc-title="Discovery Workflow">
@@ -458,6 +1093,38 @@
             <tr><td>Passed</td><td>Explicitly rejected or expired by operator decision</td></tr>
           </tbody>
         </table>
+        <h3>Entry Signal Criteria</h3>
+        <table class="docs-table">
+          <thead><tr><th>Criterion</th><th>Threshold</th></tr></thead>
+          <tbody>
+            <tr><td>Regime probability</td><td>≥ 55%</td></tr>
+            <tr><td>Crowd score</td><td>≤ 40 (lower = less crowded)</td></tr>
+            <tr><td>Conviction</td><td>≥ 3</td></tr>
+          </tbody>
+        </table>
+        <h3>Crowd Score Components</h3>
+        <table class="docs-table">
+          <thead><tr><th>Component</th><th>Weight</th></tr></thead>
+          <tbody>
+            <tr><td>Analyst coverage</td><td>0–30</td></tr>
+            <tr><td>Institutional ownership</td><td>0–25</td></tr>
+            <tr><td>Volume</td><td>0–25</td></tr>
+            <tr><td>Short interest</td><td>0–20</td></tr>
+          </tbody>
+        </table>
+        <h3>Watchlist Lifecycle</h3>
+        <div class="docs-flow">
+          <div class="docs-flow__box">Watching</div>
+          <div class="docs-flow__arrow">→</div>
+          <div class="docs-flow__box">Entry Signal</div>
+          <div class="docs-flow__arrow">→</div>
+          <div class="docs-flow__box">Added</div>
+          <div class="docs-flow__arrow">→</div>
+          <div class="docs-flow__box">Closed</div>
+        </div>
+        <div class="docs-callout docs-callout--info">
+          <strong>Auto-expire:</strong> Candidates with no activity for 90 days are automatically expired.
+        </div>
       </article>
 
       <article id="user-tax" class="docs-section" data-doc-section data-doc-title="Tax & Lot Interpretation">
@@ -479,6 +1146,18 @@
             <tr><td>Action impact</td><td>Should compress to a dash when no material tax adjustment exists</td></tr>
           </tbody>
         </table>
+        <h3>Automatic Tax Adjustments</h3>
+        <table class="docs-table">
+          <thead><tr><th>Scenario</th><th>System Action</th><th>Example</th></tr></thead>
+          <tbody>
+            <tr><td>Sell + ST→LT within 30d</td><td>Override → Hold</td><td>"3 lots convert to LTCG in 12 days; saves ~17% tax"</td></tr>
+            <tr><td>Sell + unrealized loss + repurchase</td><td>Wash-sale warning</td><td>"Loss would be disallowed; wait 31 days"</td></tr>
+            <tr><td>Buy + existing ST losses</td><td>Tax-loss harvesting flag</td><td>"TLH opportunity: $2,400 in losses available"</td></tr>
+          </tbody>
+        </table>
+        <div class="docs-callout docs-callout--warning">
+          <strong>Disclaimer:</strong> These are planning-grade estimates, not tax advice. No AMT, phaseouts, or bracket modeling. Consult a tax professional for actual filing decisions.
+        </div>
       </article>
 
       <article id="user-glossary" class="docs-section" data-doc-section data-doc-title="Glossary">
@@ -491,11 +1170,30 @@
             <tr><th>Term</th><th>Definition</th></tr>
           </thead>
           <tbody>
-            <tr><td>Transition risk</td><td>Probability-weighted instability in the current regime state</td></tr>
-            <tr><td>Divergence</td><td>Mismatch between quant regime state and frontier qualitative read</td></tr>
-            <tr><td>Half-Kelly</td><td>Conservative sizing cap derived from the Kelly criterion</td></tr>
-            <tr><td>Critical-path role</td><td>Theme constituent whose behavior can invalidate the broader investment thesis</td></tr>
+            <tr><td>Aligned</td><td>Daily and weekly regime states agree (e.g., Bull + Bull = Bull Aligned)</td></tr>
+            <tr><td>ATR</td><td>Average True Range — 14-period volatility measure used for stops and targets</td></tr>
+            <tr><td>Bollinger Bands</td><td>20-period price envelope at ±2 standard deviations — used for entry/exit zones</td></tr>
+            <tr><td>Composite Signal</td><td>Merged regime + technical signal after conflict resolution</td></tr>
+            <tr><td>Conviction</td><td>Operator-assigned confidence tier (1–5) for theme or position sizing</td></tr>
+            <tr><td>Critical-Path Role</td><td>Theme constituent whose behavior can invalidate the broader investment thesis</td></tr>
+            <tr><td>Crowd Score</td><td>Composite crowding metric (0–100) from analyst coverage, institutional ownership, volume, short interest</td></tr>
+            <tr><td>Divergent</td><td>Daily and weekly regime states disagree (e.g., Bull daily + Bear weekly = Bear Divergent)</td></tr>
+            <tr><td>Forward Curve</td><td>21-day projected regime probabilities via Markov matrix exponentiation</td></tr>
             <tr><td>Guardrail</td><td>Pre-trade rule that can block, warn, or require review before execution</td></tr>
+            <tr><td>Half-Kelly</td><td>Conservative position sizing: 50% of the Kelly Criterion optimal fraction</td></tr>
+            <tr><td>HMM</td><td>Hidden Markov Model — 3-state Gaussian model for regime detection</td></tr>
+            <tr><td>IBKR</td><td>Interactive Brokers — brokerage for live and paper trading</td></tr>
+            <tr><td>LTCG / STCG</td><td>Long-Term / Short-Term Capital Gains — tax treatment based on holding period (&gt;1 year = LTCG)</td></tr>
+            <tr><td>MACD</td><td>Moving Average Convergence Divergence — 12/26/9 trend and momentum indicator</td></tr>
+            <tr><td>Paper Trading</td><td>Simulated trading with virtual capital for strategy validation before live deployment</td></tr>
+            <tr><td>Posterior Probability</td><td>HMM-derived confidence in the current regime state (0–100%)</td></tr>
+            <tr><td>Regime</td><td>Latent market state (Bull / Neutral / Bear) inferred by the HMM engine</td></tr>
+            <tr><td>RSI</td><td>Relative Strength Index — 14-period momentum oscillator (overbought &gt;70, oversold &lt;30)</td></tr>
+            <tr><td>Transition Matrix</td><td>3×3 probability matrix of moving between regime states</td></tr>
+            <tr><td>Transition Risk</td><td>Probability-weighted instability — likelihood of leaving current regime within 5 days</td></tr>
+            <tr><td>VADER</td><td>Valence Aware Dictionary for Sentiment Reasoning — rule-based sentiment scorer</td></tr>
+            <tr><td>Walk-Forward</td><td>Out-of-sample testing method: train on past data, test on next unseen window, slide forward</td></tr>
+            <tr><td>Wash Sale</td><td>IRS rule disallowing loss deduction if substantially identical security repurchased within 31 days</td></tr>
           </tbody>
         </table>
       </article>
