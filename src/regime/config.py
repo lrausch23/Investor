@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+import os
 
 DEFAULT_TICKERS = ["NVDA", "AVGO", "PLTR", "MSFT", "MTRN", "PLAB"]
 
@@ -107,15 +108,28 @@ DEFAULT_RISK_GUARDRAILS = RiskGuardrails()
 
 @dataclass(frozen=True)
 class IBKRConfig:
-    host: str = "127.0.0.1"
-    port: int = 7497
-    client_id: int = 1
-    account_id: str = "DUP579027"
-    live_backend: bool = False
-    timeout: int = 10
+    host: str = field(default_factory=lambda: os.environ.get("IBKR_HOST", "127.0.0.1"))
+    port: int = field(default_factory=lambda: int(os.environ.get("IBKR_PORT", "7497")))
+    client_id: int = field(default_factory=lambda: int(os.environ.get("IBKR_CLIENT_ID", "1")))
+    account_id: str = field(default_factory=lambda: os.environ.get("IBKR_ACCOUNT_ID", "DUP579027"))
+    live_backend: bool = field(default_factory=lambda: os.environ.get("IBKR_LIVE_BACKEND", "false").lower() in ("true", "1", "yes"))
+    timeout: int = field(default_factory=lambda: int(os.environ.get("IBKR_TIMEOUT", "10")))
 
 
 DEFAULT_IBKR_CONFIG = IBKRConfig()
+
+
+def validate_ibkr_readiness() -> dict[str, bool]:
+    """Check IBKR configuration before enabling the live backend."""
+    config = IBKRConfig()
+    checks = {
+        "live_backend_enabled": bool(config.live_backend),
+        "account_configured": bool(str(config.account_id or "").strip()),
+        "port_is_paper": int(config.port) == 7497,
+        "host_is_local": str(config.host).strip().lower() in {"127.0.0.1", "localhost"},
+    }
+    checks["all_clear"] = all(checks.values())
+    return checks
 
 
 def ticker_candidates(ticker: str) -> list[str]:

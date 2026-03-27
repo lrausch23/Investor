@@ -2186,9 +2186,15 @@
     const pendingOrders = Array.isArray(payload.pending_orders) ? payload.pending_orders : [];
     const guardrails = payload.guardrails || {};
     const connection = payload.connection || {};
+    const readiness = payload.readiness || {};
+    const connectionText = connection.connected === true
+      ? "Connected"
+      : connection.connected === false
+        ? "Disconnected"
+        : (connection.connection || "n/a");
     if (badge) {
-      badge.textContent = connection.market_hours || connection.connected || "ready";
-      badge.className = `ui-badge ${String(connection.connected || "").toLowerCase() === "connected" || String(connection.market_hours || "").toLowerCase() === "regular" ? "ui-badge--safe" : "ui-badge--neutral"}`;
+      badge.textContent = connection.market_hours || connectionText || "ready";
+      badge.className = `ui-badge ${connection.connected === true || String(connection.market_hours || "").toLowerCase() === "regular" ? "ui-badge--safe" : "ui-badge--neutral"}`;
     }
     mount.innerHTML = `
       <div class="regime-monitor-grid">
@@ -2199,9 +2205,10 @@
         </div>
         <div class="ui-card">
           <div class="ui-section-title">Connection Health</div>
-          <div class="ui-muted" style="margin-top:8px">Connection ${escapeHtml(connection.connected || connection.connection || "n/a")} · Market ${escapeHtml(connection.market_hours || "n/a")}</div>
+          <div class="ui-muted" style="margin-top:8px">Connection ${escapeHtml(connectionText)} · Market ${escapeHtml(connection.market_hours || "n/a")}</div>
           <div class="ui-muted" style="margin-top:6px">Pending orders ${escapeHtml(pendingOrders.length)} · Positions ${escapeHtml(positions.length)}</div>
           ${connection.next_open ? `<div class="ui-muted" style="margin-top:6px">Next open ${escapeHtml(connection.next_open)}</div>` : ""}
+          ${Object.keys(readiness).length ? `<div class="ui-muted" style="margin-top:6px">Readiness ${escapeHtml(readiness.all_clear ? "all clear" : "check config")}</div>` : ""}
         </div>
       </div>
       <div class="regime-monitor-grid" style="margin-top:12px">
@@ -2220,7 +2227,12 @@
           <div class="ui-section-title">Pending Orders</div>
           ${pendingOrders.length ? `
             <div style="display:grid; gap:8px; margin-top:8px">
-              ${pendingOrders.map((plan) => `<div class="regime-order-card ${planStatusClass(plan.status)}"><strong>${escapeHtml(plan.ticker || "")}</strong> <span class="ui-muted">${escapeHtml(plan.status || "")}</span></div>`).join("")}
+              ${pendingOrders.map((plan) => `<div class="regime-order-card ${planStatusClass(plan.status)}">
+                <div class="table-toolbar">
+                  <div><strong>${escapeHtml(plan.ticker || "")}</strong> <span class="ui-muted">${escapeHtml(plan.status || "")}</span></div>
+                  <button class="btn btn--danger btn--sm" type="button" data-paper-cancel-plan="${escapeHtml(plan.id)}">Cancel</button>
+                </div>
+              </div>`).join("")}
             </div>
           ` : '<div class="ui-muted" style="margin-top:8px">No non-terminal orders.</div>'}
         </div>
@@ -2253,6 +2265,11 @@
         </div>
       </div>
     `;
+    mount.querySelectorAll("[data-paper-cancel-plan]").forEach((button) => {
+      button.addEventListener("click", () => {
+        cancelPaperOrder(currentPaperPortfolioId(), button.getAttribute("data-paper-cancel-plan"));
+      });
+    });
   }
 
   function updateStatusBar() {
@@ -2280,8 +2297,18 @@
     const exposureEl = byId("regimeStatusExposure");
     const ordersEl = byId("regimeStatusOrders");
     const kill = byId("regimeStatusKillSwitch");
-    if (dot) dot.className = `regime-status-bar__dot ${String(connection.connected || "").toLowerCase() === "connected" ? "regime-status-bar__dot--connected" : "regime-status-bar__dot--reconnecting"}`;
-    if (connectionEl) connectionEl.textContent = connection.connected || connection.connection || "Disconnected";
+    const statusText = connection.connected === true
+      ? "Connected"
+      : connection.connected === false
+        ? "Disconnected"
+        : (connection.connection || "Reconnecting...");
+    const dotClass = connection.connected === true
+      ? "regime-status-bar__dot--connected"
+      : connection.connected === false
+        ? "regime-status-bar__dot--disconnected"
+        : "regime-status-bar__dot--reconnecting";
+    if (dot) dot.className = `regime-status-bar__dot ${dotClass}`;
+    if (connectionEl) connectionEl.textContent = statusText;
     if (marketEl) marketEl.textContent = connection.market_hours || "Market Closed";
     if (equityEl) equityEl.textContent = formatCurrency(account.equity ?? account.net_liquidation, 0);
     if (pnlEl) pnlEl.textContent = formatCurrency(account.unrealized_pnl ?? account.daily_pnl, 0);
@@ -2323,8 +2350,7 @@
     stopMonitoringPolling();
     const portfolio = currentPaperPortfolio();
     if (!portfolio || String(portfolio.broker_type || "paper").toLowerCase() !== "ibkr") return;
-    const marketState = String((state.paperMonitoring && state.paperMonitoring.connection && state.paperMonitoring.connection.market_hours) || "").toLowerCase();
-    if (marketState && marketState !== "regular" && marketState !== "pre" && marketState !== "after_hours") return;
+    const interval = isMarketOpenForMonitoring() ? 30000 : 120000;
     state.monitoringTimer = window.setInterval(async () => {
       try {
         await refreshMonitoringDashboard();
@@ -2332,7 +2358,12 @@
         stopMonitoringPolling();
         showToast(`Unable to refresh monitoring dashboard: ${error.message || error}`, "error");
       }
-    }, 30000);
+    }, interval);
+  }
+
+  function isMarketOpenForMonitoring() {
+    const marketState = String((state.paperMonitoring && state.paperMonitoring.connection && state.paperMonitoring.connection.market_hours) || "").toLowerCase();
+    return marketState === "regular" || marketState === "pre" || marketState === "after_hours";
   }
 
   async function renderOrderTimeline(orderId) {
@@ -2867,6 +2898,27 @@
       await refreshPaperPortfolio();
     } catch (error) {
       showToast(`Unable to update trade plan: ${error.message || error}`, "error");
+    }
+  }
+
+  async function cancelPaperOrder(portfolioId, planId) {
+    if (!portfolioId || !planId) return;
+    if (!window.confirm("Cancel this order?")) return;
+    try {
+      const response = await fetch(paperEndpoint("paper_cancel_order", portfolioId, planId), {
+        method: "POST",
+        headers: { Accept: "application/json" },
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.detail || `Cancel failed (${response.status})`);
+      if (payload.cancelled) {
+        showToast("Order cancelled", "success");
+        await refreshPaperPortfolio();
+      } else {
+        showToast("Cancel failed", "error");
+      }
+    } catch (error) {
+      showToast(`Cancel error: ${error.message || error}`, "error");
     }
   }
 

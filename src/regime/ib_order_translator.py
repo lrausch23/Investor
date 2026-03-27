@@ -34,6 +34,8 @@ def translate_order_request(request: OrderRequest, next_order_id: int) -> IBOrde
 
 
 def translate_order_state(state: IBOrderState, *, ticker: str, action: str) -> OrderResult:
+    filled_qty = float(state.filled_qty or 0.0)
+    remaining_qty = float(state.remaining_qty or 0.0)
     status_map = {
         IBOrderStatus.FILLED: "filled",
         IBOrderStatus.CANCELLED: "cancelled",
@@ -44,12 +46,22 @@ def translate_order_state(state: IBOrderState, *, ticker: str, action: str) -> O
         IBOrderStatus.PRE_SUBMITTED: "submitted",
         IBOrderStatus.PENDING_SUBMIT: "pending",
     }
+    status = status_map.get(state.status)
+    if status is None:
+        if filled_qty > 0 and remaining_qty <= 0:
+            status = "filled"
+        elif filled_qty > 0 and remaining_qty > 0:
+            status = "partially_filled"
+        elif str(state.message or "").strip().lower() == "filled":
+            status = "filled"
+        else:
+            status = "pending"
     return OrderResult(
         order_id=str(state.order_id),
-        status=status_map.get(state.status, "pending"),
+        status=status,
         ticker=str(ticker or "").upper(),
         action=action,
-        quantity=float(state.filled_qty or 0.0) if state.status == IBOrderStatus.PARTIALLY_FILLED else float((state.filled_qty + state.remaining_qty) or 0.0),
+        quantity=filled_qty if status == "partially_filled" else float((filled_qty + remaining_qty) or 0.0),
         filled_price=float(state.avg_fill_price or state.last_fill_price or 0.0) or None,
         filled_at=state.timestamp,
         message=state.message or None,

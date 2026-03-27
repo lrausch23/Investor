@@ -111,6 +111,7 @@ def _load_hmm_runtime() -> tuple[dict[str, Any] | None, str | None]:
             DEFAULT_TICKERS,
             IBKRConfig,
             RiskGuardrails,
+            validate_ibkr_readiness,
         )
         from src.regime.broker_adapter import (
             AccountSummary,
@@ -170,6 +171,7 @@ def _load_hmm_runtime() -> tuple[dict[str, Any] | None, str | None]:
             get_pending_transition_outcomes,
             get_signal_effectiveness,
             get_historical_regime_durations,
+            get_trade_plan,
             get_trade_plans,
             count_todays_trades,
             get_supply_chain,
@@ -257,6 +259,7 @@ def _load_hmm_runtime() -> tuple[dict[str, Any] | None, str | None]:
         "DEFAULT_TICKERS": DEFAULT_TICKERS,
         "IBKRConfig": IBKRConfig,
         "DEFAULT_IBKR_CONFIG": DEFAULT_IBKR_CONFIG,
+        "validate_ibkr_readiness": validate_ibkr_readiness,
         "RiskGuardrails": RiskGuardrails,
         "DEFAULT_RISK_GUARDRAILS": DEFAULT_RISK_GUARDRAILS,
         "BrokerAdapter": BrokerAdapter,
@@ -352,6 +355,7 @@ def _load_hmm_runtime() -> tuple[dict[str, Any] | None, str | None]:
         "save_daily_snapshot": save_daily_snapshot,
         "get_calibration_data": get_calibration_data,
         "get_historical_regime_durations": get_historical_regime_durations,
+        "get_trade_plan": get_trade_plan,
         "get_pending_outcomes": get_pending_outcomes,
         "get_pending_transition_outcomes": get_pending_transition_outcomes,
         "get_signal_effectiveness": get_signal_effectiveness,
@@ -475,6 +479,18 @@ def _extract_ai_verdict(frontier: dict[str, Any] | None) -> str | None:
     institutional = frontier.get("institutional_report") or {}
     verdict = str(institutional.get("verdict") or "").strip()
     return verdict or None
+
+
+def _verdict_to_action(verdict: str | None) -> str | None:
+    """Derive a concrete action from an AI verdict when tax signals are unavailable."""
+    if not verdict:
+        return None
+    normalized = str(verdict).strip().lower()
+    if normalized == "entry":
+        return "Buy"
+    if normalized == "exit":
+        return "Sell"
+    return None
 
 
 def _stop_proximity(row: dict[str, Any]) -> dict[str, Any] | None:
@@ -1062,13 +1078,20 @@ def _get_broker_adapter(runtime: dict[str, Any], portfolio_id: int) -> Any:
         return None
     broker_type = str(portfolio.get("broker_type") or "paper").strip().lower()
     if broker_type == "ibkr":
+        config = runtime["DEFAULT_IBKR_CONFIG"]
         backend = runtime["get_ib_backend"](
             portfolio_id,
-            live=bool(runtime["DEFAULT_IBKR_CONFIG"].live_backend),
-            account_id=str(runtime["DEFAULT_IBKR_CONFIG"].account_id),
+            live=bool(config.live_backend),
+            account_id=str(config.account_id),
             starting_cash=float(portfolio.get("current_cash") or portfolio.get("starting_budget") or 100000.0),
         )
-        return runtime["IBKRBrokerAdapter"](backend, portfolio_id)
+        return runtime["IBKRBrokerAdapter"](
+            backend,
+            portfolio_id,
+            host=str(config.host),
+            port=int(config.port),
+            client_id=int(config.client_id),
+        )
     return runtime["PaperBrokerAdapter"](portfolio_id)
 
 
@@ -1926,6 +1949,8 @@ def _build_regime_dashboard_payload(
             regime_days=int(regime.regime_days),
             model_name=payload.get("frontier_model"),
         )
+        ai_verdict = _extract_ai_verdict(frontier_panel)
+        derived_action = _verdict_to_action(ai_verdict)
         divergence_info = None
         divergence_severity_fn = runtime.get("divergence_severity")
         weekly_label = getattr(item["composite_signal"], "weekly_regime", None) or item["regime_obj"].latest_label
@@ -1958,8 +1983,8 @@ def _build_regime_dashboard_payload(
                 "price_targets": _json_ready(item["price_targets"]),
                 "price_targets_error": item.get("price_targets_error"),
                 "current_price": float(getattr(regime, "latest_price", 0.0) or 0.0),
-                "action": item["primary_tax_signal"].adjusted_action if item["primary_tax_signal"] else "—",
-                "action_class": _signal_class(item["primary_tax_signal"].adjusted_action) if item["primary_tax_signal"] else "",
+                "action": item["primary_tax_signal"].adjusted_action if item["primary_tax_signal"] else (derived_action or "—"),
+                "action_class": _signal_class(item["primary_tax_signal"].adjusted_action) if item["primary_tax_signal"] else _signal_class(derived_action or ""),
                 "tax_status": item["tax_status"],
                 "lot_count_st": item["lot_count_st"],
                 "lot_count_lt": item["lot_count_lt"],
@@ -1982,7 +2007,7 @@ def _build_regime_dashboard_payload(
                 "qualitative": qualitative,
                 "math": _math_panel(regime),
                 "frontier": frontier_panel,
-                "ai_verdict": _extract_ai_verdict(frontier_panel),
+                "ai_verdict": ai_verdict,
                 "relative_strength": _relative_strength_text(regime.latest_label, payload["benchmark_regime"]),
                 "relative_strength_class": (
                     "cell-ok" if _relative_strength_text(regime.latest_label, payload["benchmark_regime"]) == "Outperforming"
@@ -2501,6 +2526,7 @@ def _build_shell_context(
             "paper_plan": "/regime/paper-portfolio/__PORTFOLIO_ID__/plans/__PLAN_ID__",
             "paper_execute": "/regime/paper-portfolio/__PORTFOLIO_ID__/plans/execute",
             "paper_pending_orders": "/regime/paper-portfolio/__PORTFOLIO_ID__/orders/pending",
+            "paper_cancel_order": "/regime/paper-portfolio/__PORTFOLIO_ID__/orders/__PLAN_ID__/cancel",
             "paper_kill_switch": "/regime/paper-portfolio/__PORTFOLIO_ID__/kill-switch",
             "paper_performance": "/regime/paper-portfolio/__PORTFOLIO_ID__/performance",
             "paper_audit": "/regime/paper-portfolio/__PORTFOLIO_ID__/audit",
@@ -3233,6 +3259,7 @@ def regime_paper_monitoring(
             },
         },
         "connection": _json_ready(adapter.health() if hasattr(adapter, "health") else {"market_hours": "n/a"}),
+        "readiness": _json_ready(runtime["validate_ibkr_readiness"]()) if "validate_ibkr_readiness" in runtime else None,
     }
     return JSONResponse(content=payload)
 
@@ -3276,6 +3303,44 @@ def regime_paper_pending_orders(
         if str(plan.get("status") or "") in {"Submitted", "Partially Filled"}
     ]
     return JSONResponse(content={"orders": _json_ready(pending), "changed": _json_ready(changed)})
+
+
+@router.post("/paper-portfolio/{portfolio_id}/orders/{plan_id}/cancel")
+def regime_paper_cancel_order(
+    portfolio_id: int,
+    plan_id: int,
+    session: Session = Depends(db_session),
+    actor: str = Depends(require_actor),
+):
+    del session
+    runtime, runtime_error = _load_hmm_runtime()
+    if runtime is None:
+        raise HTTPException(status_code=503, detail=runtime_error or "Regime analytics are unavailable.")
+    plan = runtime["get_trade_plan"](plan_id)
+    if not plan or int(plan.get("portfolio_id") or 0) != int(portfolio_id):
+        raise HTTPException(status_code=404, detail="Plan not found")
+    if str(plan.get("status") or "") not in {"Submitted", "Partially Filled"}:
+        raise HTTPException(status_code=400, detail=f"Cannot cancel plan in status: {plan.get('status')}")
+    adapter = _get_broker_adapter(runtime, portfolio_id)
+    if adapter is None:
+        raise HTTPException(status_code=404, detail="Paper portfolio not found.")
+    broker_order_id = str(plan.get("broker_order_id") or "").strip()
+    if not broker_order_id:
+        raise HTTPException(status_code=400, detail="No broker order ID — plan not yet submitted")
+    cancelled = bool(adapter.cancel_order(broker_order_id))
+    if cancelled:
+        runtime["update_trade_plan_status"](plan_id, "Cancelled", broker_status="cancelled")
+        runtime["log_audit_event"](
+            order_id=broker_order_id,
+            portfolio_id=portfolio_id,
+            event_type="cancelled",
+            ticker=str(plan.get("ticker") or ""),
+            action=str(plan.get("action") or ""),
+            quantity=float(plan.get("quantity") or 0.0),
+            actor=actor,
+            details="operator_request",
+        )
+    return JSONResponse(content={"cancelled": cancelled, "plan_id": int(plan_id)})
 
 
 @router.post("/paper-portfolio/{portfolio_id}/plans/generate")
@@ -3395,6 +3460,11 @@ def regime_paper_execute(
         guardrails=runtime["DEFAULT_RISK_GUARDRAILS"],
         actor="user",
     )
+    ibkr_adapter_cls = runtime.get("IBKRBrokerAdapter")
+    if ibkr_adapter_cls is not None and isinstance(adapter, ibkr_adapter_cls):
+        time.sleep(1)
+        poll_results = runtime["poll_pending_orders"](adapter, portfolio_id)
+        payload["immediate_fills"] = len([row for row in poll_results if str(getattr(row, "status", "")).lower() == "filled"])
     return JSONResponse(content=_json_ready(payload))
 
 

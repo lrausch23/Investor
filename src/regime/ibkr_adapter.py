@@ -20,16 +20,78 @@ class IBKRBrokerAdapter(BrokerAdapter):
         portfolio_id: int,
         *,
         allow_outside_rth: bool = False,
+        host: str = "127.0.0.1",
+        port: int = 7497,
+        client_id: int = 1,
     ):
         self._backend = backend
         self._portfolio_id = int(portfolio_id)
         self._allow_outside_rth = allow_outside_rth
-        self._manager = IBConnectionManager(backend)
+        self._manager = IBConnectionManager(backend, host=host, port=port, client_id=client_id)
         self._manager.ensure_connected()
 
+    def _ensure_connected(self, *, ticker: str = "", action: str = "", quantity: float = 0.0) -> bool:
+        was_connected = bool(self._manager.backend.is_connected())
+        connected = self._manager.ensure_connected()
+        if connected and not was_connected:
+            log_audit_event(
+                order_id=f"connection-restored-{self._portfolio_id}-{int(dt.datetime.now(dt.timezone.utc).timestamp())}",
+                portfolio_id=self._portfolio_id,
+                event_type="error",
+                ticker=str(ticker or "").upper() or "*",
+                action=action or "connect",
+                quantity=quantity or None,
+                actor="system",
+                details="connection_restored: IBKR connection restored",
+            )
+        if not connected:
+            log_audit_event(
+                order_id=f"connection-lost-{self._portfolio_id}-{int(dt.datetime.now(dt.timezone.utc).timestamp())}",
+                portfolio_id=self._portfolio_id,
+                event_type="error",
+                ticker=str(ticker or "").upper() or "*",
+                action=action or "connect",
+                quantity=quantity or None,
+                actor="system",
+                details="connection_lost: IBKR connection unavailable",
+            )
+        return connected
+
     def submit_order(self, order: OrderRequest) -> OrderResult:
-        if not self._manager.ensure_connected():
+        if not self._ensure_connected(
+            ticker=str(order.ticker or ""),
+            action=str(order.action or ""),
+            quantity=float(order.quantity or 0.0),
+        ):
             return OrderResult(order_id="", status="rejected", ticker=order.ticker.upper(), action=order.action, quantity=order.quantity, message="IBKR connection unavailable.")
+        account_id = str(
+            getattr(
+                self._manager.backend,
+                "_account_id",
+                getattr(self._manager.backend, "account_id", ""),
+            )
+            or ""
+        )
+        if not account_id.startswith("DU"):
+            logger.critical("REFUSING ORDER: account %s is not a paper account (DU* prefix)", account_id)
+            log_audit_event(
+                order_id=f"order-rejected-{self._portfolio_id}-{int(dt.datetime.now(dt.timezone.utc).timestamp())}",
+                portfolio_id=self._portfolio_id,
+                event_type="rejected",
+                ticker=str(order.ticker or "").upper(),
+                action=str(order.action or ""),
+                quantity=float(order.quantity or 0.0),
+                actor="system",
+                details=f"Live account detected: {account_id}",
+            )
+            return OrderResult(
+                order_id="",
+                status="rejected",
+                ticker=str(order.ticker or "").upper(),
+                action=order.action,
+                quantity=float(order.quantity or 0.0),
+                message="Live account detected — paper only",
+            )
         if not is_market_open() and not self._allow_outside_rth:
             return OrderResult(
                 order_id="",
@@ -44,13 +106,13 @@ class IBKRBrokerAdapter(BrokerAdapter):
         return translate_order_state(state, ticker=order.ticker, action=order.action)
 
     def cancel_order(self, order_id: str) -> bool:
-        if not self._manager.ensure_connected():
+        if not self._ensure_connected(action="cancel"):
             return False
         state = self._backend.cancel_order(int(order_id))
         return state.status.value in {"Cancelled", "ApiCancelled"}
 
     def get_order_status(self, order_id: str) -> OrderResult | None:
-        if not self._manager.ensure_connected():
+        if not self._ensure_connected(action="status"):
             return None
         for plan in get_trade_plans(self._portfolio_id, status="all"):
             if str(plan.get("broker_order_id") or "") == str(order_id):
@@ -59,12 +121,12 @@ class IBKRBrokerAdapter(BrokerAdapter):
         return None
 
     def get_positions(self) -> list[PositionInfo]:
-        if not self._manager.ensure_connected():
+        if not self._ensure_connected(action="positions"):
             return []
         return [translate_position(position) for position in self._backend.get_positions()]
 
     def get_account_summary(self) -> AccountSummary:
-        if not self._manager.ensure_connected():
+        if not self._ensure_connected(action="summary"):
             portfolio = get_paper_portfolio(self._portfolio_id) or {}
             return AccountSummary(
                 portfolio_id=self._portfolio_id,

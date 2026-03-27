@@ -22,12 +22,21 @@ from _fixtures import FakeRegime
 
 def _fake_runtime() -> dict:
     class FakePaperBrokerAdapter:
-        def __init__(self, portfolio_id):
+        def __init__(self, portfolio_id, **kwargs):
             self.portfolio_id = int(portfolio_id)
+            self.kwargs = kwargs
 
     class FakeIBKRBrokerAdapter(FakePaperBrokerAdapter):
+        def __init__(self, backend, portfolio_id, **kwargs):
+            super().__init__(portfolio_id, **kwargs)
+            self.backend = backend
+
         def health(self):
             return {"connected": True, "market_hours": "regular"}
+
+        def cancel_order(self, order_id):
+            self.last_cancelled = str(order_id)
+            return True
 
     class FakeOrderRequest:
         def __init__(self, **kwargs):
@@ -106,6 +115,8 @@ def _fake_runtime() -> dict:
         "get_mock_ib_backend": lambda portfolio_id, starting_cash=100000.0: object(),
         "poll_pending_orders": lambda adapter, portfolio_id: [],
         "get_market_hours_status": lambda: SimpleNamespace(value="regular"),
+        "DEFAULT_IBKR_CONFIG": SimpleNamespace(host="127.0.0.1", port=7497, client_id=1, account_id="DUP579027", live_backend=False),
+        "validate_ibkr_readiness": lambda: {"all_clear": True, "port_is_paper": True, "host_is_local": True, "live_backend_enabled": False, "account_configured": True},
         "DEFAULT_RISK_GUARDRAILS": object(),
         "OrderRequest": FakeOrderRequest,
         "validate_guardrails": lambda order, adapter, guardrails: SimpleNamespace(
@@ -116,10 +127,12 @@ def _fake_runtime() -> dict:
         "close_paper_position": lambda *args, **kwargs: {"id": int(args[0]) if args else 1, "status": "Closed"},
         "get_paper_position": lambda position_id: {"id": int(position_id), "ticker": "NVDA", "status": "Open"},
         "get_paper_positions": lambda portfolio_id, status="Open": [{"id": 1, "ticker": "NVDA", "quantity": 10.0, "entry_price": 100.0, "current_price": 110.0, "unrealized_pnl": 100.0, "stop_price": 95.0, "role": "Core", "entry_date": "2026-03-20T12:00:00+00:00", "status": status}],
+        "get_trade_plan": lambda plan_id: {"id": int(plan_id), "portfolio_id": 1, "ticker": "NVDA", "action": "Buy", "quantity": 10.0, "status": "Submitted", "broker_order_id": "abc123"},
         "create_trade_plan": lambda *args, **kwargs: {"id": 1, "ticker": args[1] if len(args) > 1 else kwargs.get("ticker", "NVDA"), "status": "Pending"},
         "get_trade_plans": lambda portfolio_id, status="Pending": [{"id": 1, "portfolio_id": int(portfolio_id), "ticker": "NVDA", "action": "Buy", "quantity": 10.0, "proposed_price": 100.0, "rationale": "Entry Signal", "regime_label": "Bull", "regime_probability": 0.7, "crowd_score": 25, "source": "discovery", "status": "Approved" if str(status).lower() == "all" else status}],
         "update_trade_plan_status": lambda plan_id, status, **kwargs: {"id": int(plan_id), "ticker": "NVDA", "status": status, **kwargs},
         "get_audit_trail": lambda **kwargs: [{"id": 1, "order_id": "abc", "ticker": kwargs.get("ticker") or "NVDA", "event_type": kwargs.get("event_type") or "filled", "created_at": "2026-03-26T12:00:00+00:00"}],
+        "log_audit_event": lambda **kwargs: {"id": 1, **kwargs},
         "get_daily_audit_summary": lambda portfolio_id: {"portfolio_id": int(portfolio_id), "counts": {"filled": 1}, "filled_count": 1, "blocked_count": 0, "rejected_count": 0},
         "count_todays_trades": lambda portfolio_id: 1,
         "get_paper_portfolio_summary": lambda portfolio_id: {"id": int(portfolio_id), "current_cash": 95000.0, "total_market_value": 1100.0, "realized_pnl": 50.0, "unrealized_pnl": 100.0, "total_return_pct": 1.15, "positions_open": 1, "positions_closed": 1},

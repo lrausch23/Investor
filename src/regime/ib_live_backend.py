@@ -29,6 +29,17 @@ class LiveIBBackend(IBConnectionBackend):
         try:
             self._ib.connect(host, port, clientId=client_id, timeout=10)
             self._ib.orderStatusEvent += self._on_order_status
+            if self._ib.isConnected():
+                accounts = list(self._ib.managedAccounts() or [])
+                if self._account_id not in accounts:
+                    logger.error(
+                        "Account %s not found in managed accounts: %s",
+                        self._account_id,
+                        accounts,
+                    )
+                    self._ib.disconnect()
+                    return False
+                logger.info("Connected to IBKR, account %s verified", self._account_id)
             return bool(self._ib.isConnected())
         except Exception as exc:
             logger.warning("IB connect failed: %s", exc)

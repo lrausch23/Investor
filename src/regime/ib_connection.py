@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import logging
 import time
 from dataclasses import dataclass
 from typing import Callable, Protocol
@@ -14,6 +15,9 @@ from .ib_types import (
     IBOrderStatus,
     IBPosition,
 )
+from .ib_types import get_market_hours_status
+
+logger = logging.getLogger(__name__)
 
 
 class IBConnectionBackend(Protocol):
@@ -243,8 +247,20 @@ class IBConnectionManager:
     def connect(self) -> bool:
         for attempt in range(3):
             if self.backend.connect(self.host, self.port, self.client_id):
+                logger.info(
+                    "IBKR connection established host=%s port=%s client_id=%s",
+                    self.host,
+                    self.port,
+                    self.client_id,
+                )
                 return True
             time.sleep(0.25 * (2 ** attempt))
+        logger.warning(
+            "Unable to establish IBKR connection host=%s port=%s client_id=%s",
+            self.host,
+            self.port,
+            self.client_id,
+        )
         return False
 
     def disconnect(self, cancel_pending: bool = False) -> None:
@@ -260,10 +276,24 @@ class IBConnectionManager:
         self.backend.disconnect()
 
     def ensure_connected(self) -> bool:
-        return self.backend.is_connected() or self.connect()
+        if self.backend.is_connected():
+            return True
+        logger.warning("IBKR connection lost, attempting reconnect...")
+        restored = self.connect()
+        if restored:
+            logger.info("IBKR connection restored")
+        return restored
 
     def health_check(self) -> dict[str, object]:
-        return {"connected": self.backend.is_connected(), "host": self.host, "port": self.port, "client_id": self.client_id}
+        return {
+            "connected": self.backend.is_connected(),
+            "host": self.host,
+            "port": self.port,
+            "client_id": self.client_id,
+            "account_id": getattr(self.backend, "_account_id", "unknown"),
+            "market_hours": get_market_hours_status().value,
+            "last_check": dt.datetime.utcnow().isoformat(),
+        }
 
 
 _MOCK_BACKENDS: dict[int, MockIBBackend] = {}
