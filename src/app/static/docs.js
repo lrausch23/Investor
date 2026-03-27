@@ -9,6 +9,7 @@
   const toggleButton = root.querySelector("[data-docs-toggle]");
   const sidebar = root.querySelector("[data-docs-sidebar]");
   const nav = root.querySelector("#docs-nav");
+  const uatState = {};
 
   const sectionMap = new Map(sections.map((section) => [section.id, section]));
 
@@ -39,6 +40,45 @@
     if (section && window.location.hash) {
       section.scrollIntoView({ block: "start", behavior: "smooth" });
     }
+  }
+
+  function initUATChecklist() {
+    const steps = document.querySelectorAll(".uat-step__check");
+    const progressText = document.getElementById("uatProgressText");
+    const progressFill = document.getElementById("uatProgressFill");
+    if (!steps.length) return;
+
+    function updateProgress() {
+      const total = steps.length;
+      const checked = Object.values(uatState).filter(Boolean).length;
+      if (progressText) progressText.textContent = `${checked} of ${total} steps completed`;
+      if (progressFill) progressFill.style.width = `${(checked / total) * 100}%`;
+    }
+
+    steps.forEach((checkbox) => {
+      const stepId = checkbox.getAttribute("data-uat-step");
+      checkbox.checked = !!uatState[stepId];
+      checkbox.closest(".uat-step")?.classList.toggle("uat-step--passed", checkbox.checked);
+      checkbox.addEventListener("change", () => {
+        uatState[stepId] = checkbox.checked;
+        checkbox.closest(".uat-step")?.classList.toggle("uat-step--passed", checkbox.checked);
+        updateProgress();
+      });
+    });
+
+    const resetBtn = document.getElementById("uatReset");
+    if (resetBtn) {
+      resetBtn.addEventListener("click", () => {
+        Object.keys(uatState).forEach((key) => delete uatState[key]);
+        steps.forEach((checkbox) => {
+          checkbox.checked = false;
+          checkbox.closest(".uat-step")?.classList.remove("uat-step--passed");
+        });
+        updateProgress();
+      });
+    }
+
+    updateProgress();
   }
 
   const observer = new IntersectionObserver(
@@ -78,5 +118,6 @@
 
   applySearch();
   syncFromHash();
+  initUATChecklist();
   window.addEventListener("hashchange", syncFromHash);
 })();

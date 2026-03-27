@@ -1156,6 +1156,57 @@ async def _read_run_request(request: Request) -> dict[str, str]:
     return {key: values[-1] if values else "" for key, values in parsed.items()}
 
 
+def _env_file_path() -> Path:
+    return Path(__file__).resolve().parents[3] / ".env"
+
+
+def _update_env_file(ibkr_vars: dict[str, str]) -> None:
+    """Update IBKR variables in .env while preserving all other lines."""
+    env_path = _env_file_path()
+    existing_lines: list[str] = []
+    existing_keys: set[str] = set()
+
+    if env_path.exists():
+        for line in env_path.read_text(encoding="utf-8").splitlines():
+            stripped = line.strip()
+            if stripped and not stripped.startswith("#") and "=" in stripped:
+                key = stripped.split("=", 1)[0].strip()
+                if key in ibkr_vars:
+                    existing_keys.add(key)
+                    existing_lines.append(f"{key}={ibkr_vars[key]}")
+                    continue
+            existing_lines.append(line)
+
+    for key, value in ibkr_vars.items():
+        if key not in existing_keys:
+            existing_lines.append(f"{key}={value}")
+
+    env_path.write_text("\n".join(existing_lines) + "\n", encoding="utf-8")
+
+
+def _identify_threshold_path(*, regime: str, transition_risk: float, technical_signal: str) -> str:
+    """Return a human-readable explanation of which signal path was taken."""
+    if regime == "Bear":
+        if transition_risk < 0.05:
+            return "Strong Sell path: transition_risk < 0.05 (persistent Bear)"
+        if transition_risk < 0.15:
+            return "Sell path: transition_risk < 0.15 (established Bear)"
+        path = "Hold fallback: transition_risk >= 0.15 (mixed forward probabilities)"
+        if technical_signal and "tactical bounce" in str(technical_signal).lower():
+            path += " + Bear tactical override (Cover short / tactical bounce)"
+        return path
+    if regime == "Bull":
+        if transition_risk < 0.05:
+            return "Strong Buy path: transition_risk < 0.05 (persistent Bull)"
+        if transition_risk < 0.15:
+            return "Buy path: transition_risk < 0.15 (established Bull)"
+        path = "Hold fallback: transition_risk >= 0.15 (mixed forward probabilities)"
+        if technical_signal and "partial profits" in str(technical_signal).lower():
+            path += " + Bull profit-taking override"
+        return path
+    return "Neutral regime: forward action based on tilt probability"
+
+
 def _history_db_candidates() -> list[Path]:
     configured = os.getenv("HMM_DATA_DIR")
     roots = [Path(configured)] if configured else [Path("/tmp/hmm_data")]
@@ -1964,6 +2015,25 @@ def _build_regime_dashboard_payload(
                 )
             except Exception as exc:
                 logger.debug("Unable to compute divergence severity for %s.", ticker, exc_info=exc)
+        signal_diagnostics = {
+            "forward_action": item["forward_signal"].action,
+            "forward_strength": round(float(getattr(item["forward_signal"], "strength", 0.0) or 0.0), 3),
+            "forward_transition_risk": round(float(getattr(item["forward_signal"], "transition_risk", 0.0)), 3),
+            "forward_expected_duration": round(float(getattr(item["forward_signal"], "expected_duration", 0.0)), 1),
+            "technical_signal": item["technical_signal"],
+            "composite_action": item["composite_signal"].composite_action,
+            "composite_strength": round(float(getattr(item["composite_signal"], "composite_strength", 0.0) or 0.0), 3),
+            "regime": regime.latest_label,
+            "probability": round(float(regime.latest_probability), 4),
+            "regime_days": int(regime.regime_days),
+            "weekly_regime": getattr(item["composite_signal"], "weekly_regime", None),
+            "multi_timeframe_note": getattr(item["composite_signal"], "multi_timeframe_note", None),
+            "thresholds_applied": _identify_threshold_path(
+                regime=regime.latest_label,
+                transition_risk=float(getattr(item["forward_signal"], "transition_risk", 0.0)),
+                technical_signal=item["technical_signal"],
+            ),
+        }
         payload["rows"].append(
             {
                 "ticker": ticker,
@@ -2034,6 +2104,7 @@ def _build_regime_dashboard_payload(
                     )
                 ),
                 "sector": sector_map.get(ticker.upper(), "Unknown"),
+                "signal_diagnostics": signal_diagnostics,
             }
         )
         row_payload = payload["rows"][-1]
@@ -2531,6 +2602,8 @@ def _build_shell_context(
             "paper_performance": "/regime/paper-portfolio/__PORTFOLIO_ID__/performance",
             "paper_audit": "/regime/paper-portfolio/__PORTFOLIO_ID__/audit",
             "paper_audit_summary": "/regime/paper-portfolio/__PORTFOLIO_ID__/audit/summary",
+            "ibkr_settings": "/regime/ibkr/settings",
+            "ibkr_test_connection": "/regime/ibkr/test-connection",
         },
         "initial_payload": payload,
         "portfolio_scopes": get_available_portfolio_scopes(session) if session is not None else [],
@@ -2660,6 +2733,121 @@ def regime_dashboard(
             force_refresh=force_refresh,
         ),
     )
+
+
+@router.get("/ibkr/settings")
+def regime_ibkr_settings(
+    actor: str = Depends(require_actor),
+):
+    del actor
+    from src.regime.config import IBKRConfig, validate_ibkr_readiness
+
+    config = IBKRConfig()
+    readiness = validate_ibkr_readiness()
+    return JSONResponse(
+        content={
+            "config": {
+                "host": config.host,
+                "port": config.port,
+                "client_id": config.client_id,
+                "account_id": config.account_id,
+                "live_backend": config.live_backend,
+                "timeout": config.timeout,
+            },
+            "readiness": readiness,
+        }
+    )
+
+
+@router.post("/ibkr/settings")
+async def regime_ibkr_settings_update(
+    request: Request,
+    actor: str = Depends(require_actor),
+):
+    del actor
+    form = await _read_run_request(request)
+    host = str(form.get("host") or "127.0.0.1").strip()
+    port = int(form.get("port") or 7497)
+    client_id = int(form.get("client_id") or 1)
+    account_id = str(form.get("account_id") or "").strip()
+    live_backend = str(form.get("live_backend") or "false").lower() in ("true", "1", "yes", "on")
+    timeout = int(form.get("timeout") or 10)
+
+    if port not in (7497, 4002):
+        raise HTTPException(status_code=422, detail="Port must be 7497 (TWS paper) or 4002 (Gateway paper). Live ports (7496/4001) are blocked.")
+    if live_backend and not account_id.startswith("DU"):
+        raise HTTPException(status_code=422, detail="Cannot enable live backend with non-paper account (must start with DU).")
+    if host not in ("127.0.0.1", "localhost"):
+        raise HTTPException(status_code=422, detail="Host must be 127.0.0.1 or localhost. Remote connections are not supported.")
+    if not (1 <= client_id <= 32):
+        raise HTTPException(status_code=422, detail="Client ID must be between 1 and 32.")
+    if not (5 <= timeout <= 60):
+        raise HTTPException(status_code=422, detail="Timeout must be between 5 and 60 seconds.")
+
+    _update_env_file(
+        {
+            "IBKR_HOST": host,
+            "IBKR_PORT": str(port),
+            "IBKR_CLIENT_ID": str(client_id),
+            "IBKR_ACCOUNT_ID": account_id,
+            "IBKR_LIVE_BACKEND": "true" if live_backend else "false",
+            "IBKR_TIMEOUT": str(timeout),
+        }
+    )
+    return JSONResponse(
+        content={
+            "saved": True,
+            "restart_required": True,
+            "message": "Settings saved to .env. Restart the server to apply changes.",
+        }
+    )
+
+
+@router.post("/ibkr/test-connection")
+def regime_ibkr_test_connection(
+    actor: str = Depends(require_actor),
+):
+    del actor
+    import socket
+
+    from src.regime.config import IBKRConfig
+
+    config = IBKRConfig()
+    result: dict[str, Any] = {
+        "host": config.host,
+        "port": config.port,
+        "account_id": config.account_id,
+    }
+    try:
+        sock = socket.create_connection((config.host, config.port), timeout=config.timeout)
+        sock.close()
+        result["tcp_reachable"] = True
+    except (OSError, ConnectionRefusedError, TimeoutError):
+        result["tcp_reachable"] = False
+        result["error"] = f"Cannot reach {config.host}:{config.port}. Is TWS/IB Gateway running?"
+        return JSONResponse(content=result)
+
+    try:
+        from src.regime.ib_live_backend import LiveIBBackend
+
+        backend = LiveIBBackend(account_id=config.account_id)
+        connected = backend.connect(config.host, config.port, int(config.client_id) + 90)
+        if connected:
+            summary = backend.get_account_summary()
+            result["ibkr_connected"] = True
+            result["account_verified"] = str(summary.account_id) == str(config.account_id)
+            result["net_liquidation"] = float(summary.net_liquidation)
+            backend.disconnect()
+        else:
+            result["ibkr_connected"] = False
+            result["error"] = "TCP reachable but IBKR handshake failed. Check TWS API settings."
+    except ImportError:
+        result["ibkr_connected"] = None
+        result["note"] = "ib_insync not available — TCP check only."
+    except Exception as exc:
+        result["ibkr_connected"] = False
+        result["error"] = f"Connection test failed: {exc}"
+    return JSONResponse(content=result)
 
 
 @router.get("/holdings")

@@ -57,6 +57,11 @@
     detailChartsRendered: {},
     pickerFocusIndex: -1,
     showAllTableColumns: false,
+    ibkrSettings: null,
+    ibkrReadiness: null,
+    ibkrTestResult: null,
+    ibkrRestartRequired: false,
+    expandedDiagnosticsTicker: null,
   };
 
   function byId(id) {
@@ -695,7 +700,7 @@
           </thead>
           <tbody>
             ${rows.map((row) => `
-              <tr>
+              <tr class="regime-holding-row" data-regime-diagnostics-toggle="${escapeHtml(row.ticker)}" style="cursor:pointer">
                 <td class="nowrap">${escapeHtml(row.ticker)}</td>
                 <td class="nowrap regime-table__regime-cell ${escapeHtml(row.regime_class || "")}" style="${row.regime === "Bull" ? `background:${COLORS.bullBg}; color:${COLORS.pnlPositive};` : row.regime === "Bear" ? `background:${COLORS.bearBg}; color:${COLORS.pnlNegative};` : `background:${COLORS.neutralBg}; color:${COLORS.muted};`}">${escapeHtml(row.regime)}</td>
                 <td class="nowrap">${escapeHtml(row.weekly_regime || "—")} ${divergenceBadge(row)}</td>
@@ -716,6 +721,7 @@
                 </td>
                 <td class="nowrap ui-tabular-nums" data-secondary-col="1">${escapeHtml(row.earnings_date ? String(row.earnings_date).slice(0, 10) : "N/A")}</td>
               </tr>
+              ${state.expandedDiagnosticsTicker === row.ticker ? renderDiagnosticsRow(row) : ""}
             `).join("")}
           </tbody>
         </table>
@@ -724,8 +730,62 @@
     wireSortTables();
     applyTableColumnVisibility();
     mount.querySelectorAll("[data-regime-focus-frontier]").forEach((button) => {
-      button.addEventListener("click", () => openTickerDetail(String(button.getAttribute("data-regime-focus-frontier") || ""), true));
+      button.addEventListener("click", (event) => {
+        event.stopPropagation();
+        openTickerDetail(String(button.getAttribute("data-regime-focus-frontier") || ""), true);
+      });
     });
+    mount.querySelectorAll("[data-regime-diagnostics-toggle]").forEach((rowEl) => {
+      rowEl.addEventListener("click", (event) => {
+        if (event.target.closest("button, a, input, select, textarea, label")) return;
+        const ticker = String(rowEl.getAttribute("data-regime-diagnostics-toggle") || "");
+        state.expandedDiagnosticsTicker = state.expandedDiagnosticsTicker === ticker ? null : ticker;
+        renderTable(state.lastPayload || payload);
+      });
+    });
+  }
+
+  function renderDiagnosticsRow(row) {
+    const diag = row.signal_diagnostics || {};
+    return `
+      <tr class="regime-diagnostics-row">
+        <td colspan="15">
+          <div class="ui-card" style="padding:12px; margin:6px 0; background:${COLORS.neutralBg}">
+            <div class="ui-section-title">Signal Diagnostics · ${escapeHtml(row.ticker || "")}</div>
+            <div class="ui-muted" style="margin-top:4px">Forward signal → Technical signal → Composite signal</div>
+            <div style="display:grid; grid-template-columns:repeat(3, minmax(0,1fr)); gap:10px; margin-top:10px">
+              <div class="ui-card" style="padding:10px; border:1px solid ${COLORS.border}">
+                <div style="font-weight:600">Forward Signal</div>
+                <div class="${signalClass(diag.forward_action)}" style="margin-top:6px">${escapeHtml(diag.forward_action || "—")}</div>
+                <div class="ui-muted" style="margin-top:6px">Strength ${escapeHtml(formatFixed(diag.forward_strength, 3))}</div>
+                <div class="ui-muted">Transition risk ${escapeHtml(formatFixed(diag.forward_transition_risk, 3))}</div>
+                <div class="ui-muted">Expected duration ${escapeHtml(formatFixed(diag.forward_expected_duration, 1))}d</div>
+              </div>
+              <div class="ui-card" style="padding:10px; border:1px solid ${COLORS.border}">
+                <div style="font-weight:600">Technical Signal</div>
+                <div style="margin-top:6px">${escapeHtml(diag.technical_signal || "—")}</div>
+              </div>
+              <div class="ui-card" style="padding:10px; border:1px solid ${COLORS.border}">
+                <div style="font-weight:600">Composite Signal</div>
+                <div class="${signalClass(diag.composite_action)}" style="margin-top:6px">${escapeHtml(diag.composite_action || "—")}</div>
+                <div class="ui-muted" style="margin-top:6px">Strength ${escapeHtml(formatFixed(diag.composite_strength, 3))}</div>
+              </div>
+            </div>
+            <div class="ui-card" style="padding:10px; margin-top:10px; border:1px solid ${COLORS.border}">
+              <div style="font-weight:600">Threshold Path</div>
+              <div class="ui-muted" style="margin-top:6px">${escapeHtml(diag.thresholds_applied || "Unavailable")}</div>
+            </div>
+            <div class="ui-muted" style="display:flex; gap:12px; flex-wrap:wrap; margin-top:10px">
+              <span>Regime ${escapeHtml(diag.regime || "—")}</span>
+              <span>Probability ${escapeHtml(formatSignedPct(Number(diag.probability || 0), 1))}</span>
+              <span>Regime days ${escapeHtml(diag.regime_days || "—")}</span>
+              <span>Weekly ${escapeHtml(diag.weekly_regime || "—")}</span>
+              <span>${escapeHtml(diag.multi_timeframe_note || "—")}</span>
+            </div>
+          </div>
+        </td>
+      </tr>
+    `;
   }
 
   function applyTableColumnVisibility() {
@@ -1413,6 +1473,7 @@
     });
     savePref("activeTab", target);
     window.history.replaceState(null, "", `#${target}`);
+    if (target === "trading") loadIBKRSettings();
   }
 
   function initTabs() {
@@ -2402,6 +2463,126 @@
     if (portfolioId != null) endpoint = endpoint.replace("__PORTFOLIO_ID__", encodeURIComponent(String(portfolioId)));
     if (planId != null) endpoint = endpoint.replace("__PLAN_ID__", encodeURIComponent(String(planId)));
     return endpoint;
+  }
+
+  function renderIBKRSettings() {
+    const mount = byId("regimeIBKRSettings");
+    if (!mount || !state.config?.endpoints?.ibkr_settings) return;
+    const config = state.ibkrSettings || {};
+    const readiness = state.ibkrReadiness || {};
+    const test = state.ibkrTestResult || null;
+    const checks = [
+      ["live_backend_enabled", "Live backend enabled"],
+      ["port_is_paper", "Paper port"],
+      ["host_is_local", "Localhost only"],
+      ["account_configured", "Account configured"],
+    ];
+    mount.innerHTML = `
+      <section class="ui-card" style="padding:12px">
+        <div class="table-toolbar">
+          <div>
+            <div class="ui-section-title">IBKR Configuration</div>
+            <div class="ui-muted" style="margin-top:4px">View, validate, and save TWS / Gateway paper settings. Changes write to .env and require a restart.</div>
+          </div>
+        </div>
+        <div class="${readiness.all_clear ? "banner--ok" : "ui-card"}" style="margin-top:12px; padding:10px">
+          <div style="font-weight:600">${readiness.all_clear ? "All Clear" : "Configuration Required"}</div>
+          <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:8px">
+            ${checks.map(([key, label]) => `<span class="${readiness[key] ? "ui-badge ui-badge--safe" : "ui-badge ui-badge--neutral"}">${readiness[key] ? "✓" : "•"} ${escapeHtml(label)}</span>`).join("")}
+          </div>
+        </div>
+        ${state.ibkrRestartRequired ? '<div class="banner--warn" style="margin-top:10px; padding:10px">Settings saved. Restart the server (`make run`) to apply changes.</div>' : ""}
+        <form id="regimeIBKRSettingsForm" style="display:grid; grid-template-columns:repeat(2, minmax(0,1fr)); gap:10px; margin-top:12px">
+          <label>Host<input type="text" name="host" value="${escapeHtml(config.host || "127.0.0.1")}" readonly /></label>
+          <label>Port<select name="port"><option value="7497" ${Number(config.port || 7497) === 7497 ? "selected" : ""}>7497 (TWS paper)</option><option value="4002" ${Number(config.port || 7497) === 4002 ? "selected" : ""}>4002 (Gateway paper)</option></select></label>
+          <label>Client ID<input type="number" min="1" max="32" name="client_id" value="${escapeHtml(config.client_id ?? 1)}" /></label>
+          <label>Account ID<input type="text" name="account_id" value="${escapeHtml(config.account_id || "")}" /></label>
+          <label>Timeout<input type="number" min="5" max="60" name="timeout" value="${escapeHtml(config.timeout ?? 10)}" /></label>
+          <label style="display:flex; align-items:center; gap:8px; margin-top:24px"><input type="checkbox" name="live_backend" ${config.live_backend ? "checked" : ""} /> Live Backend</label>
+          <div style="grid-column:1 / -1; display:flex; gap:8px; flex-wrap:wrap">
+            <button class="btn btn--secondary" type="submit">Save Settings</button>
+            <button class="btn btn--primary" type="button" id="regimeIBKRTestConnection">Test Connection</button>
+          </div>
+        </form>
+        ${test ? `
+          <div class="ui-card" style="padding:10px; margin-top:12px">
+            <div style="font-weight:600">Connection Test</div>
+            <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:8px">
+              <span class="${test.tcp_reachable ? "ui-badge ui-badge--safe" : "ui-badge ui-badge--bad"}">TCP ${test.tcp_reachable ? "reachable" : "unreachable"}</span>
+              <span class="${test.ibkr_connected === true ? "ui-badge ui-badge--safe" : test.ibkr_connected === false ? "ui-badge ui-badge--bad" : "ui-badge ui-badge--neutral"}">IBKR ${test.ibkr_connected === true ? "connected" : test.ibkr_connected === false ? "failed" : "not tested"}</span>
+              <span class="${test.account_verified ? "ui-badge ui-badge--safe" : "ui-badge ui-badge--neutral"}">Account ${test.account_verified ? "verified" : "unverified"}</span>
+            </div>
+            <div class="ui-muted" style="margin-top:8px">${escapeHtml(test.error || test.note || (test.net_liquidation != null ? `Net Liquidation ${formatCurrency(test.net_liquidation, 0)}` : "No result yet."))}</div>
+          </div>
+        ` : ""}
+      </section>
+    `;
+    const form = byId("regimeIBKRSettingsForm");
+    if (form) {
+      form.addEventListener("submit", saveIBKRSettings);
+    }
+    const testBtn = byId("regimeIBKRTestConnection");
+    if (testBtn) testBtn.addEventListener("click", testIBKRConnection);
+  }
+
+  async function loadIBKRSettings() {
+    if (!state.config?.endpoints?.ibkr_settings) return;
+    try {
+      const response = await fetch(state.config.endpoints.ibkr_settings, { headers: { Accept: "application/json" } });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.detail || `Unable to load IBKR settings (${response.status})`);
+      state.ibkrSettings = payload.config || {};
+      state.ibkrReadiness = payload.readiness || {};
+      renderIBKRSettings();
+    } catch (error) {
+      const mount = byId("regimeIBKRSettings");
+      if (mount) {
+        mount.innerHTML = `<div class="ui-card" style="padding:12px"><div class="ui-section-title">IBKR Configuration</div><div class="ui-muted" style="margin-top:6px">Unable to load settings: ${escapeHtml(error.message || error)}</div></div>`;
+      }
+    }
+  }
+
+  async function saveIBKRSettings(event) {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const body = new URLSearchParams();
+    const fd = new FormData(form);
+    body.set("host", String(fd.get("host") || "127.0.0.1"));
+    body.set("port", String(fd.get("port") || "7497"));
+    body.set("client_id", String(fd.get("client_id") || "1"));
+    body.set("account_id", String(fd.get("account_id") || ""));
+    body.set("timeout", String(fd.get("timeout") || "10"));
+    body.set("live_backend", fd.get("live_backend") ? "true" : "false");
+    try {
+      const response = await fetch(state.config.endpoints.ibkr_settings, {
+        method: "POST",
+        body,
+        headers: { Accept: "application/json", "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8" },
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.detail || `Save failed (${response.status})`);
+      state.ibkrRestartRequired = !!payload.restart_required;
+      showToast(payload.message || "Settings saved.");
+      await loadIBKRSettings();
+    } catch (error) {
+      showToast(`Unable to save IBKR settings: ${error.message || error}`, "error");
+    }
+  }
+
+  async function testIBKRConnection() {
+    try {
+      const response = await fetch(state.config.endpoints.ibkr_test_connection, {
+        method: "POST",
+        headers: { Accept: "application/json" },
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.detail || `Connection test failed (${response.status})`);
+      state.ibkrTestResult = payload;
+      renderIBKRSettings();
+      showToast(payload.ibkr_connected === false || payload.tcp_reachable === false ? "Connection test failed." : "Connection test complete.");
+    } catch (error) {
+      showToast(`Unable to test IBKR connection: ${error.message || error}`, "error");
+    }
   }
 
   function renderPaperBudget() {

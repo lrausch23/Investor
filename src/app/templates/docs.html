@@ -41,6 +41,7 @@
           <a href="#user-discovery" data-doc-link>Discovery Workflow</a>
           <a href="#user-tax" data-doc-link>Tax & Lot Interpretation</a>
           <a href="#user-glossary" data-doc-link>Glossary</a>
+          <a href="#uat-paper-trading" data-doc-link>UAT — Paper Trading</a>
         </div>
       </nav>
     </aside>
@@ -1196,6 +1197,81 @@ OTHERWISE:
             <tr><td>Wash Sale</td><td>IRS rule disallowing loss deduction if substantially identical security repurchased within 31 days</td></tr>
           </tbody>
         </table>
+      </article>
+
+      <article id="uat-paper-trading" class="docs-section" data-doc-section data-doc-title="UAT — Paper Trading">
+        <header class="docs-section__header">
+          <p class="docs-section__eyebrow">UAT</p>
+          <h2>UAT — Paper Trading</h2>
+          <p>Structured tester checklist for validating the end-to-end IBKR paper trading workflow against TWS paper account <code>DUP579027</code>.</p>
+        </header>
+        <div class="uat-progress">
+          <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap">
+            <strong id="uatProgressText">0 of 22 steps completed</strong>
+            <button type="button" class="docs-nav-toggle" id="uatReset" style="display:inline-block; margin-top:0">Reset All</button>
+          </div>
+          <div class="uat-progress__bar"><div class="uat-progress__fill" id="uatProgressFill" style="width:0%"></div></div>
+        </div>
+
+        <div class="docs-callout docs-callout--warning">
+          <strong>Session-scoped:</strong> these checkboxes only persist for the current browser session. Refreshing the page keeps them, a new session resets them.
+        </div>
+
+        {% set groups = [
+          ("Group 1: Prerequisites & Configuration", [
+            ("1", "Verify TWS is running", "Open TWS and confirm you are logged in as lragentuser in paper mode.", "TWS title bar shows Paper Trading."),
+            ("2", "Navigate to Settings", "Go to Regime → Trading tab.", "IBKR Configuration panel is visible at the top."),
+            ("3", "Verify readiness", "Check the readiness status banner.", "All four checks show green and overall status is All Clear."),
+            ("4", "Test connection", "Click Test Connection.", "TCP reachable, IBKR handshake, and Account verified all show success; net liquidation is about $1,000,000."),
+          ]),
+          ("Group 2: Portfolio Setup", [
+            ("5", "Create IBKR portfolio", "Create a portfolio named UAT-Sandbox with budget 100000 and broker type IBKR (Simulated).", "Portfolio appears in the selector and monitoring loads."),
+            ("6", "Verify monitoring dashboard", "Review Account Overview and Connection Health.", "Equity, cash, buying power, and connection state are populated."),
+            ("7", "Check status bar", "Review the sticky trading status bar.", "Green dot, Connected text, market state, and equity amount are visible."),
+          ]),
+          ("Group 3: Trade Plan Generation", [
+            ("8", "Run regime analysis", "Switch to Analysis, set benchmark SOXX, period 3y, enable Frontier Analysis, and click Run.", "Holdings table populates with regimes, AI verdicts, and Action values."),
+            ("9", "Generate trade plans", "Return to Trading, select UAT-Sandbox, and click Generate Plans.", "Trade plan cards appear in Pending status."),
+            ("10", "Review plan details", "Open a trade plan card.", "Ticker, action, quantity, estimated cost, and guardrail details are visible."),
+          ]),
+          ("Group 4: Order Execution", [
+            ("11", "Pre-check execution", "Click Precheck.", "Guardrail checks render and initial trades show OK."),
+            ("12", "Execute plans", "Click Execute and confirm.", "Toast reports orders submitted and plans move to Submitted."),
+            ("13", "Verify in TWS", "Switch to the TWS Orders window.", "Submitted orders appear with matching ticker, action, and quantity."),
+            ("14", "Wait for fill", "Monitor Investor for 10–30 seconds.", "Pending count drops, position appears, audit trail shows filled, and a fill toast appears."),
+          ]),
+          ("Group 5: Order Cancellation", [
+            ("15", "Generate a limit order", "Create or generate an order that is unlikely to fill immediately.", "Plan appears and can be executed."),
+            ("16", "Execute limit order", "Execute the plan.", "Order remains Submitted and shows a Cancel button."),
+            ("17", "Cancel order", "Click Cancel and confirm.", "Toast confirms cancellation and audit trail records the event."),
+          ]),
+          ("Group 6: Kill Switch & Error Handling", [
+            ("18", "Test kill switch", "Click Kill Switch from the trading status bar.", "Pending orders are cancelled and portfolio status becomes Paused."),
+            ("19", "Test TWS disconnection", "Close TWS while Investor remains open.", "Status bar turns red and execution attempts show connection failure."),
+            ("20", "Test reconnection", "Reopen TWS and wait up to 30 seconds.", "Status returns to green and monitoring resumes."),
+          ]),
+          ("Group 7: Audit & Reporting", [
+            ("21", "Review audit trail", "Open the Audit section in Trading.", "Session events are listed with timestamp, ticker, action, quantity, and actor."),
+            ("22", "Check performance", "Open the Performance section.", "Portfolio performance reflects executed trades and P&L uses fill prices."),
+          ]),
+        ] %}
+        {% for group_title, steps in groups %}
+          <section class="docs-detail" open>
+            <summary>{{ group_title }}</summary>
+            <div style="padding:0 16px 12px">
+              {% for step_id, title, action, expected in steps %}
+                <div class="uat-step">
+                  <input class="uat-step__check uat-check" type="checkbox" data-uat-step="{{ step_id }}" />
+                  <div class="uat-step__content">
+                    <div class="uat-step__action">{{ step_id }}. {{ title }}</div>
+                    <div><strong>Action:</strong> {{ action }}</div>
+                    <div class="uat-step__expected"><strong>Expected:</strong> {{ expected }}</div>
+                  </div>
+                </div>
+              {% endfor %}
+            </div>
+          </section>
+        {% endfor %}
       </article>
     </section>
   </div>

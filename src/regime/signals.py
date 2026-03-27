@@ -26,6 +26,8 @@ class SignalResult:
     strength: float
     expected_holding_days: int
     rationale: str
+    transition_risk: float = 0.0
+    expected_duration: float = 0.0
 
 
 @dataclass
@@ -164,7 +166,15 @@ def signal_from_forward_curve(
             if days_to_earnings <= max(holding_days, 0):
                 adjusted_strength = max(0.0, signal_strength - thresholds.earnings_strength_penalty)
                 adjusted_rationale = f"{rationale} Note: earnings on {event.date().isoformat()} fall within the expected holding period. Regime may shift on the event."
-        return SignalResult(action, timeframe, adjusted_strength, holding_days, adjusted_rationale)
+        return SignalResult(
+            action,
+            timeframe,
+            adjusted_strength,
+            holding_days,
+            adjusted_rationale,
+            transition_risk=float(transition_risk or 0.0),
+            expected_duration=float(expected_duration or 0.0),
+        )
 
     if current_regime == "Bull" and transition_risk < thresholds.strong_buy_max_transition_risk and expected_duration > thresholds.strong_buy_min_duration and p_bull_day5 >= thresholds.strong_buy_min_probability:
         return _with_earnings_adjustment("Strong Buy", "short", strength, int(round(expected_duration)), "Bull regime is persistent with low transition risk.")
