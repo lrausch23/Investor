@@ -277,6 +277,308 @@ def accounts_with_snapshot_positions(session: Session, *, scope: str | Dashboard
     return out
 
 
+def _scoped_accounts(
+    session: Session,
+    *,
+    scope: DashboardScope,
+) -> list[tuple[Account, TaxpayerEntity]]:
+    acct_q = session.query(Account, TaxpayerEntity).join(TaxpayerEntity, TaxpayerEntity.id == Account.taxpayer_entity_id)
+    if scope == "trust":
+        acct_q = acct_q.filter(TaxpayerEntity.type == "TRUST")
+    elif scope == "personal":
+        acct_q = acct_q.filter(TaxpayerEntity.type == "PERSONAL")
+    return acct_q.order_by(Account.name.asc()).all()
+
+
+def _scoped_active_connections(
+    session: Session,
+    *,
+    scope: DashboardScope,
+) -> list[ExternalConnection]:
+    conn_q = session.query(ExternalConnection).join(TaxpayerEntity, TaxpayerEntity.id == ExternalConnection.taxpayer_entity_id)
+    if scope == "trust":
+        conn_q = conn_q.filter(TaxpayerEntity.type == "TRUST")
+    elif scope == "personal":
+        conn_q = conn_q.filter(TaxpayerEntity.type == "PERSONAL")
+    connections = conn_q.filter(ExternalConnection.status == "ACTIVE").all()
+    if connections:
+        preferred_ids = preferred_active_connection_ids_for_taxpayers(
+            session, taxpayer_ids=[c.taxpayer_entity_id for c in connections]
+        )
+        if preferred_ids:
+            connections = [c for c in connections if int(c.id) in preferred_ids]
+    return connections
+
+
+def _current_snapshot_tickers_by_account(
+    session: Session,
+    *,
+    scope: DashboardScope,
+) -> tuple[dict[int, Account], dict[int, set[str]]]:
+    accounts = _scoped_accounts(session, scope=scope)
+    account_by_id = {int(account.id): account for account, _taxpayer in accounts}
+    allowed_account_ids = set(account_by_id)
+
+    connections = _scoped_active_connections(session, scope=scope)
+    conn_ids = [int(c.id) for c in connections]
+    if not conn_ids:
+        return account_by_id, {account_id: set() for account_id in allowed_account_ids}
+
+    rows = (
+        session.query(ExternalHoldingSnapshot, ExternalConnection)
+        .join(ExternalConnection, ExternalConnection.id == ExternalHoldingSnapshot.connection_id)
+        .filter(ExternalHoldingSnapshot.connection_id.in_(conn_ids))
+        .order_by(ExternalHoldingSnapshot.as_of.desc(), ExternalHoldingSnapshot.id.desc())
+        .all()
+    )
+    chosen_by_conn: dict[int, tuple[ExternalHoldingSnapshot, ExternalConnection]] = {}
+    fallback_by_conn: dict[int, tuple[ExternalHoldingSnapshot, ExternalConnection]] = {}
+    for snap, conn in rows:
+        cid = int(conn.id)
+        if cid in chosen_by_conn:
+            continue
+        if cid not in fallback_by_conn:
+            fallback_by_conn[cid] = (snap, conn)
+        payload = snap.payload_json or {}
+        items = payload.get("items") or []
+        if not isinstance(items, list):
+            continue
+        if any(
+            isinstance(item, dict)
+            and not bool(item.get("is_total"))
+            and not str(item.get("symbol") or item.get("ticker") or "").strip().upper().startswith("CASH:")
+            and str(item.get("symbol") or item.get("ticker") or "").strip()
+            for item in items
+        ):
+            chosen_by_conn[cid] = (snap, conn)
+        if len(chosen_by_conn) >= len(conn_ids):
+            break
+
+    snapshots = [chosen_by_conn.get(cid) or fallback_by_conn.get(cid) for cid in conn_ids]
+    maps = session.query(ExternalAccountMap).filter(ExternalAccountMap.connection_id.in_(conn_ids)).all()
+    map_by_conn_provider = {
+        (int(m.connection_id), str(m.provider_account_id)): int(m.account_id)
+        for m in maps
+        if m.connection_id is not None and m.provider_account_id and m.account_id is not None
+    }
+    ticker_map = {account_id: set() for account_id in allowed_account_ids}
+    for pair in snapshots:
+        if pair is None:
+            continue
+        snap, conn = pair
+        payload = snap.payload_json or {}
+        items = payload.get("items") or []
+        if not isinstance(items, list):
+            continue
+        seen_item_keys: set[tuple[str, str]] = set()
+        for item in items:
+            if not isinstance(item, dict) or bool(item.get("is_total")):
+                continue
+            symbol = str(item.get("symbol") or item.get("ticker") or "").strip().upper()
+            provider_acct = str(item.get("provider_account_id") or "").strip()
+            if not symbol or symbol.startswith("CASH:"):
+                continue
+            key = (provider_acct, symbol)
+            if key in seen_item_keys:
+                continue
+            seen_item_keys.add(key)
+            account_id = map_by_conn_provider.get((int(conn.id), provider_acct))
+            if account_id is not None and account_id in allowed_account_ids:
+                ticker_map.setdefault(account_id, set()).add(symbol)
+    return account_by_id, ticker_map
+
+
+def get_current_tickers_by_scope(
+    session: Session,
+    *,
+    scope: str | DashboardScope,
+    account_id: int | None = None,
+) -> list[str]:
+    sc: DashboardScope = parse_scope(scope if isinstance(scope, str) else scope)
+    account_by_id, ticker_map = _current_snapshot_tickers_by_account(session, scope=sc)
+    if account_id is not None:
+        if int(account_id) not in account_by_id:
+            return []
+        return sorted(ticker_map.get(int(account_id), set()))
+    tickers: set[str] = set()
+    for symbols in ticker_map.values():
+        tickers |= symbols
+    return sorted(tickers)
+
+
+def get_accounts_with_holdings(session: Session, *, scope: str | DashboardScope) -> list[dict[str, Any]]:
+    sc: DashboardScope = parse_scope(scope if isinstance(scope, str) else scope)
+    account_by_id, ticker_map = _current_snapshot_tickers_by_account(session, scope=sc)
+    accounts: list[dict[str, Any]] = []
+    for account_id, account in sorted(account_by_id.items(), key=lambda item: item[1].name.lower()):
+        tickers = ticker_map.get(account_id, set())
+        accounts.append(
+            {
+                "id": int(account_id),
+                "name": str(account.name),
+                "ticker_count": len(tickers),
+                "has_holdings": bool(tickers),
+            }
+        )
+    return accounts
+
+
+def get_available_portfolio_scopes(session: Session) -> list[dict[str, Any]]:
+    scopes = [
+        {"value": "household", "label": "All Portfolios"},
+        {"value": "personal", "label": "Personal"},
+        {"value": "trust", "label": "Trust"},
+    ]
+    payload: list[dict[str, Any]] = []
+    for item in scopes:
+        tickers = get_current_tickers_by_scope(session, scope=item["value"])
+        payload.append({**item, "ticker_count": len(tickers), "accounts": get_accounts_with_holdings(session, scope=item["value"])})
+    return payload
+
+
+def get_lot_details_by_scope(
+    session: Session,
+    *,
+    tickers: list[str],
+    scope: str | DashboardScope,
+    account_id: int | None = None,
+    current_prices: dict[str, float] | None = None,
+) -> dict[str, list[dict[str, Any]]]:
+    min_qty = 0.01
+    min_market_value = 10.0
+    sc: DashboardScope = parse_scope(scope if isinstance(scope, str) else scope)
+    selected_tickers = sorted({str(ticker or "").strip().upper() for ticker in tickers if str(ticker or "").strip()})
+    if not selected_tickers:
+        return {}
+
+    scoped_accounts = _scoped_accounts(session, scope=sc)
+    account_rows = {int(account.id): (account, taxpayer) for account, taxpayer in scoped_accounts}
+    if account_id is not None:
+        account_key = int(account_id)
+        if account_key not in account_rows:
+            return {ticker: [] for ticker in selected_tickers}
+        account_rows = {account_key: account_rows[account_key]}
+
+    included_account_ids = sorted(account_rows)
+    if not included_account_ids:
+        return {ticker: [] for ticker in selected_tickers}
+
+    price_map = {str(ticker).upper(): float(price) for ticker, price in (current_prices or {}).items() if price is not None}
+    today = dt.date.today()
+    result: dict[str, list[dict[str, Any]]] = {ticker: [] for ticker in selected_tickers}
+
+    tax_rows = (
+        session.query(TaxLot, Security, Account, TaxpayerEntity)
+        .join(Security, Security.id == TaxLot.security_id)
+        .join(Account, Account.id == TaxLot.account_id)
+        .join(TaxpayerEntity, TaxpayerEntity.id == Account.taxpayer_entity_id)
+        .filter(
+            TaxLot.account_id.in_(included_account_ids),
+            func.upper(Security.ticker).in_(selected_tickers),
+            TaxLot.quantity_open >= min_qty,
+        )
+        .order_by(Account.id.asc(), Security.ticker.asc(), TaxLot.acquired_date.asc(), TaxLot.id.asc())
+        .all()
+    )
+
+    tax_keys: set[tuple[int, str]] = set()
+    for tax_lot, security, account, _taxpayer in tax_rows:
+        ticker = str(security.ticker or "").strip().upper()
+        if not ticker:
+            continue
+        key = (int(account.id), ticker)
+        tax_keys.add(key)
+        qty = float(tax_lot.quantity_open or 0.0)
+        basis_total = float(tax_lot.basis_open or 0.0)
+        acquisition_date = tax_lot.acquired_date
+        days_held = max(0, (today - acquisition_date).days)
+        term = "LT" if days_held >= 365 else "ST"
+        current_price = price_map.get(ticker)
+        market_value = float(current_price) * qty if current_price is not None else None
+        if market_value is not None and market_value < min_market_value:
+            continue
+        unrealized_gain = None
+        if current_price is not None and qty:
+            unrealized_gain = (float(current_price) - (basis_total / qty if qty else 0.0)) * qty
+        result.setdefault(ticker, []).append(
+            {
+                "account_name": str(account.name or ""),
+                "account_type": str(account.account_type or ""),
+                "ticker": ticker,
+                "acquisition_date": acquisition_date.isoformat(),
+                "qty": qty,
+                "basis_total": basis_total,
+                "cost_basis": basis_total,
+                "days_held": days_held,
+                "term": term,
+                "days_to_ltcg": max(0, 365 - days_held),
+                "unrealized_gain": unrealized_gain,
+                "market_value": market_value,
+                "near_ltcg": term == "ST" and days_held >= 335,
+            }
+        )
+
+    position_rows = (
+        session.query(PositionLot, Account, TaxpayerEntity)
+        .join(Account, Account.id == PositionLot.account_id)
+        .join(TaxpayerEntity, TaxpayerEntity.id == Account.taxpayer_entity_id)
+        .filter(
+            PositionLot.account_id.in_(included_account_ids),
+            func.upper(PositionLot.ticker).in_(selected_tickers),
+            PositionLot.qty >= min_qty,
+        )
+        .order_by(Account.id.asc(), PositionLot.ticker.asc(), PositionLot.acquisition_date.asc(), PositionLot.id.asc())
+        .all()
+    )
+    for position_lot, account, _taxpayer in position_rows:
+        ticker = str(position_lot.ticker or "").strip().upper()
+        if not ticker:
+            continue
+        key = (int(account.id), ticker)
+        if key in tax_keys:
+            continue
+        qty = float(position_lot.qty or 0.0)
+        basis_total = float(position_lot.adjusted_basis_total or position_lot.basis_total or 0.0)
+        acquisition_date = position_lot.acquisition_date
+        days_held = max(0, (today - acquisition_date).days)
+        term = "LT" if days_held >= 365 else "ST"
+        current_price = price_map.get(ticker)
+        market_value = float(current_price) * qty if current_price is not None else None
+        if market_value is not None and market_value < min_market_value:
+            continue
+        unrealized_gain = None
+        if current_price is not None and qty:
+            unrealized_gain = (float(current_price) - (basis_total / qty if qty else 0.0)) * qty
+        result.setdefault(ticker, []).append(
+            {
+                "account_name": str(account.name or ""),
+                "account_type": str(account.account_type or ""),
+                "ticker": ticker,
+                "acquisition_date": acquisition_date.isoformat(),
+                "qty": qty,
+                "basis_total": basis_total,
+                "cost_basis": basis_total,
+                "days_held": days_held,
+                "term": term,
+                "days_to_ltcg": max(0, 365 - days_held),
+                "unrealized_gain": unrealized_gain,
+                "market_value": market_value,
+                "near_ltcg": term == "ST" and days_held >= 335,
+            }
+        )
+
+    for ticker, lots in result.items():
+        lots.sort(
+            key=lambda item: (
+                0 if item.get("near_ltcg") else 1,
+                item.get("days_to_ltcg") if item.get("days_to_ltcg") is not None else 99999,
+                str(item.get("acquisition_date") or ""),
+                str(item.get("account_name") or ""),
+            )
+        )
+    return result
+
+
 def build_holdings_view(
     session: Session,
     *,

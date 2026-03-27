@@ -82,6 +82,12 @@
                     </button>
                   {% endif %}
                   <div class="symbol-main">{{ sym_main }}</div>
+                  {% set regime_label = regime_map.get((p.symbol or '')|upper, '') if regime_map is defined else '' %}
+                  {% if regime_label %}
+                    <span class="ui-badge {% if regime_label == 'Bull' %}ui-badge--safe{% elif regime_label == 'Bear' %}ui-badge--bad{% else %}ui-badge--neutral{% endif %}" title="Cached regime from Regime dashboard">
+                      {{ regime_label }}
+                    </span>
+                  {% endif %}
                 </div>
                 {% if show_sub %}
                   <div class="symbol-sub ui-muted">

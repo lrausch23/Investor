@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 
 from src.app.auth import auth_banner_message, require_actor
 from src.app.db import db_session
+from src.app.routes.regime_cache import load_payload
 from src.app.utils import jsonable
 from src.db.audit import log_change
 from src.db.models import (
@@ -343,6 +344,12 @@ def holdings_readonly(
         for a in accounts_all
         if int(a.id) in active_ids or (account_id is not None and int(a.id) == int(account_id))
     ]
+    cached_payload = load_payload() or {}
+    regime_map = {
+        str(row.get("ticker", "")).upper(): str(row.get("regime", ""))
+        for row in cached_payload.get("rows", [])
+        if isinstance(row, dict) and str(row.get("ticker", "")).strip()
+    }
 
     return templates.TemplateResponse(
         "holdings_readonly.html",
@@ -363,6 +370,7 @@ def holdings_readonly(
             "view": view,
             "hints": hints,
             "today": today,
+            "regime_map": regime_map,
         },
     )
 

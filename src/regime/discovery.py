@@ -1,0 +1,447 @@
+from __future__ import annotations
+
+import json
+import logging
+import time
+from datetime import datetime, timedelta, timezone
+from typing import Any
+
+import pandas as pd
+import yfinance as yf
+
+from .config import DEFAULT_DISCOVERY_THRESHOLDS, DiscoveryThresholds
+from .data import download_market_frame
+from .hmm_engine import fit_regime_model
+from .llm_layer import request_frontier_decision
+from .persistence import (
+    add_ticker_to_theme,
+    get_supply_chain,
+    get_theme,
+    get_watchlist,
+    get_watchlist_entry,
+    get_watchlist_stats,
+    get_watchlist_by_ticker,
+    list_themes,
+    save_supply_chain_layers,
+    update_watchlist_status,
+    upsert_watchlist_candidate,
+)
+
+logger = logging.getLogger(__name__)
+
+_CROWD_SCORE_CACHE: dict[str, tuple[float, int, dict[str, Any]]] = {}
+
+
+def _prune_crowd_cache(thresholds: DiscoveryThresholds = DEFAULT_DISCOVERY_THRESHOLDS) -> None:
+    now = time.time()
+    stale_keys = [
+        key
+        for key, (timestamp, _score, _details) in _CROWD_SCORE_CACHE.items()
+        if (now - float(timestamp)) > thresholds.crowd_cache_ttl_seconds
+    ]
+    for key in stale_keys:
+        _CROWD_SCORE_CACHE.pop(key, None)
+    if len(_CROWD_SCORE_CACHE) <= thresholds.crowd_cache_max_size:
+        return
+    overflow = len(_CROWD_SCORE_CACHE) - thresholds.crowd_cache_max_size
+    oldest = sorted(_CROWD_SCORE_CACHE.items(), key=lambda item: float(item[1][0]))
+    for key, _value in oldest[:overflow]:
+        _CROWD_SCORE_CACHE.pop(key, None)
+
+
+def _theme_existing_tickers(theme: dict[str, Any]) -> list[str]:
+    return [str(item.get("ticker") or "").upper() for item in (theme.get("tickers") or []) if str(item.get("ticker") or "").strip()]
+
+
+def _extract_json_list(payload: Any) -> list[dict[str, Any]]:
+    if isinstance(payload, list):
+        return [item for item in payload if isinstance(item, dict)]
+    if isinstance(payload, dict):
+        for key in ("layers", "results", "candidates", "items"):
+            value = payload.get(key)
+            if isinstance(value, list):
+                return [item for item in value if isinstance(item, dict)]
+        return [payload]
+    if isinstance(payload, str):
+        try:
+            decoded = json.loads(payload)
+        except json.JSONDecodeError:
+            return []
+        return _extract_json_list(decoded)
+    return []
+
+
+def build_supply_chain_prompt(theme: dict) -> str:
+    existing = ", ".join(_theme_existing_tickers(theme)) or "None"
+    return f"""
+You are an equity research analyst specializing in thematic supply-chain analysis.
+
+Investment Theme: {theme.get("name", "")}
+Theme Narrative: {theme.get("narrative", "")}
+Conviction Level: {theme.get("conviction", 3)}/5
+Current Holdings: {existing}
+
+Task: Map the critical supply chain for this investment theme. Identify 5-10 distinct layers or segments that are essential for this theme to succeed. For each layer, provide:
+
+1. layer: Short name
+2. description: One sentence explaining why this layer matters to the theme
+3. example_companies: 3-5 US-listed public company tickers that are key players in this layer. Exclude companies already in current holdings.
+
+Focus on:
+- Companies on the critical path
+- Companies not yet widely recognized as theme beneficiaries
+- US-listed equities only
+
+Return strict JSON array:
+[
+  {{
+    "layer": "string",
+    "description": "string",
+    "example_companies": "TICKER1 (Company Name), TICKER2 (Company Name)"
+  }}
+]
+""".strip()
+
+
+def generate_supply_chain(
+    theme_id: int,
+    *,
+    frontier_enabled: bool = True,
+    frontier_provider: str = "auto",
+) -> list[dict]:
+    theme = get_theme(theme_id)
+    if not theme:
+        return []
+    prompt = build_supply_chain_prompt(theme)
+    response = request_frontier_decision(prompt, enabled=frontier_enabled, provider=frontier_provider)
+    layers = _extract_json_list(response)
+    if not layers:
+        logger.warning("Supply-chain generation returned no layers for theme_id=%s", theme_id)
+        return get_supply_chain(theme_id)
+    return save_supply_chain_layers(theme_id, layers)
+
+
+def build_discovery_prompt(
+    theme: dict,
+    supply_chain: list[dict],
+    existing_tickers: list[str],
+    watchlist_tickers: list[str],
+) -> str:
+    supply_chain_block = "\n".join(
+        f"- {item.get('layer', '')}: {item.get('description', '')} | Examples: {item.get('example_companies', '')}"
+        for item in supply_chain
+    ) or "- No supply-chain layers available."
+    held = ", ".join(existing_tickers) or "None"
+    watched = ", ".join(watchlist_tickers) or "None"
+    return f"""
+You are an equity research analyst identifying undiscovered investment opportunities.
+
+Investment Theme: {theme.get("name", "")}
+Theme Narrative: {theme.get("narrative", "")}
+Conviction Level: {theme.get("conviction", 3)}/5
+
+Supply Chain Map:
+{supply_chain_block}
+
+Already Held: {held}
+Already on Watchlist: {watched}
+
+Task: Identify 3-8 US-listed public companies that are on the critical path for this theme but are NOT in the "Already Held" or "Already on Watchlist" lists.
+
+For each candidate, provide:
+- ticker
+- company_name
+- supply_chain_layer
+- rationale
+- suggested_role: "Critical-Path" or "Speculative"
+- crowd_assessment: 1-10
+
+Return strict JSON array:
+[
+  {{
+    "ticker": "string",
+    "company_name": "string",
+    "supply_chain_layer": "string",
+    "rationale": "string",
+    "suggested_role": "string",
+    "crowd_assessment": 5
+  }}
+]
+""".strip()
+
+
+def compute_crowd_score(
+    ticker: str,
+    *,
+    crowd_assessment: int | None = None,
+    thresholds: DiscoveryThresholds = DEFAULT_DISCOVERY_THRESHOLDS,
+) -> tuple[int, dict]:
+    ticker_key = str(ticker or "").upper()
+    _prune_crowd_cache(thresholds)
+    cached = _CROWD_SCORE_CACHE.get(ticker_key)
+    if cached is not None:
+        timestamp, score, details = cached
+        if (time.time() - float(timestamp)) <= thresholds.crowd_cache_ttl_seconds:
+            return score, dict(details)
+        _CROWD_SCORE_CACHE.pop(ticker_key, None)
+    details: dict[str, Any] = {"ticker": ticker_key}
+    try:
+        info = yf.Ticker(ticker_key).info or {}
+    except Exception as exc:
+        logger.debug("Unable to load crowd score inputs for %s.", ticker_key, exc_info=exc)
+        info = {}
+
+    analysts = info.get("numberOfAnalystOpinions")
+    institutional_pct = info.get("heldPercentInstitutions")
+    short_interest = info.get("shortPercentOfFloat")
+    avg_volume = info.get("averageVolume") or info.get("averageVolume10days")
+    regular_price = info.get("regularMarketPrice") or info.get("currentPrice")
+    dollar_volume = float(avg_volume or 0.0) * float(regular_price or 0.0) if avg_volume and regular_price else None
+
+    score = 0
+    missing = 0
+    if analysts is None:
+        missing += 1
+        analyst_score = None
+    else:
+        analysts = int(analysts)
+        analyst_score = 0 if analysts <= 5 else 10 if analysts <= 15 else 20 if analysts <= 25 else 30
+        score += analyst_score
+    if institutional_pct is None:
+        missing += 1
+        institutional_score = None
+    else:
+        institutional_pct = float(institutional_pct) * (100.0 if float(institutional_pct) <= 1.0 else 1.0)
+        institutional_score = 0 if institutional_pct < 30 else 10 if institutional_pct < 60 else 15 if institutional_pct <= 80 else 25
+        score += institutional_score
+    if dollar_volume is None:
+        missing += 1
+        volume_score = None
+    else:
+        volume_score = 0 if dollar_volume < 5_000_000 else 10 if dollar_volume < 50_000_000 else 15 if dollar_volume < 200_000_000 else 25
+        score += volume_score
+    if short_interest is None:
+        missing += 1
+        short_score = None
+    else:
+        short_interest = float(short_interest) * (100.0 if float(short_interest) <= 1.0 else 1.0)
+        short_score = 0 if short_interest < 2 else 5 if short_interest < 5 else 10 if short_interest < 15 else 20
+        score += short_score
+
+    if missing >= 3:
+        score = max(0, min(100, int((crowd_assessment or 5) * 10))) if crowd_assessment is not None else 50
+        details["note"] = "insufficient data"
+    details.update(
+        {
+            "analyst_coverage": analysts,
+            "analyst_score": analyst_score,
+            "institutional_ownership_pct": institutional_pct,
+            "institutional_score": institutional_score,
+            "avg_daily_dollar_volume": dollar_volume,
+            "volume_score": volume_score,
+            "short_interest_pct": short_interest,
+            "short_interest_score": short_score,
+        }
+    )
+    normalized_score = max(0, min(100, int(score)))
+    _CROWD_SCORE_CACHE[ticker_key] = (time.time(), normalized_score, dict(details))
+    _prune_crowd_cache(thresholds)
+    return normalized_score, details
+
+
+def _quick_regime_screen(ticker: str) -> tuple[str | None, float | None, float | None, float | None]:
+    try:
+        market_frame = download_market_frame(ticker=ticker, period="2y", interval="1d").frame
+        regime = fit_regime_model(ticker=ticker, market_frame=market_frame, training_window=252, refit_step=21)
+        price_window = market_frame.tail(126).copy()
+        current_price = float(price_window["price"].iloc[-1])
+        high = price_window["high"].astype(float)
+        low = price_window["low"].astype(float)
+        close = price_window["price"].astype(float)
+        tr = pd.concat(
+            [
+                (high - low),
+                (high - close.shift(1)).abs(),
+                (low - close.shift(1)).abs(),
+            ],
+            axis=1,
+        ).max(axis=1)
+        atr = float(tr.rolling(14).mean().dropna().iloc[-1])
+        if regime.latest_label == "Bear":
+            return regime.latest_label, float(regime.latest_probability), current_price + 0.5 * atr, current_price + 2.0 * atr
+        return regime.latest_label, float(regime.latest_probability), current_price - 0.5 * atr, current_price - 2.0 * atr
+    except Exception as exc:
+        logger.debug("Quick regime screen failed for %s.", ticker, exc_info=exc)
+        return None, None, None, None
+
+
+def _validate_ticker(ticker: str) -> bool:
+    try:
+        info = yf.Ticker(ticker).info or {}
+    except Exception as exc:
+        logger.debug("Ticker validation failed for %s.", ticker, exc_info=exc)
+        return False
+    return bool(info.get("regularMarketPrice") or info.get("currentPrice") or info.get("marketCap"))
+
+
+def run_discovery_scan(
+    theme_id: int,
+    *,
+    frontier_enabled: bool = True,
+    frontier_provider: str = "auto",
+) -> list[dict]:
+    theme = get_theme(theme_id)
+    if not theme:
+        return []
+    supply_chain = get_supply_chain(theme_id)
+    if not supply_chain:
+        supply_chain = generate_supply_chain(theme_id, frontier_enabled=frontier_enabled, frontier_provider=frontier_provider)
+    existing_tickers = _theme_existing_tickers(theme)
+    watchlist_tickers = [str(item.get("ticker") or "").upper() for item in get_watchlist(theme_id=theme_id, status="Watching")]
+    prompt = build_discovery_prompt(theme, supply_chain, existing_tickers, watchlist_tickers)
+    response = request_frontier_decision(prompt, enabled=frontier_enabled, provider=frontier_provider)
+    candidates = _extract_json_list(response)
+    if not candidates:
+        logger.warning("Discovery scan returned no candidates for theme_id=%s", theme_id)
+        return []
+    results: list[dict] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        ticker = str(candidate.get("ticker") or "").strip().upper()
+        if not ticker or ticker in seen or ticker in existing_tickers or ticker in watchlist_tickers:
+            continue
+        seen.add(ticker)
+        if not _validate_ticker(ticker):
+            logger.warning("Skipping invalid discovery candidate %s for theme_id=%s", ticker, theme_id)
+            continue
+        crowd_score, crowd_details = compute_crowd_score(ticker, crowd_assessment=candidate.get("crowd_assessment"))
+        regime_label, regime_probability, entry_price, stop_price = _quick_regime_screen(ticker)
+        watch = upsert_watchlist_candidate(
+            theme_id,
+            ticker,
+            company_name=str(candidate.get("company_name") or "").strip(),
+            supply_chain_layer=str(candidate.get("supply_chain_layer") or "").strip(),
+            discovery_rationale=str(candidate.get("rationale") or "").strip(),
+            suggested_role=str(candidate.get("suggested_role") or "Critical-Path"),
+            suggested_entry_price=entry_price,
+            suggested_stop_price=stop_price,
+            crowd_score=crowd_score,
+            crowd_details=json.dumps(crowd_details),
+            regime_label=regime_label,
+            regime_probability=regime_probability,
+            status="Watching",
+        )
+        results.append(watch)
+        time.sleep(0.5)
+    return results
+
+
+def check_entry_signals(
+    theme_id: int | None = None,
+    *,
+    thresholds: DiscoveryThresholds = DEFAULT_DISCOVERY_THRESHOLDS,
+) -> list[dict]:
+    triggered: list[dict] = []
+    themes = [get_theme(theme_id)] if theme_id is not None else list_themes(include_closed=False)
+    for theme in themes:
+        if not theme:
+            continue
+        if str(theme.get("status") or "") != "Active" or int(theme.get("conviction") or 0) < thresholds.entry_signal_min_conviction:
+            continue
+        for item in get_watchlist(theme_id=int(theme["id"]), status="Watching"):
+            label = str(item.get("regime_label") or "")
+            probability = float(item.get("regime_probability") or 0.0)
+            crowd = int(item.get("crowd_score") or 50)
+            if label == "Bull" and probability >= thresholds.entry_signal_min_probability and crowd <= thresholds.entry_signal_max_crowd_score:
+                updated = update_watchlist_status(int(item["id"]), "Entry Signal")
+                if updated:
+                    triggered.append(updated)
+    return triggered
+
+
+def expire_stale_candidates(
+    max_age_days: int | None = None,
+    *,
+    thresholds: DiscoveryThresholds = DEFAULT_DISCOVERY_THRESHOLDS,
+) -> int:
+    expired = 0
+    resolved_max_age_days = int(max_age_days if max_age_days is not None else thresholds.stale_candidate_max_age_days)
+    cutoff = datetime.now(timezone.utc) - timedelta(days=resolved_max_age_days)
+    for item in get_watchlist(status="Watching"):
+        scanned_at = str(item.get("last_scanned_at") or item.get("discovered_at") or "")
+        try:
+            row_dt = datetime.fromisoformat(scanned_at)
+        except ValueError:
+            continue
+        if row_dt <= cutoff:
+            if update_watchlist_status(int(item["id"]), "Expired"):
+                expired += 1
+    return expired
+
+
+def promote_candidate(watchlist_id: int) -> dict:
+    item = get_watchlist_entry(watchlist_id)
+    if not item:
+        return {}
+    added = add_ticker_to_theme(
+        int(item["theme_id"]),
+        str(item["ticker"]),
+        role=str(item.get("suggested_role") or "Critical-Path"),
+        rationale=str(item.get("discovery_rationale") or ""),
+        entry_price=item.get("suggested_entry_price"),
+        stop_price=item.get("suggested_stop_price"),
+        time_horizon="tactical",
+    )
+    update_watchlist_status(int(watchlist_id), "Added")
+    return added
+
+
+def run_full_discovery(
+    *,
+    frontier_enabled: bool = True,
+    frontier_provider: str = "auto",
+    theme_ids: list[int] | None = None,
+    thresholds: DiscoveryThresholds = DEFAULT_DISCOVERY_THRESHOLDS,
+) -> dict[str, Any]:
+    results: list[dict[str, Any]] = []
+    themes = [get_theme(theme_id) for theme_id in (theme_ids or [])] if theme_ids else list_themes(include_closed=False)
+    themes = [theme for theme in themes if theme and str(theme.get("status") or "") == "Active"]
+    total_candidates = 0
+    total_signals = 0
+    for theme in themes:
+        errors: list[str] = []
+        created: list[dict[str, Any]] = []
+        try:
+            created = run_discovery_scan(
+                int(theme["id"]),
+                frontier_enabled=frontier_enabled,
+                frontier_provider=frontier_provider,
+            )
+        except Exception as exc:
+            logger.warning("Discovery scan failed for theme %s.", theme.get("name"), exc_info=exc)
+            errors.append(str(exc))
+        try:
+            theme_signals = [item["ticker"] for item in check_entry_signals(int(theme["id"]), thresholds=thresholds)]
+        except Exception as exc:
+            logger.warning("Entry signal scan failed for theme %s.", theme.get("name"), exc_info=exc)
+            errors.append(str(exc))
+            theme_signals = []
+        total_candidates += len(created)
+        total_signals += len(theme_signals)
+        results.append(
+            {
+                "theme_id": int(theme["id"]),
+                "theme_name": str(theme.get("name") or ""),
+                "new_candidates": len(created),
+                "updated_candidates": len(created),
+                "entry_signals": theme_signals,
+                "errors": errors,
+            }
+        )
+    return {
+        "themes_scanned": len(themes),
+        "candidates_found": total_candidates,
+        "entry_signals": total_signals,
+        "results": results,
+        "watchlist_stats": get_watchlist_stats(),
+    }

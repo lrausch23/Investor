@@ -1,0 +1,492 @@
+from __future__ import annotations
+
+import json
+import os
+import warnings
+from dataclasses import dataclass
+import logging
+from typing import Any
+
+from openai import OpenAI
+warnings.filterwarnings("ignore", message=".*codecs.open.*", module="vaderSentiment")
+from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
+
+from .data import fetch_recent_news
+from .exceptions import LLMProviderError
+from .logging_config import setup_regime_logging
+
+setup_regime_logging()
+logger = logging.getLogger(__name__)
+
+_VADER = SentimentIntensityAnalyzer()
+_BEST_MODELS = {
+    "openai": "gpt-4o",
+    "gemini": "gemini-2.5-pro",
+    "claude": "claude-sonnet-4-20250514",
+}
+
+
+@dataclass
+class QualitativeAssessment:
+    ticker: str
+    catalyst_sentiment: str
+    sentiment_score: int
+    catalysts: list[dict[str, Any]]
+    decision_prompt: str
+    llm_response: dict[str, Any] | None
+    fallback_confidence: int
+    thesis_check_prompt: str | None
+    thesis_check_response: dict[str, Any] | None
+    source: str = "llm"
+
+
+def _score_text(text: str) -> int:
+    return int(round(_VADER.polarity_scores(text)["compound"] * 5))
+
+
+def analyze_catalysts(
+    ticker: str,
+    context_symbols: list[str] | None = None,
+    max_items_per_symbol: int = 4,
+) -> tuple[list[dict[str, Any]], int, str]:
+    context_symbols = context_symbols or ["SOXX", "SPY", "^TNX"]
+    symbols = [ticker, *[symbol for symbol in context_symbols if symbol != ticker]]
+    catalysts: list[dict[str, Any]] = []
+    seen_titles: set[str] = set()
+
+    for symbol in symbols:
+        for item in fetch_recent_news(symbol, limit=max_items_per_symbol):
+            title_key = item.get("title", "").strip().lower()
+            if not title_key or title_key in seen_titles:
+                continue
+            seen_titles.add(title_key)
+            catalysts.append({**item, "source_symbol": symbol})
+
+    if not catalysts:
+        return [], 0, "Neutral"
+
+    score = sum(_score_text(f"{item.get('title', '')} {item.get('summary', '')}") for item in catalysts)
+    sentiment = "Positive" if score >= 2 else "Negative" if score <= -2 else "Neutral"
+    return catalysts, score, sentiment
+
+
+def _filter_relevant_catalysts(ticker: str, catalysts: list[dict[str, Any]], max_items: int = 6) -> list[dict[str, Any]]:
+    priority_terms = {
+        "nvda": ["blackwell", "yield", "gpu", "datacenter", "ai"],
+        "avgo": ["vmware", "custom silicon", "ai", "networking"],
+        "pltr": ["government", "contract", "aip", "defense"],
+        "mtrn": ["industrial", "alloy", "demand", "supply chain", "manufacturing"],
+        "plab": ["photomask", "wafer", "pricing", "foundry", "supply chain"],
+    }
+    macro_terms = ["treasury", "rates", "yield", "wafer", "tsm", "pricing", "soxx", "semiconductor"]
+    terms = priority_terms.get(ticker.lower(), []) + macro_terms
+
+    def score_item(item: dict[str, Any]) -> int:
+        blob = f"{item.get('title', '')} {item.get('summary', '')}".lower()
+        return sum(1 for term in terms if term in blob)
+
+    ranked = sorted(catalysts, key=score_item, reverse=True)
+    return ranked[:max_items]
+
+
+def _raw_news_blob(catalysts: list[dict[str, Any]]) -> str:
+    lines = []
+    for item in catalysts:
+        title = item.get("title", "").strip() or "Untitled"
+        summary = item.get("summary", "").strip()
+        source_symbol = item.get("source_symbol", "")
+        lines.append(f"- [{source_symbol}] {title}" + (f" | {summary}" if summary else ""))
+    return "\n".join(lines) if lines else "- No recent relevant catalysts were available."
+
+
+def build_decision_prompt(
+    ticker: str,
+    previous_state: str,
+    new_state: str,
+    state_confidence: float,
+    benchmark_state: str,
+    catalysts: list[dict[str, Any]],
+) -> str:
+    filtered = _filter_relevant_catalysts(ticker, catalysts)
+    catalysts_block = _raw_news_blob(filtered)
+    return f"""
+You are a Senior Quantitative Strategist and Institutional Portfolio Manager specializing in the 2026 Semiconductor and Physical AI cycles. Your goal is to validate or invalidate technical regime shifts detected by a Hidden Markov Model. You prioritize long-term structural trends over short-term retail noise.
+
+State mapping:
+- State 0 = Bullish Expansion = Positive Mean + Low Volatility
+- State 1 = Volatile Neutral = Near-zero Mean + Moderate Volatility
+- State 2 = Bearish Contraction = Negative Mean + High Volatility
+
+Reason internally before answering, but do not expose chain-of-thought. Use only the filtered catalyst feed below.
+
+Market Intelligence Report: {ticker}
+
+1. Quantitative Signal Input:
+- HMM Transition: The model has shifted from {previous_state} to {new_state}.
+- Model Confidence: {state_confidence:.0%}
+- Relative Strength: The sector benchmark (SOXX) is currently in {benchmark_state}.
+
+2. Qualitative Data Feed (Raw):
+{catalysts_block}
+
+3. Executive Task:
+Analyze the discrepancy between the math and the narrative.
+
+Return strict JSON with these fields:
+- regime_validation: string, either "Technical Glitch" or "Fundamental Pivot"
+- thesis_alignment: short string on 2026 target impact
+- divergence_check: short string on alpha factor or "None"
+- verdict: one of ["Entry", "Hold", "Exit"]
+- confidence_score: integer 1-10
+- risk_trigger: short string
+- rationale: short string
+""".strip()
+
+
+def build_thesis_check_prompt(
+    ticker: str,
+    initial_thesis: str,
+    previous_label: str,
+    current_label: str,
+    current_regime_signal: str,
+    sentiment: str,
+    catalysts: list[dict[str, Any]],
+) -> str:
+    catalyst_lines = []
+    for item in catalysts[:6]:
+        title = item.get("title", "").strip() or "Untitled"
+        source_symbol = item.get("source_symbol", ticker)
+        catalyst_lines.append(f"- [{source_symbol}] {title}")
+    catalysts_block = "\n".join(catalyst_lines) if catalyst_lines else "- No recent catalysts were available."
+    return f"""
+You are reviewing a live investment position against a new quantitative market regime signal.
+
+Ticker: {ticker}
+Previous Regime: {previous_label}
+Current Regime: {current_label}
+Current Regime Signal: {current_regime_signal}
+Current News Sentiment: {sentiment}
+Investment Context:
+{initial_thesis}
+
+Recent Catalysts:
+{catalysts_block}
+
+Based on the regime change and the investment context above, answer:
+1. Does this regime shift invalidate the investment thesis for this position?
+2. Given the position's role (Core/Critical-Path/Speculative) and time horizon (trade/tactical/strategic), how should the manager respond?
+3. For trade-horizon positions: should this trigger an immediate exit?
+4. For strategic-horizon positions: does this represent a buying opportunity or a thesis breakdown?
+
+Return strict JSON with the fields:
+- invalidates_thesis: boolean
+- answer: string (2-3 sentences)
+- rationale: short string
+- action_bias: one of ["stay long", "add", "trim", "exit", "re-underwrite"]
+- urgency: one of ["immediate", "this_week", "monitor"]
+""".strip()
+
+
+def _fallback_confidence(state_name: str, latest_probability: float, sentiment_score: int) -> int:
+    base = {"Bull": 75, "Neutral": 50, "Bear": 25}[state_name]
+    return max(0, min(100, base + int(round(latest_probability * 15)) + max(-15, min(15, sentiment_score * 4))))
+
+
+def _fallback_llm_decision(state_name: str, latest_probability: float, sentiment_score: int) -> dict[str, Any]:
+    confidence = _fallback_confidence(state_name, latest_probability, sentiment_score)
+    if state_name == "Bull":
+        action = "enter" if confidence >= 75 else "hold"
+    elif state_name == "Neutral":
+        action = "hold" if confidence >= 45 else "reduce"
+    else:
+        action = "exit" if confidence >= 35 else "reduce"
+    return {
+        "action": action,
+        "confidence": confidence,
+        "confidence_gauge": max(1, min(10, round(confidence / 10))),
+        "rationale": "Fallback heuristic used because live frontier analysis is disabled or unavailable.",
+    }
+
+
+def _fallback_regime_validation(
+    ticker: str,
+    previous_label: str,
+    state_name: str,
+    benchmark_state: str,
+    latest_probability: float,
+    sentiment_score: int,
+) -> dict[str, Any]:
+    confidence_score = max(1, min(10, round(_fallback_confidence(state_name, latest_probability, sentiment_score) / 10)))
+    validation = "Fundamental Pivot" if latest_probability >= 0.7 or abs(sentiment_score) >= 2 else "Technical Glitch"
+    if state_name == "Bull":
+        verdict = "Entry"
+    elif state_name == "Neutral":
+        verdict = "Hold"
+    else:
+        verdict = "Exit"
+    divergence = "Alpha from idiosyncratic execution versus benchmark weakness." if state_name == "Bull" and benchmark_state in {"Neutral", "Bear"} else "None"
+    thesis_note = "For physical AI names, supply-chain health remains the main 2026 gating variable." if ticker.upper() in {"MTRN", "PLAB"} else "2026 target depends on sustained execution and sector breadth."
+    return {
+        "regime_validation": validation,
+        "thesis_alignment": thesis_note,
+        "divergence_check": divergence,
+        "verdict": verdict,
+        "confidence_score": confidence_score,
+        "risk_trigger": "If the 10-year Treasury yield breaks above 5.0%, re-underwrite immediately.",
+        "rationale": f"Fallback institutional summary for transition {previous_label} -> {state_name}.",
+    }
+
+
+def _fallback_thesis_check(previous_label: str, current_label: str, initial_thesis: str, time_horizon: str = "strategic") -> dict[str, Any]:
+    invalidates = previous_label == "Bull" and current_label == "Bear"
+    if invalidates:
+        answer = "Yes. This quantitative shift invalidates the original thesis until it is re-underwritten."
+        action_bias = "re-underwrite"
+    elif previous_label != current_label:
+        answer = "Not outright, but the regime change weakens the thesis and requires review."
+        action_bias = "trim" if current_label == "Neutral" else "re-underwrite"
+    else:
+        answer = "No. The current quantitative shift does not invalidate the original thesis."
+        action_bias = "stay long"
+    urgency = "monitor"
+    if time_horizon == "trade":
+        urgency = "immediate"
+    elif time_horizon == "tactical":
+        urgency = "this_week"
+    return {
+        "invalidates_thesis": invalidates,
+        "answer": answer,
+        "rationale": f"Initial thesis under review: {initial_thesis}",
+        "action_bias": action_bias,
+        "urgency": urgency,
+    }
+
+
+def _theme_time_horizon(initial_thesis: str | None) -> str:
+    text = str(initial_thesis or "")
+    for value in ("trade", "tactical", "strategic"):
+        if f"Time Horizon: {value}" in text:
+            return value
+    return "strategic"
+
+
+def _request_openai(prompt: str) -> dict[str, Any] | None:
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        return None
+    client = OpenAI(api_key=api_key)
+    model = os.getenv("OPENAI_MODEL", "gpt-4o")
+    logger.info("Requesting Frontier analysis from OpenAI model=%s", model)
+    try:
+        response = client.responses.create(model=model, input=prompt)
+    except Exception as exc:
+        logger.warning("OpenAI request failed.", exc_info=exc)
+        raise LLMProviderError("OpenAI request failed.") from exc
+    text = getattr(response, "output_text", "").strip()
+    if not text:
+        return None
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        return {"raw_response": text}
+
+
+def _request_gemini(prompt: str) -> dict[str, Any] | None:
+    api_key = os.getenv("GEMINI_API_KEY")
+    if not api_key:
+        return None
+    try:
+        from google import genai  # type: ignore
+    except Exception as exc:
+        logger.debug("Gemini SDK unavailable.", exc_info=exc)
+        return None
+
+    client = genai.Client(api_key=api_key)
+    model = os.getenv("GEMINI_MODEL", "gemini-2.5-pro")
+    logger.info("Requesting Frontier analysis from Gemini model=%s", model)
+    try:
+        response = client.models.generate_content(model=model, contents=prompt)
+    except Exception as exc:
+        logger.warning("Gemini request failed.", exc_info=exc)
+        raise LLMProviderError("Gemini request failed.") from exc
+    text = getattr(response, "text", "") or ""
+    text = text.strip()
+    if not text:
+        return None
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        return {"raw_response": text}
+
+
+def _request_claude(prompt: str) -> dict[str, Any] | None:
+    api_key = os.getenv("ANTHROPIC_API_KEY")
+    if not api_key:
+        return None
+    try:
+        from anthropic import Anthropic  # type: ignore
+    except Exception as exc:
+        logger.debug("Anthropic SDK unavailable.", exc_info=exc)
+        return None
+
+    client = Anthropic(api_key=api_key)
+    model = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-20250514")
+    logger.info("Requesting Frontier analysis from Claude model=%s", model)
+    try:
+        response = client.messages.create(
+            model=model,
+            max_tokens=2048,
+            messages=[{"role": "user", "content": prompt}],
+        )
+    except Exception as exc:
+        logger.warning("Claude request failed.", exc_info=exc)
+        raise LLMProviderError("Claude request failed.") from exc
+    parts = []
+    for block in getattr(response, "content", []) or []:
+        text = getattr(block, "text", None)
+        if text:
+            parts.append(text)
+    payload = "\n".join(parts).strip()
+    if not payload:
+        return None
+    try:
+        return json.loads(payload)
+    except json.JSONDecodeError:
+        return {"raw_response": payload}
+
+
+def _provider_request(prompt: str, provider: str, *, use_best: bool = False) -> dict[str, Any] | None:
+    original: dict[str, str | None] = {
+        "OPENAI_MODEL": os.getenv("OPENAI_MODEL"),
+        "GEMINI_MODEL": os.getenv("GEMINI_MODEL"),
+        "ANTHROPIC_MODEL": os.getenv("ANTHROPIC_MODEL"),
+    }
+    if use_best:
+        os.environ["OPENAI_MODEL"] = _BEST_MODELS["openai"]
+        os.environ["GEMINI_MODEL"] = _BEST_MODELS["gemini"]
+        os.environ["ANTHROPIC_MODEL"] = _BEST_MODELS["claude"]
+    try:
+        if provider == "openai":
+            return _request_openai(prompt)
+        if provider == "gemini":
+            return _request_gemini(prompt)
+        if provider == "claude":
+            return _request_claude(prompt)
+        return None
+    finally:
+        for key, value in original.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
+def request_frontier_decision(prompt: str, enabled: bool, provider: str = "auto") -> dict[str, Any] | None:
+    if not enabled:
+        return None
+    try:
+        if provider == "best":
+            return (
+                _provider_request(prompt, "claude", use_best=True)
+                or _provider_request(prompt, "openai", use_best=True)
+                or _provider_request(prompt, "gemini", use_best=True)
+            )
+        if provider == "openai":
+            return _request_openai(prompt)
+        if provider == "gemini":
+            return _request_gemini(prompt)
+        if provider == "claude":
+            return _request_claude(prompt)
+        return _request_openai(prompt) or _request_gemini(prompt) or _request_claude(prompt)
+    except LLMProviderError:
+        logger.warning("Frontier provider request failed; returning fallback decision path.")
+        return None
+
+
+def configured_frontier_model(provider: str = "auto") -> str:
+    if provider == "best":
+        if os.getenv("ANTHROPIC_API_KEY"):
+            return f"Claude: {_BEST_MODELS['claude']} (best)"
+        if os.getenv("OPENAI_API_KEY"):
+            return f"OpenAI: {_BEST_MODELS['openai']} (best)"
+        if os.getenv("GEMINI_API_KEY"):
+            return f"Gemini: {_BEST_MODELS['gemini']} (best)"
+        return f"Claude: {_BEST_MODELS['claude']} (best)"
+    if provider == "openai":
+        return f"OpenAI: {os.getenv('OPENAI_MODEL', 'gpt-4o')}"
+    if provider == "gemini":
+        return f"Gemini: {os.getenv('GEMINI_MODEL', 'gemini-2.5-pro')}"
+    if provider == "claude":
+        return f"Claude: {os.getenv('ANTHROPIC_MODEL', 'claude-sonnet-4-20250514')}"
+    if os.getenv("OPENAI_API_KEY"):
+        return f"OpenAI: {os.getenv('OPENAI_MODEL', 'gpt-4o')}"
+    if os.getenv("GEMINI_API_KEY"):
+        return f"Gemini: {os.getenv('GEMINI_MODEL', 'gemini-2.5-pro')}"
+    if os.getenv("ANTHROPIC_API_KEY"):
+        return f"Claude: {os.getenv('ANTHROPIC_MODEL', 'claude-sonnet-4-20250514')}"
+    return f"OpenAI: {os.getenv('OPENAI_MODEL', 'gpt-4o')}"
+
+
+def build_qualitative_assessment(
+    ticker: str,
+    regime_signal: str,
+    state_name: str,
+    latest_probability: float,
+    context_symbols: list[str] | None = None,
+    frontier_enabled: bool = False,
+    frontier_provider: str = "auto",
+    initial_thesis: str | None = None,
+    previous_label: str | None = None,
+    benchmark_state: str = "Neutral",
+) -> QualitativeAssessment:
+    catalysts, sentiment_score, sentiment = analyze_catalysts(ticker, context_symbols=context_symbols)
+    previous_state = previous_label or state_name
+    decision_prompt = build_decision_prompt(
+        ticker=ticker,
+        previous_state=previous_state,
+        new_state=state_name,
+        state_confidence=latest_probability,
+        benchmark_state=benchmark_state,
+        catalysts=catalysts,
+    )
+    llm_response = request_frontier_decision(decision_prompt, enabled=frontier_enabled, provider=frontier_provider)
+    fallback_confidence = _fallback_confidence(state_name, latest_probability, sentiment_score)
+    source = "llm"
+    if llm_response is None:
+        llm_response = _fallback_llm_decision(state_name, latest_probability, sentiment_score)
+        source = "vader_fallback"
+    llm_response.setdefault(
+        "institutional_report",
+        _fallback_regime_validation(ticker, previous_state, state_name, benchmark_state, latest_probability, sentiment_score),
+    )
+
+    thesis_check_prompt = None
+    thesis_check_response = None
+    if initial_thesis and previous_label and previous_label != state_name:
+        thesis_check_prompt = build_thesis_check_prompt(
+            ticker=ticker,
+            initial_thesis=initial_thesis,
+            previous_label=previous_label,
+            current_label=state_name,
+            current_regime_signal=regime_signal,
+            sentiment=sentiment,
+            catalysts=catalysts,
+        )
+        thesis_check_response = request_frontier_decision(
+            thesis_check_prompt,
+            enabled=frontier_enabled,
+            provider=frontier_provider,
+        ) or _fallback_thesis_check(previous_label, state_name, initial_thesis, _theme_time_horizon(initial_thesis))
+
+    return QualitativeAssessment(
+        ticker=ticker,
+        catalyst_sentiment=sentiment,
+        sentiment_score=sentiment_score,
+        catalysts=catalysts,
+        decision_prompt=decision_prompt,
+        llm_response=llm_response,
+        fallback_confidence=fallback_confidence,
+        thesis_check_prompt=thesis_check_prompt,
+        thesis_check_response=thesis_check_response,
+        source=source,
+    )

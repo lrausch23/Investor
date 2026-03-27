@@ -58,7 +58,7 @@ dev: install env
 	$(PY) -m uvicorn src.app.main:app --reload --host $(HOST) --port $(PORT)
 
 run: install env
-	$(PY) -m uvicorn src.app.main:app --host $(HOST) --port $(PORT)
+	LOKY_MAX_CPU_COUNT=$${LOKY_MAX_CPU_COUNT:-8} $(PY) -m uvicorn src.app.main:app --host $(HOST) --port $(PORT)
 
 planner: install env
 	$(PY) -m src.cli run-planner --goal rebalance --scope BOTH --save
@@ -67,12 +67,11 @@ export-plan: install env
 	$(PY) -m src.cli export-plan --plan-id $(PLAN_ID) --out $(EXPORT_DIR)
 
 test: install
-	$(PY) -m pytest -q
+	LOKY_MAX_CPU_COUNT=$${LOKY_MAX_CPU_COUNT:-8} $(PY) -m pytest -q
 
 check: install
 	$(PY) -m compileall -q src tests scripts
-	$(PY) -m pytest -q
+	LOKY_MAX_CPU_COUNT=$${LOKY_MAX_CPU_COUNT:-8} $(PY) -m pytest -q
 
 clean:
 	rm -rf $(VENV) .pytest_cache .ruff_cache .mypy_cache __pycache__
-

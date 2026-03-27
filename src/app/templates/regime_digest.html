@@ -1,0 +1,121 @@
+{% extends "layout.html" %}
+{% block content %}
+  {% from "partials/ui/components.html" import kpi_card %}
+
+  <div class="holdings-header">
+    <div class="page-title">
+      <div class="page-title__left">
+        <h1>Regime Digest</h1>
+        <span class="ui-badge ui-badge--neutral">{{ page_badge or "Weekly Digest" }}</span>
+      </div>
+      {% if auth_banner_detail %}
+        <details class="inline-alert" role="note">
+          <summary>
+            <span class="inline-alert__icon" aria-hidden="true">&#9888;</span>
+            <span>Running locally. Authentication disabled.</span>
+            <span class="inline-alert__link">Learn more</span>
+          </summary>
+          <div class="muted" style="margin-top:6px">{{ auth_banner_detail }}</div>
+        </details>
+      {% endif %}
+    </div>
+    {% if page_context %}
+      <div class="ui-muted selection-line">{{ page_context|safe }}</div>
+    {% endif %}
+    {% if warnings and warnings|length > 0 %}
+      <details class="alert alert--warn" open>
+        <summary>Notes ({{ warnings|length }})</summary>
+        <ul class="muted" style="margin:8px 0 0 18px">
+          {% for w in warnings %}
+            <li>{{ w }}</li>
+          {% endfor %}
+        </ul>
+      </details>
+    {% endif %}
+  </div>
+
+  <div class="ui-kpi-grid" aria-label="Regime digest summary" style="margin-top:10px">
+    {{ kpi_card("Benchmark regime", benchmark_regime, subtext=benchmark, tone=benchmark_regime_tone) }}
+    {{ kpi_card("Portfolio tickers", "{:,}".format(portfolio_count), subtext=portfolio_mode, tone="neutral") }}
+    {{ kpi_card("Action items", "{:,}".format(action_items_count), subtext="Digest priority queue", tone="neutral") }}
+    {{ kpi_card("Last run", last_run_display, subtext=period|upper, tone="neutral") }}
+  </div>
+
+  <section class="ui-card">
+    <div class="table-toolbar">
+      <div>
+        <div class="ui-section-title">Digest entries</div>
+        <div class="ui-muted" style="margin-top:2px">Weekly summary across the current regime universe.</div>
+      </div>
+      <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap">
+        <a class="btn btn--secondary" href="/regime?benchmark={{ benchmark }}&period={{ period }}{% if show_all %}&show_all=true{% endif %}">Back to regime dashboard</a>
+        <a class="btn btn--secondary" href="/regime/digest?benchmark={{ benchmark }}&period={{ period }}{% if show_all %}&show_all=true{% endif %}&format=json">JSON</a>
+      </div>
+    </div>
+
+    {% if digest.entries %}
+      <div style="display:grid; gap:12px">
+        {% for entry in digest.entries %}
+          <div class="ui-card" style="padding:10px">
+            <div style="display:flex; justify-content:space-between; gap:12px; flex-wrap:wrap">
+              <div style="font-weight:600">{{ entry.ticker }}</div>
+              <div class="{{ 'cell-bad' if entry.priority == 'ACTION REQUIRED' else 'cell-ok' if entry.priority == 'NO CHANGE' else '' }}" style="padding:2px 8px;border-radius:999px">
+                {{ entry.priority }}
+              </div>
+            </div>
+            <div class="ui-muted" style="margin-top:4px">{{ entry.current_regime }} · {{ entry.composite_action }} · {{ entry.sentiment_trend }}</div>
+            {% if entry.tax_note %}
+              <div class="ui-muted" style="margin-top:4px">{{ entry.tax_note }}</div>
+            {% endif %}
+          </div>
+        {% endfor %}
+      </div>
+    {% else %}
+      <div class="ui-muted" style="margin-top:8px">No digest entries available.</div>
+    {% endif %}
+
+    {% if digest.regime_changes %}
+      <div style="margin-top:14px">
+        <div class="ui-section-title">Regime changes this week</div>
+        <ul class="ui-muted" style="margin:6px 0 0 18px">
+          {% for item in digest.regime_changes %}
+            <li>{{ item }}</li>
+          {% endfor %}
+        </ul>
+      </div>
+    {% endif %}
+
+    {% if digest.sentiment_divergences %}
+      <div style="margin-top:14px">
+        <div class="ui-section-title">Sentiment divergences</div>
+        <ul class="ui-muted" style="margin:6px 0 0 18px">
+          {% for item in digest.sentiment_divergences %}
+            <li>{{ item }}</li>
+          {% endfor %}
+        </ul>
+      </div>
+    {% endif %}
+
+    {% if digest.tax_alerts %}
+      <div style="margin-top:14px">
+        <div class="ui-section-title">Tax alerts</div>
+        <ul class="ui-muted" style="margin:6px 0 0 18px">
+          {% for item in digest.tax_alerts %}
+            <li>{{ item }}</li>
+          {% endfor %}
+        </ul>
+      </div>
+    {% endif %}
+
+    {% if digest.action_items %}
+      <div style="margin-top:14px">
+        <div class="ui-section-title">Action items</div>
+        <ul class="ui-muted" style="margin:6px 0 0 18px">
+          {% for item in digest.action_items %}
+            <li>{{ item }}</li>
+          {% endfor %}
+        </ul>
+      </div>
+    {% endif %}
+  </section>
+{% endblock %}

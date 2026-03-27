@@ -59,6 +59,8 @@ make load-fixtures
 make dev
 ```
 
+`make run`, `make test`, and `make check` default `LOKY_MAX_CPU_COUNT` to `8` unless you override it in the shell. This suppresses the macOS loky core-detection warning used by the HMM integration.
+
 ## Security / Access
 
 - MVP supports optional HTTP Basic auth via `APP_PASSWORD` in `.env`.

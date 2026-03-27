@@ -17,6 +17,11 @@ from src.app.routes.holdings import router as holdings_router
 from src.app.routes.imports import router as imports_router
 from src.app.routes.expenses import router as expenses_router
 from src.app.routes.momentum import router as momentum_router
+try:
+    from src.app.routes.regime import router as regime_router
+    _HAS_REGIME = True
+except ImportError:
+    _HAS_REGIME = False
 from src.app.routes.planner import router as planner_router
 from src.app.routes.plans import router as plans_router
 from src.app.routes.policy import router as policy_router
@@ -67,6 +72,8 @@ def create_app() -> FastAPI:
     app.include_router(imports_router)
     app.include_router(expenses_router)
     app.include_router(momentum_router)
+    if _HAS_REGIME:
+        app.include_router(regime_router)
     app.include_router(planner_router)
     app.include_router(plans_router)
     app.include_router(audit_router)

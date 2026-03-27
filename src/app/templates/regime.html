@@ -1,0 +1,358 @@
+{% extends "layout.html" %}
+{% block content %}
+  {% from "partials/ui/components.html" import kpi_card %}
+  <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+
+  <div class="holdings-header">
+    <div class="page-title">
+      <div class="page-title__left">
+        <h1>Regime</h1>
+        <span class="ui-badge ui-badge--neutral">{{ page_badge or "Dashboard" }}</span>
+        <span class="ui-badge ui-badge--bad" id="regimeAlertsBadge" style="display:none">Alerts</span>
+      </div>
+      {% if auth_banner_detail %}
+        <details class="inline-alert" role="note">
+          <summary>
+            <span class="inline-alert__icon" aria-hidden="true">&#9888;</span>
+            <span>Running locally. Authentication disabled.</span>
+            <span class="inline-alert__link">Learn more</span>
+          </summary>
+          <div class="muted" style="margin-top:6px">{{ auth_banner_detail }}</div>
+        </details>
+      {% endif %}
+    </div>
+
+    {% if page_context %}
+      <div class="ui-muted selection-line">{{ page_context|safe }}</div>
+    {% endif %}
+
+    {% if warnings and warnings|length > 0 %}
+      <details class="alert alert--warn" open>
+        <summary>Notes ({{ warnings|length }})</summary>
+        <ul class="muted" style="margin:8px 0 0 18px">
+          {% for w in warnings %}
+            <li>{{ w }}</li>
+          {% endfor %}
+        </ul>
+      </details>
+    {% endif %}
+  </div>
+
+  <div class="regime-status-bar" id="regimeStatusBar" style="display:none">
+    <div class="regime-status-bar__left">
+      <span class="regime-status-bar__dot" id="regimeStatusDot"></span>
+      <span id="regimeStatusConnection">Disconnected</span>
+      <span class="regime-status-bar__separator">·</span>
+      <span id="regimeStatusMarket">Market Closed</span>
+    </div>
+    <div class="regime-status-bar__center">
+      <span class="regime-status-bar__label">Equity</span>
+      <span class="regime-status-bar__value" id="regimeStatusEquity">--</span>
+      <span class="regime-status-bar__separator">·</span>
+      <span class="regime-status-bar__label">P&L</span>
+      <span class="regime-status-bar__value" id="regimeStatusPnl">--</span>
+      <span class="regime-status-bar__separator">·</span>
+      <span class="regime-status-bar__label">Exposure</span>
+      <span class="regime-status-bar__value" id="regimeStatusExposure">--</span>
+    </div>
+    <div class="regime-status-bar__right">
+      <span id="regimeStatusOrders">0 pending orders</span>
+      <button class="btn btn--link regime-status-bar__kill" id="regimeStatusKillSwitch" style="display:none" type="button">Kill Switch</button>
+    </div>
+  </div>
+
+  <div class="ui-kpi-grid" aria-label="Regime summary" style="margin-top:10px" id="regimeKpis">
+    {{ kpi_card("Benchmark regime", "Unavailable", subtext=benchmark, tone="neutral") }}
+    {{ kpi_card("Selected tickers", "0", subtext=portfolio_mode, tone="neutral") }}
+    {{ kpi_card("Action items", "0", subtext="From weekly digest", tone="neutral") }}
+    {{ kpi_card("Last run", "Not started", subtext=period|upper, tone="neutral") }}
+  </div>
+  <div id="regimeHeroStrip" class="regime-hero-strip regime-hero-strip--neutral" style="margin-top:12px">
+    <div class="regime-hero-strip__label">Portfolio regime exposure</div>
+    <div class="regime-hero-strip__bar">
+      <div class="regime-hero-strip__segment regime-hero-strip__segment--bull" style="width:0%"></div>
+      <div class="regime-hero-strip__segment regime-hero-strip__segment--neutral" style="width:100%"></div>
+      <div class="regime-hero-strip__segment regime-hero-strip__segment--bear" style="width:0%"></div>
+    </div>
+    <div class="regime-hero-strip__stats">
+      <div class="regime-hero-strip__value" id="regimeHeroValue">Neutral-heavy</div>
+      <div id="regimeHeroStats">Bull 0% · Neutral 100% · Bear 0%</div>
+    </div>
+  </div>
+
+  <nav class="regime-tabs" aria-label="Regime page sections">
+    <button class="regime-tab regime-tab--active" data-regime-tab="analysis" aria-selected="true" type="button">
+      <span class="regime-tab__icon">📊</span>
+      Analysis
+    </button>
+    <button class="regime-tab" data-regime-tab="trading" aria-selected="false" type="button">
+      <span class="regime-tab__icon">💼</span>
+      Trading
+      <span class="regime-tab__badge regime-tab__badge--action" id="regimeTradingBadge" style="display:none">0</span>
+    </button>
+    <button class="regime-tab" data-regime-tab="research" aria-selected="false" type="button">
+      <span class="regime-tab__icon">🔬</span>
+      Research
+      <span class="regime-tab__badge" id="regimeResearchBadge" style="display:none">0</span>
+    </button>
+  </nav>
+
+  <div class="regime-tab-panel regime-tab-panel--active" data-regime-panel="analysis">
+  <details class="ui-card regime-control-bar" open style="margin-top:14px" data-regime-app>
+    <summary>
+      <span class="ui-section-title">Controls & Configuration</span>
+      <span class="regime-info-tooltip">
+        ℹ
+        <span class="regime-info-tooltip__content">
+          Filtered mode excludes obvious non-HMM assets like currencies, bullion, and broad index ETFs. Benchmark is analyzed separately and does not count toward the selected holdings total.
+        </span>
+      </span>
+      <span class="ui-badge ui-badge--neutral" id="regimeSelectionBadge">0 selected</span>
+    </summary>
+    <div class="regime-control-grid" style="margin-top:12px">
+      <section class="regime-control-grid__settings ui-card" style="padding:12px">
+        <div class="ui-section-title">Controls</div>
+        <form method="post" action="/regime/run" data-regime-controls style="display:grid; gap:10px; margin-top:8px">
+          <label>
+            Benchmark
+            <select name="benchmark" data-regime-benchmark>
+              <option value="SOXX" {% if benchmark == 'SOXX' %}selected{% endif %}>SOXX</option>
+              <option value="SPY" {% if benchmark == 'SPY' %}selected{% endif %}>SPY</option>
+            </select>
+          </label>
+          <label>
+            Period
+            <select name="period" data-regime-period>
+              <option value="3y" {% if period == '3y' %}selected{% endif %}>3Y</option>
+              <option value="2y" {% if period == '2y' %}selected{% endif %}>2Y</option>
+              <option value="1y" {% if period == '1y' %}selected{% endif %}>1Y</option>
+            </select>
+          </label>
+          <label style="display:flex; gap:8px; align-items:center">
+            <input type="checkbox" name="show_all" value="true" {% if show_all %}checked{% endif %} data-regime-show-all />
+            Show all holdings
+          </label>
+          <label style="display:flex; gap:8px; align-items:center">
+            <input type="checkbox" name="frontier_enabled" value="true" {% if frontier_enabled %}checked{% endif %} data-regime-frontier-enabled />
+            Enable frontier analysis
+          </label>
+          <label style="display:flex; gap:8px; align-items:center">
+            <input type="checkbox" name="force_refresh" value="true" {% if force_refresh %}checked{% endif %} data-regime-force-refresh />
+            Force refresh frontier cache
+          </label>
+          <div class="ui-muted">When enabled, per-ticker qualitative analysis fetches catalysts and runs the LLM fallback pipeline.</div>
+          <label data-regime-provider-wrap style="display:grid; gap:6px; {% if not frontier_enabled %}display:none{% endif %}">
+            Frontier provider
+            <select name="frontier_provider" data-regime-frontier-provider>
+              <option value="auto" {% if frontier_provider == 'auto' %}selected{% endif %}>Best Available</option>
+              <option value="openai" {% if frontier_provider == 'openai' %}selected{% endif %}>OpenAI</option>
+              <option value="gemini" {% if frontier_provider == 'gemini' %}selected{% endif %}>Gemini</option>
+              <option value="claude" {% if frontier_provider == 'claude' %}selected{% endif %}>Claude</option>
+              <option value="best" {% if frontier_provider == 'best' %}selected{% endif %}>Best available</option>
+            </select>
+            <div class="ui-muted">Best available uses the strongest model from each provider.</div>
+          </label>
+          <div>
+            <div class="ui-section-title" style="font-size:0.95rem">Portfolio</div>
+            <div style="display:grid; gap:8px; margin-top:8px">
+              <select name="portfolio_scope" data-regime-portfolio-scope>
+                <option value="household" {% if portfolio_scope == 'household' %}selected{% endif %}>All Portfolios</option>
+                <option value="personal" {% if portfolio_scope == 'personal' %}selected{% endif %}>Personal</option>
+                <option value="trust" {% if portfolio_scope == 'trust' %}selected{% endif %}>Trust</option>
+              </select>
+              <div class="ui-muted" id="regimePortfolioCounts"></div>
+              <label data-regime-account-wrap style="display:none; gap:6px">
+                Account
+                <select name="account_id" data-regime-account-id>
+                  <option value="" {% if not account_id %}selected{% endif %}>Combined (all accounts)</option>
+                </select>
+              </label>
+            </div>
+          </div>
+        </form>
+      </section>
+      <section class="regime-control-grid__holdings ui-card" style="padding:12px">
+        <div class="table-toolbar">
+          <div class="ui-section-title" style="font-size:0.95rem">Holdings</div>
+          <span id="selected-count" class="ui-muted" style="display:none"></span>
+        </div>
+        <div class="ui-muted" style="margin-top:4px">Search holdings to add or remove.</div>
+        <div style="display:grid; gap:8px; margin-top:10px">
+          <div style="display:flex; justify-content:space-between; gap:8px; align-items:center">
+            <button class="btn btn--secondary" type="button" id="regimeSelectAll">Select all</button>
+          </div>
+          <input type="text" placeholder="Search holdings" data-regime-search-input autocomplete="off" />
+          <div id="regimeSelectedChips" style="display:flex; gap:6px; flex-wrap:wrap"></div>
+          <div id="regimeHoldingsPicker" style="display:grid; gap:6px; max-height:400px; overflow:auto; border:1px solid #e5e7eb; border-radius:10px; padding:8px">
+            <div class="ui-muted">Loading holdings…</div>
+          </div>
+          <label>
+            Custom symbols
+            <input type="text" name="tickers" value="" placeholder="NVDA, AVGO" data-regime-custom-input />
+          </label>
+          <input type="hidden" name="frontier_batch_size" value="5" data-regime-frontier-batch-size />
+          <div class="ui-muted" id="regimeSelectionCounter">Selected: 0</div>
+          <div class="ui-muted" id="regimePickerWarning" style="display:none"></div>
+          <div style="position:sticky; bottom:0; background:#fff; padding-top:8px; display:flex; gap:8px">
+            <button class="btn btn--secondary" type="button" id="regimeManageThemes" style="flex:1">Manage Themes</button>
+            <button class="btn btn--primary" type="button" data-regime-run style="flex:1">Run</button>
+          </div>
+        </div>
+      </section>
+    </div>
+  </details>
+  <div id="regimeDiffMount" style="margin-top:10px"></div>
+  <div id="regimeHeatmapMount" style="margin-top:10px"></div>
+  <section class="ui-card" style="margin-top:14px">
+    <div class="table-toolbar">
+      <div>
+        <div class="ui-section-title">Ticker regime table</div>
+        <div class="ui-muted" style="margin-top:2px">Select holdings, then run analysis. Results render here after the background job completes.</div>
+      </div>
+      <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap">
+        <button class="btn btn--secondary" type="button" id="regimeToggleColumns">Show all columns</button>
+        <button class="btn btn--secondary" type="button" id="regimeExpandAll">Expand all</button>
+        <button class="btn btn--secondary" type="button" id="regimeCollapseAll">Collapse all</button>
+        <a class="btn btn--primary" href="/regime/export-pdf" id="regimeExportPdf" style="pointer-events:none;opacity:0.5">Export PDF</a>
+      </div>
+    </div>
+
+    <div id="regimeProgress" class="ui-card" style="display:none; margin-top:12px; padding:12px">
+      <div class="ui-section-title">Run progress</div>
+      <div id="regimeProgressText" class="ui-muted" style="margin-top:6px">Waiting to start.</div>
+      <div style="margin-top:10px; background:#e5e7eb; border-radius:999px; height:10px; overflow:hidden">
+        <div id="regimeProgressBar" style="height:100%; width:0%; background:#111827"></div>
+      </div>
+    </div>
+
+    <div id="regimeCachedNote" class="banner--ok" style="display:none; margin-top:12px; padding:10px; border-radius:10px"></div>
+
+    <div id="regimeTableMount" style="margin-top:12px">
+      <div class="ui-muted">No results yet. Choose tickers and click Run.</div>
+    </div>
+  </section>
+
+  <div id="regimeRelativeStrengthMount" style="margin-top:14px"></div>
+  <div id="regimeDetailsMount"></div>
+  </div>
+
+  <div class="regime-tab-panel" data-regime-panel="trading">
+  <div id="regimeActionItemsBar"></div>
+  <section class="ui-card" style="margin-top:14px">
+    <div class="table-toolbar">
+      <div>
+        <div class="ui-section-title">Paper Trading</div>
+        <div class="ui-muted" style="margin-top:2px">Generate reviewable buy and exit plans from discovery signals and cached regime results.</div>
+      </div>
+    </div>
+    <div id="regimePaperPortfolioMount" style="margin-top:12px"></div>
+    <div id="regimeBudgetMount" style="margin-top:12px"></div>
+    <div id="regimeTradePlansMount" style="margin-top:12px"></div>
+    <div id="regimePositionsMount" style="margin-top:12px"></div>
+    <div id="regimeMonitoringSection" style="margin-top:12px">
+      <div id="regimeMonitoringMount"></div>
+    </div>
+    <div id="regimePerformanceMount" style="margin-top:12px"></div>
+    <div id="regimeAuditTrailMount" style="margin-top:12px"></div>
+  </section>
+  </div>
+
+  <div class="regime-tab-panel" data-regime-panel="research">
+  <details class="ui-card ui-disclosure" style="margin-top:14px" id="regimeWatchlistSection">
+    <summary>
+      <span class="ui-section-title">Discovery Watchlist</span>
+      <span class="ui-badge ui-badge--neutral" id="regimeWatchlistCount" style="margin-left:8px">0</span>
+      <span class="ui-badge ui-badge--safe" id="regimeWatchlistSignals" style="margin-left:4px; display:none">0 signals</span>
+    </summary>
+    <div style="margin-top:12px">
+      <div style="display:flex; gap:8px; margin-bottom:12px; flex-wrap:wrap">
+        <button class="btn btn--secondary" type="button" id="regimeDiscoveryScanBtn">Run Discovery Scan</button>
+        <select id="regimeWatchlistThemeFilter">
+          <option value="">All Themes</option>
+        </select>
+        <select id="regimeWatchlistStatusFilter">
+          <option value="">Active</option>
+          <option value="Watching">Watching</option>
+          <option value="Entry Signal">Entry Signal</option>
+          <option value="Added">Added</option>
+          <option value="Passed">Passed</option>
+        </select>
+      </div>
+      <div id="regimeWatchlistMount" style="display:grid; gap:8px">
+        <div class="ui-muted">No candidates discovered yet. Run a discovery scan to find opportunities.</div>
+      </div>
+    </div>
+  </details>
+      <div id="regimePortfolioSummaryMount" style="margin-top:10px"></div>
+      <div id="regimeThemeHealthMount" style="margin-top:10px"></div>
+      <details class="ui-disclosure" style="margin-top:14px">
+        <summary>Regime change history</summary>
+        <div id="regimeHistoryMount" style="display:grid; gap:12px; margin-top:12px">
+          <div class="ui-muted">History will appear after a completed run.</div>
+        </div>
+      </details>
+
+      <details class="ui-disclosure" style="margin-top:14px">
+        <summary>Signal Effectiveness</summary>
+        <div id="regimeEffectivenessMount" style="display:grid; gap:12px; margin-top:12px">
+          <div class="ui-muted">Effectiveness tracking will appear after completed runs have enough history.</div>
+        </div>
+      </details>
+
+      <details class="ui-disclosure" style="margin-top:14px">
+        <summary>Model Diagnostics</summary>
+        <div id="regimeDiagnosticsMount" style="display:grid; gap:12px; margin-top:12px">
+          <div class="ui-muted">Diagnostics render once enough historical signal outcomes are available.</div>
+        </div>
+      </details>
+
+      <details class="ui-disclosure" style="margin-top:14px" open>
+        <summary>Weekly digest</summary>
+        <div id="regimeDigestMount" style="display:grid; gap:12px; margin-top:12px">
+          <div class="ui-muted">Digest results will appear after a completed run.</div>
+        </div>
+      </details>
+  </div>
+
+  <div class="regime-drawer-overlay" id="regimeThemeDrawerOverlay"></div>
+  <aside class="regime-drawer" id="regimeThemeDrawer" aria-hidden="true">
+    <div class="regime-drawer__header">
+      <div class="regime-drawer__title">Investment Themes</div>
+      <button class="regime-drawer__close" id="regimeThemeDrawerClose" type="button" aria-label="Close themes drawer">×</button>
+    </div>
+    <div style="display:grid; gap:10px; margin-top:12px">
+      <form data-regime-theme-form style="display:grid; gap:8px">
+        <label>
+          Theme Name
+          <input type="text" maxlength="100" placeholder="Generative AI" data-regime-theme-name />
+        </label>
+        <label>
+          Narrative
+          <textarea rows="3" maxlength="4000" placeholder="Macro thesis for this investment theme..." data-regime-theme-narrative></textarea>
+        </label>
+        <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px">
+          <label>
+            Conviction (1–5)
+            <input type="number" min="1" max="5" value="3" data-regime-theme-conviction />
+          </label>
+          <label>
+            Status
+            <select data-regime-theme-status>
+              <option value="Active">Active</option>
+              <option value="Monitoring">Monitoring</option>
+              <option value="Closed">Closed</option>
+            </select>
+          </label>
+        </div>
+        <button class="btn btn--secondary" type="submit">Create Theme</button>
+      </form>
+      <div class="ui-muted" id="regimeThemeMessage" style="display:none"></div>
+      <div id="regimeThemeList" style="display:grid; gap:8px">
+        <div class="ui-muted">No themes defined.</div>
+      </div>
+    </div>
+  </aside>
+
+  <script type="application/json" id="regimeConfig">{{ regime_config_json|safe }}</script>
+  <script src="/static/regime.js?v={{ static_version or '0' }}"></script>
+{% endblock %}
