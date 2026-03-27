@@ -962,6 +962,13 @@ def _normalize_theme_status(raw: Any) -> str:
     return status
 
 
+def _normalize_theme_sector_hint(raw: Any) -> str:
+    value = str(raw or "").strip()
+    if len(value) > 200:
+        raise HTTPException(status_code=422, detail="Sector hint must be 200 characters or fewer.")
+    return value
+
+
 def _normalize_role(raw: Any) -> str:
     role = str(raw or "Core").strip() or "Core"
     if role not in {"Core", "Critical-Path", "Speculative"}:
@@ -2465,8 +2472,10 @@ def _run_discovery_job(job_id: str) -> None:
             theme_id = int(theme["id"])
             theme_name = str(theme.get("name") or "")
             _set_discovery_job_state(job_id, progress=idx - 1, current_theme=theme_name)
-            if regenerate_supply_chain or not runtime["get_supply_chain"](theme_id):
-                runtime["generate_supply_chain"](theme_id, frontier_enabled=True, frontier_provider=frontier_provider)
+            theme_has_sector_hint = bool(str(theme.get("sector_hint") or "").strip())
+            if not theme_has_sector_hint:
+                if regenerate_supply_chain or not runtime["get_supply_chain"](theme_id):
+                    runtime["generate_supply_chain"](theme_id, frontier_enabled=True, frontier_provider=frontier_provider)
             theme_results = runtime["run_discovery_scan"](theme_id, frontier_enabled=True, frontier_provider=frontier_provider)
             entry_signals = runtime["check_entry_signals"](theme_id)
             results.append(
@@ -2963,6 +2972,7 @@ async def regime_themes_create(
         _normalize_theme_narrative(form.get("narrative")),
         _normalize_theme_conviction(form.get("conviction")),
         _normalize_theme_status(form.get("status")),
+        sector_hint=_normalize_theme_sector_hint(form.get("sector_hint", "")),
     )
     return JSONResponse(content=_json_ready(theme))
 
@@ -3001,6 +3011,7 @@ async def regime_theme_update(
         theme_id,
         name=_normalize_theme_name(form["name"]) if "name" in form else None,
         narrative=_normalize_theme_narrative(form["narrative"]) if "narrative" in form else None,
+        sector_hint=_normalize_theme_sector_hint(form["sector_hint"]) if "sector_hint" in form else None,
         conviction=_normalize_theme_conviction(form["conviction"]) if "conviction" in form else None,
         status=_normalize_theme_status(form["status"]) if "status" in form else None,
     )

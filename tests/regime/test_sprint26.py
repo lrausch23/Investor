@@ -146,7 +146,7 @@ def test_discovery_skips_invalid_tickers(temp_modules, monkeypatch) -> None:
 
 def test_discovery_auto_generates_supply_chain(temp_modules, monkeypatch) -> None:
     store, discovery_module = temp_modules
-    theme = store.create_theme("Generative AI")
+    theme = store.create_theme("Unseeded Theme")
     generated = []
     monkeypatch.setattr(discovery_module, "generate_supply_chain", lambda theme_id, frontier_enabled=True, frontier_provider="auto": generated.append(theme_id) or [{"layer": "Memory"}])
     monkeypatch.setattr(discovery_module, "request_frontier_decision", lambda *args, **kwargs: [])

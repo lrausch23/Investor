@@ -137,6 +137,7 @@ def _connect() -> sqlite3.Connection:
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT NOT NULL UNIQUE,
             narrative TEXT NOT NULL DEFAULT '',
+            sector_hint TEXT NOT NULL DEFAULT '',
             conviction INTEGER NOT NULL DEFAULT 3 CHECK (conviction BETWEEN 1 AND 5),
             status TEXT NOT NULL DEFAULT 'Active' CHECK (status IN ('Active', 'Monitoring', 'Closed')),
             created_at TEXT NOT NULL,
@@ -144,6 +145,12 @@ def _connect() -> sqlite3.Connection:
         )
         """
     )
+    try:
+        conn.execute(
+            "ALTER TABLE investment_theme ADD COLUMN sector_hint TEXT NOT NULL DEFAULT ''"
+        )
+    except Exception:
+        pass
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS theme_ticker (
@@ -439,6 +446,24 @@ def _connect() -> sqlite3.Connection:
     )
     _ensure_paper_schema(conn)
     _migrate_legacy_theses(conn)
+    conn.execute(
+        """
+        UPDATE investment_theme
+        SET narrative = ?,
+            sector_hint = ?,
+            updated_at = ?
+        WHERE name = 'Generative AI'
+          AND (narrative IS NULL OR narrative = '')
+        """,
+        (
+            "Companies building, deploying, or enabling generative AI models and applications — "
+            "foundation model providers, inference infrastructure, AI-native software, "
+            "enterprise AI platforms, and the semiconductor and cloud compute supply chain "
+            "that powers large-scale model training and inference.",
+            "Artificial Intelligence / Machine Learning",
+            datetime.now(timezone.utc).isoformat(),
+        ),
+    )
     return conn
 
 
@@ -496,15 +521,15 @@ def list_theses() -> list[dict[str, str]]:
     return [dict(row) for row in rows]
 
 
-def create_theme(name: str, narrative: str = "", conviction: int = 3, status: str = "Active") -> dict[str, Any]:
+def create_theme(name: str, narrative: str = "", conviction: int = 3, status: str = "Active", sector_hint: str = "") -> dict[str, Any]:
     now = datetime.now(timezone.utc).isoformat()
     with _connect() as conn:
         cursor = conn.execute(
             """
-            INSERT INTO investment_theme (name, narrative, conviction, status, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO investment_theme (name, narrative, sector_hint, conviction, status, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            (name.strip(), narrative.strip(), int(conviction), status, now, now),
+            (name.strip(), narrative.strip(), sector_hint.strip(), int(conviction), status, now, now),
         )
         theme_id = int(cursor.lastrowid)
     return get_theme(theme_id) or {}
@@ -515,6 +540,7 @@ def update_theme(
     *,
     name: str | None = None,
     narrative: str | None = None,
+    sector_hint: str | None = None,
     conviction: int | None = None,
     status: str | None = None,
 ) -> dict[str, Any] | None:
@@ -526,6 +552,9 @@ def update_theme(
     if narrative is not None:
         updates.append("narrative = ?")
         params.append(narrative.strip())
+    if sector_hint is not None:
+        updates.append("sector_hint = ?")
+        params.append(sector_hint.strip())
     if conviction is not None:
         updates.append("conviction = ?")
         params.append(int(conviction))
@@ -568,7 +597,7 @@ def get_theme(theme_id: int) -> dict[str, Any] | None:
     with _connect() as conn:
         row = conn.execute(
             """
-            SELECT id, name, narrative, conviction, status, created_at, updated_at
+            SELECT id, name, narrative, sector_hint, conviction, status, created_at, updated_at
             FROM investment_theme
             WHERE id = ?
             """,
@@ -585,7 +614,7 @@ def list_themes(include_closed: bool = False) -> list[dict[str, Any]]:
     with _connect() as conn:
         rows = conn.execute(
             """
-            SELECT id, name, narrative, conviction, status, created_at, updated_at
+            SELECT id, name, narrative, sector_hint, conviction, status, created_at, updated_at
             FROM investment_theme
             WHERE (? = 1 OR status != 'Closed')
             ORDER BY name ASC

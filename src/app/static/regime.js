@@ -3247,6 +3247,7 @@
           </div>
         </summary>
         <div class="ui-muted" style="margin-top:8px; white-space:pre-wrap">${escapeHtml(theme.narrative || "")}</div>
+        ${theme.sector_hint ? `<div class="ui-muted" style="margin-top:4px">Sector hint: ${escapeHtml(theme.sector_hint)}</div>` : ""}
         <div style="display:grid; gap:6px; margin-top:10px">
           ${(Array.isArray(theme.tickers) ? theme.tickers : []).map((item) => `
             <div style="border:1px solid ${COLORS.border}; border-radius:10px; padding:8px">
@@ -3395,11 +3396,13 @@
     event.preventDefault();
     const name = String((document.querySelector("[data-regime-theme-name]") || {}).value || "").trim();
     const narrative = String((document.querySelector("[data-regime-theme-narrative]") || {}).value || "");
+    const sectorHint = String((document.querySelector("[data-regime-theme-sector-hint]") || {}).value || "").trim();
     const conviction = String((document.querySelector("[data-regime-theme-conviction]") || {}).value || "3");
     const status = String((document.querySelector("[data-regime-theme-status]") || {}).value || "Active");
     const body = new URLSearchParams();
     body.set("name", name);
     body.set("narrative", narrative);
+    body.set("sector_hint", sectorHint);
     body.set("conviction", conviction);
     body.set("status", status);
     try {

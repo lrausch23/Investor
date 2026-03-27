@@ -249,6 +249,53 @@ def compute_crowd_score(
     return normalized_score, details
 
 
+def build_sector_discovery_prompt(
+    theme: dict,
+    existing_tickers: list[str],
+    watchlist_tickers: list[str],
+) -> str:
+    sector = str(theme.get("sector_hint") or "").strip()
+    held = ", ".join(existing_tickers) or "None"
+    watched = ", ".join(watchlist_tickers) or "None"
+    return f"""
+You are an equity research analyst identifying undiscovered investment opportunities.
+
+Investment Theme: {theme.get("name", "")}
+Theme Narrative: {theme.get("narrative", "")}
+Conviction Level: {theme.get("conviction", 3)}/5
+Sector / Industry Focus: {sector}
+
+Already Held: {held}
+Already on Watchlist: {watched}
+
+Task: Identify 3-8 US-listed public companies within the "{sector}" sector or closely related industries that are strong beneficiaries of this investment theme. Focus on companies that:
+- Are directly building, enabling, or benefiting from the theme narrative
+- Are NOT in the "Already Held" or "Already on Watchlist" lists
+- Have a market capitalization above $500 million (no micro-caps)
+- Are liquid enough to trade (average daily volume > $1M)
+
+For each candidate, provide:
+- ticker: US exchange ticker symbol
+- company_name: Full company name
+- sector_layer: The specific sub-sector or industry niche (e.g., "Inference Infrastructure", "Foundation Models")
+- rationale: One sentence explaining why this company fits the theme
+- suggested_role: "Critical-Path" or "Speculative"
+- crowd_assessment: 1-10 (1 = very undiscovered, 10 = widely known theme play)
+
+Return strict JSON array:
+[
+  {{
+    "ticker": "string",
+    "company_name": "string",
+    "sector_layer": "string",
+    "rationale": "string",
+    "suggested_role": "string",
+    "crowd_assessment": 5
+  }}
+]
+""".strip()
+
+
 def _quick_regime_screen(ticker: str) -> tuple[str | None, float | None, float | None, float | None]:
     try:
         market_frame = download_market_frame(ticker=ticker, period="2y", interval="1d").frame
@@ -293,12 +340,17 @@ def run_discovery_scan(
     theme = get_theme(theme_id)
     if not theme:
         return []
-    supply_chain = get_supply_chain(theme_id)
-    if not supply_chain:
-        supply_chain = generate_supply_chain(theme_id, frontier_enabled=frontier_enabled, frontier_provider=frontier_provider)
     existing_tickers = _theme_existing_tickers(theme)
     watchlist_tickers = [str(item.get("ticker") or "").upper() for item in get_watchlist(theme_id=theme_id, status="Watching")]
-    prompt = build_discovery_prompt(theme, supply_chain, existing_tickers, watchlist_tickers)
+    sector_hint = str(theme.get("sector_hint") or "").strip()
+    supply_chain = get_supply_chain(theme_id)
+    if supply_chain:
+        prompt = build_discovery_prompt(theme, supply_chain, existing_tickers, watchlist_tickers)
+    elif sector_hint:
+        prompt = build_sector_discovery_prompt(theme, existing_tickers, watchlist_tickers)
+    else:
+        supply_chain = generate_supply_chain(theme_id, frontier_enabled=frontier_enabled, frontier_provider=frontier_provider)
+        prompt = build_discovery_prompt(theme, supply_chain, existing_tickers, watchlist_tickers)
     response = request_frontier_decision(prompt, enabled=frontier_enabled, provider=frontier_provider)
     candidates = _extract_json_list(response)
     if not candidates:
@@ -316,11 +368,14 @@ def run_discovery_scan(
             continue
         crowd_score, crowd_details = compute_crowd_score(ticker, crowd_assessment=candidate.get("crowd_assessment"))
         regime_label, regime_probability, entry_price, stop_price = _quick_regime_screen(ticker)
+        layer = str(
+            candidate.get("supply_chain_layer") or candidate.get("sector_layer") or ""
+        ).strip()
         watch = upsert_watchlist_candidate(
             theme_id,
             ticker,
             company_name=str(candidate.get("company_name") or "").strip(),
-            supply_chain_layer=str(candidate.get("supply_chain_layer") or "").strip(),
+            supply_chain_layer=layer,
             discovery_rationale=str(candidate.get("rationale") or "").strip(),
             suggested_role=str(candidate.get("suggested_role") or "Critical-Path"),
             suggested_entry_price=entry_price,
