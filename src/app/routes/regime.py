@@ -2828,19 +2828,28 @@ def regime_ibkr_test_connection(
         return JSONResponse(content=result)
 
     try:
+        import asyncio
+
         from src.regime.ib_live_backend import LiveIBBackend
 
-        backend = LiveIBBackend(account_id=config.account_id)
-        connected = backend.connect(config.host, config.port, int(config.client_id) + 90)
-        if connected:
-            summary = backend.get_account_summary()
-            result["ibkr_connected"] = True
-            result["account_verified"] = str(summary.account_id) == str(config.account_id)
-            result["net_liquidation"] = float(summary.net_liquidation)
-            backend.disconnect()
-        else:
-            result["ibkr_connected"] = False
-            result["error"] = "TCP reachable but IBKR handshake failed. Check TWS API settings."
+        # ib_insync requires an asyncio event loop; FastAPI sync endpoints
+        # run in a threadpool worker that lacks one, so create a temporary loop.
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            backend = LiveIBBackend(account_id=config.account_id)
+            connected = backend.connect(config.host, config.port, int(config.client_id) + 90)
+            if connected:
+                summary = backend.get_account_summary()
+                result["ibkr_connected"] = True
+                result["account_verified"] = str(summary.account_id) == str(config.account_id)
+                result["net_liquidation"] = float(summary.net_liquidation)
+                backend.disconnect()
+            else:
+                result["ibkr_connected"] = False
+                result["error"] = "TCP reachable but IBKR handshake failed. Check TWS API settings."
+        finally:
+            loop.close()
     except ImportError:
         result["ibkr_connected"] = None
         result["note"] = "ib_insync not available — TCP check only."
