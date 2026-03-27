@@ -1,0 +1,507 @@
+{% extends "layout.html" %}
+{% block extra_head %}
+  <link rel="stylesheet" href="/static/docs.css?v={{ static_version or '0' }}" />
+{% endblock %}
+{% block content %}
+  <div class="docs-page" data-docs-root>
+    <aside class="docs-sidebar" data-docs-sidebar>
+      <div class="docs-sidebar__header">
+        <p class="docs-eyebrow">Investor Documentation</p>
+        <h1>Regime Platform Docs</h1>
+        <button class="docs-nav-toggle" type="button" data-docs-toggle aria-expanded="false" aria-controls="docs-nav">
+          Menu
+        </button>
+      </div>
+      <label class="docs-search">
+        <span class="docs-search__label">Search sections</span>
+        <input id="docs-search" type="search" placeholder="Search by section title" autocomplete="off" />
+      </label>
+      <nav id="docs-nav" class="docs-nav" aria-label="Documentation navigation">
+        <div class="docs-nav__group">
+          <p class="docs-nav__title">Technical Documentation</p>
+          <a href="#tech-overview" data-doc-link>Platform Overview</a>
+          <a href="#tech-architecture" data-doc-link>Architecture</a>
+          <a href="#tech-hmm" data-doc-link>HMM Regime Engine</a>
+          <a href="#tech-signals" data-doc-link>Signal Rules Engine</a>
+          <a href="#tech-llm" data-doc-link>Frontier Analysis</a>
+          <a href="#tech-persistence" data-doc-link>Persistence Model</a>
+          <a href="#tech-broker" data-doc-link>Broker & Paper Trading</a>
+          <a href="#tech-frontend" data-doc-link>Frontend Runtime</a>
+          <a href="#tech-deployment" data-doc-link>Deployment & Operations</a>
+          <a href="#tech-config" data-doc-link>Configuration Reference</a>
+        </div>
+        <div class="docs-nav__group">
+          <p class="docs-nav__title">User Guide</p>
+          <a href="#user-quickstart" data-doc-link>Quick Start</a>
+          <a href="#user-dashboard" data-doc-link>Dashboard Orientation</a>
+          <a href="#user-regime" data-doc-link>Running Regime Analysis</a>
+          <a href="#user-signals" data-doc-link>Reading Signals</a>
+          <a href="#user-rules" data-doc-link>Rules Engine Reference</a>
+          <a href="#user-paper" data-doc-link>Paper Trading Workflow</a>
+          <a href="#user-discovery" data-doc-link>Discovery Workflow</a>
+          <a href="#user-tax" data-doc-link>Tax & Lot Interpretation</a>
+          <a href="#user-glossary" data-doc-link>Glossary</a>
+        </div>
+      </nav>
+    </aside>
+
+    <section class="docs-content">
+      <div class="docs-breadcrumb">
+        <span>Investor</span>
+        <span>/</span>
+        <span>Docs</span>
+        <span>/</span>
+        <strong data-docs-current>Platform Overview</strong>
+      </div>
+
+      <header class="docs-hero">
+        <p class="docs-eyebrow">Living Reference</p>
+        <h1>Investor regime, trading, and research documentation</h1>
+        <p>
+          This in-app guide documents the current production behavior of the Regime platform: how data moves,
+          how signals are derived, how paper and IBKR execution works, and how operators should use the dashboard.
+        </p>
+        <div class="docs-card-grid">
+          <article class="docs-mini-card">
+            <h2>Scope</h2>
+            <p>HMM regime analysis, frontier assessment, discovery watchlists, paper trading, IBKR monitoring.</p>
+          </article>
+          <article class="docs-mini-card">
+            <h2>Format</h2>
+            <p>Single-page reference with hash navigation, searchable sections, collapsible subsections, and responsive layout.</p>
+          </article>
+          <article class="docs-mini-card">
+            <h2>Audience</h2>
+            <p>Developers, operators, and portfolio users who need exact rules, not marketing summaries.</p>
+          </article>
+        </div>
+      </header>
+
+      <article id="tech-overview" class="docs-section" data-doc-section data-doc-title="Platform Overview">
+        <header class="docs-section__header">
+          <p class="docs-section__eyebrow">Technical</p>
+          <h2>Platform Overview</h2>
+          <p>The regime platform combines statistical state detection, rules-based signal generation, qualitative frontier overlays, and trading workflows in one FastAPI app.</p>
+        </header>
+        <div class="docs-flow">
+          <div class="docs-flow__box">Market data<br />Yahoo Finance downloads, macro overlays, technical indicators</div>
+          <div class="docs-flow__arrow">→</div>
+          <div class="docs-flow__box">Regime engine<br />Feature construction, adaptive HMM fit, state labeling</div>
+          <div class="docs-flow__arrow">→</div>
+          <div class="docs-flow__box">Decision layer<br />Signals, targets, sizing, tax adjustments, relative strength</div>
+          <div class="docs-flow__arrow">→</div>
+          <div class="docs-flow__box">Operator layer<br />Dashboard, docs, discovery, paper trading, IBKR monitoring</div>
+        </div>
+        <div class="docs-callout docs-callout--info">
+          <strong>Decision rule:</strong> the dashboard never trusts a single subsystem. Quantitative outputs, qualitative overlays, tax data, and broker status are kept separate so failures degrade instead of cascading.
+        </div>
+        <table class="docs-table">
+          <thead>
+            <tr><th>Subsystem</th><th>Primary responsibility</th><th>Key output</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>Regime engine</td><td>Infer latent Bull/Neutral/Bear states from technical features</td><td>State label, probability, regime streak</td></tr>
+            <tr><td>Signal engine</td><td>Transform state forecasts into portfolio actions</td><td>Composite action, price targets, sizing, warnings</td></tr>
+            <tr><td>Frontier layer</td><td>Contextualize catalysts, divergence, and thesis alignment</td><td>Institutional report, verdict, confidence narrative</td></tr>
+            <tr><td>Trading stack</td><td>Manage paper/IBKR orders, approvals, guardrails, audit</td><td>Plans, executions, performance attribution</td></tr>
+          </tbody>
+        </table>
+      </article>
+
+      <article id="tech-architecture" class="docs-section" data-doc-section data-doc-title="Architecture">
+        <header class="docs-section__header">
+          <p class="docs-section__eyebrow">Technical</p>
+          <h2>Architecture</h2>
+          <p>The app is split into a FastAPI presentation layer, a Jinja2/vanilla-JS UI, and a domain package under <code>src/regime</code>.</p>
+        </header>
+        <details class="docs-detail" open>
+          <summary>Module boundaries</summary>
+          <table class="docs-table">
+            <thead>
+              <tr><th>Area</th><th>Files</th><th>Notes</th></tr>
+            </thead>
+            <tbody>
+              <tr><td>App routes</td><td><code>src/app/routes/*.py</code></td><td>HTTP endpoints, page shells, JSON APIs, cache orchestration</td></tr>
+              <tr><td>Domain logic</td><td><code>src/regime/*.py</code></td><td>HMM engine, signals, broker adapters, persistence, discovery</td></tr>
+              <tr><td>Templates</td><td><code>src/app/templates/*.html</code></td><td>Server-rendered shells and static docs</td></tr>
+              <tr><td>Client runtime</td><td><code>src/app/static/*.js</code></td><td>Polling, rendering, tab state, docs navigation</td></tr>
+            </tbody>
+          </table>
+        </details>
+        <div class="docs-code-block">
+<pre><code>FastAPI route → runtime loader → regime package → persistence/broker/data providers
+            ↓
+      Jinja shell + JSON payloads → vanilla JS renderers → localStorage UI state</code></pre>
+        </div>
+        <div class="docs-callout docs-callout--tip">
+          <strong>Why in-app docs?</strong> The docs stay version-aligned with the deployed UI, share the same auth context, and can directly reference current route behavior.
+        </div>
+      </article>
+
+      <article id="tech-hmm" class="docs-section" data-doc-section data-doc-title="HMM Regime Engine">
+        <header class="docs-section__header">
+          <p class="docs-section__eyebrow">Technical</p>
+          <h2>HMM Regime Engine</h2>
+          <p>The regime engine uses a 3-state Hidden Markov Model with adaptive fit windows and diagonal covariance to avoid the look-ahead bias removed in Sprint 20.</p>
+        </header>
+        <table class="docs-table">
+          <thead>
+            <tr><th>Component</th><th>Current rule</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>States</td><td>3 latent states mapped to Bull, Neutral, Bear</td></tr>
+            <tr><td>Features</td><td>6-feature set after collinear feature removal</td></tr>
+            <tr><td>Covariance</td><td>Diagonal</td></tr>
+            <tr><td>Fit strategy</td><td>Walk-forward with adaptive training-window retries on shorter histories</td></tr>
+            <tr><td>Weekly overlay</td><td>Resampled weekly bars with fallback when insufficient rows exist</td></tr>
+          </tbody>
+        </table>
+        <div class="docs-callout docs-callout--warning">
+          <strong>Important:</strong> a non-convergence log from <code>hmmlearn</code> is not automatically a hard failure. The engine treats completed fits and insufficient-history failures differently.
+        </div>
+        <div class="docs-formula">
+          <strong>Confidence basis</strong>
+          <p>Unified confidence is derived from state probability, transition stability, and calibration adjustments rather than raw HMM probability alone.</p>
+        </div>
+      </article>
+
+      <article id="tech-signals" class="docs-section" data-doc-section data-doc-title="Signal Rules Engine">
+        <header class="docs-section__header">
+          <p class="docs-section__eyebrow">Technical</p>
+          <h2>Signal Rules Engine</h2>
+          <p>The signal layer converts regime forecasts into actions, targets, warnings, and position sizes using explicit thresholds and downstream guardrails.</p>
+        </header>
+        <details class="docs-detail" open>
+          <summary>Primary action rules</summary>
+          <table class="docs-table">
+            <thead>
+              <tr><th>Action</th><th>Typical conditions</th><th>Output</th></tr>
+            </thead>
+            <tbody>
+              <tr><td><span class="docs-badge docs-badge--bull">Strong Buy</span></td><td>High Bull probability, low transition risk, strong duration support</td><td>Aggressive entry, full targets, sizing suggestion</td></tr>
+              <tr><td><span class="docs-badge docs-badge--bull">Buy</span></td><td>Bull-tilting conditions without strongest gate</td><td>Entry zone, ATR stop, moderate sizing</td></tr>
+              <tr><td><span class="docs-badge docs-badge--neutral">Hold</span></td><td>Mixed or stable neutral conditions</td><td>No new entry target, monitoring stop</td></tr>
+              <tr><td><span class="docs-badge docs-badge--bear">Sell / Strong Sell</span></td><td>Bear state, adverse transition, or strong downside probabilities</td><td>Exit framing, risk-off guidance</td></tr>
+            </tbody>
+          </table>
+        </details>
+        <div class="docs-formula">
+          <strong>Price target model</strong>
+          <p><code>ATR projected move = ATR × √time × confidence multiplier × mean-reversion dampening</code></p>
+        </div>
+        <div class="docs-formula">
+          <strong>Position sizing model</strong>
+          <p><code>Suggested size = min(regime confidence, half-Kelly cap, max-risk cap)</code></p>
+        </div>
+        <div class="docs-callout docs-callout--danger">
+          <strong>Conflict rule:</strong> if action and risk/reward disagree, the engine surfaces an explicit warning instead of silently favoring one side.
+        </div>
+      </article>
+
+      <article id="tech-llm" class="docs-section" data-doc-section data-doc-title="Frontier Analysis">
+        <header class="docs-section__header">
+          <p class="docs-section__eyebrow">Technical</p>
+          <h2>Frontier Analysis</h2>
+          <p>The qualitative pipeline fetches recent catalysts, sentiment context, and thesis/theme context, then asks a configured frontier provider for institutional-style commentary.</p>
+        </header>
+        <table class="docs-table">
+          <thead>
+            <tr><th>Provider mode</th><th>Behavior</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>Auto</td><td>Uses configured provider fallback chain</td></tr>
+            <tr><td>OpenAI / Gemini / Claude</td><td>Forces that provider</td></tr>
+            <tr><td>Best</td><td>Chooses strongest configured model among available providers</td></tr>
+            <tr><td>Disabled</td><td>Skips news + LLM calls entirely and returns <code>null</code> qualitative</td></tr>
+          </tbody>
+        </table>
+        <div class="docs-callout docs-callout--info">
+          <strong>Fallback contract:</strong> if news or LLM calls fail, the dashboard still renders quantitative output and heuristic frontier fields rather than failing the entire run.
+        </div>
+        <div class="docs-code-block">
+<pre><code>qualitative = {
+  catalysts: [{headline, link, source}],
+  institutional_report: {
+    regime_validation,
+    divergence_check,
+    verdict,
+    risk_trigger,
+    confidence_score,
+    thesis_alignment,
+    urgency
+  },
+  sentiment: {...}
+}</code></pre>
+        </div>
+      </article>
+
+      <article id="tech-persistence" class="docs-section" data-doc-section data-doc-title="Persistence Model">
+        <header class="docs-section__header">
+          <p class="docs-section__eyebrow">Technical</p>
+          <h2>Persistence Model</h2>
+          <p>Persistence covers regime history, signal snapshots, themes, discovery candidates, paper portfolios, audit trails, and cache artifacts.</p>
+        </header>
+        <table class="docs-table">
+          <thead>
+            <tr><th>Data family</th><th>Purpose</th><th>Retention behavior</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>Regime change history</td><td>Transition journal and outcome attribution</td><td>Append-only with forward return updates</td></tr>
+            <tr><td>Signal snapshots</td><td>Effectiveness, calibration, diagnostics</td><td>Append-only, updated as outcomes mature</td></tr>
+            <tr><td>Themes / theme_ticker</td><td>Investment structure, role metadata, targets</td><td>Operator-managed</td></tr>
+            <tr><td>Discovery candidates</td><td>Watchlist and alpha pipeline lifecycle</td><td>Auto-expire after staleness window</td></tr>
+            <tr><td>Paper / broker audit</td><td>Trade plans, executions, guardrail events</td><td>Persistent audit history</td></tr>
+            <tr><td>Cache files</td><td>Last run, qualitative cache, PDF export source</td><td>TTL/version gated JSON artifacts</td></tr>
+          </tbody>
+        </table>
+      </article>
+
+      <article id="tech-broker" class="docs-section" data-doc-section data-doc-title="Broker & Paper Trading">
+        <header class="docs-section__header">
+          <p class="docs-section__eyebrow">Technical</p>
+          <h2>Broker &amp; Paper Trading</h2>
+          <p>The trading stack is adapter-based: paper trading, mock IBKR, and live IBKR share a common order lifecycle, audit surface, and guardrail model.</p>
+        </header>
+        <div class="docs-flow">
+          <div class="docs-flow__box">Plan generation<br />Discovery entries + exit conditions</div>
+          <div class="docs-flow__arrow">→</div>
+          <div class="docs-flow__box">Approval layer<br />Precheck badges, manual review, kill switch</div>
+          <div class="docs-flow__arrow">→</div>
+          <div class="docs-flow__box">Broker adapter<br />Paper / Mock IB / Live IB</div>
+          <div class="docs-flow__arrow">→</div>
+          <div class="docs-flow__box">Audit + monitoring<br />Lifecycle timeline, polling, performance snapshots</div>
+        </div>
+        <table class="docs-table">
+          <thead>
+            <tr><th>Status family</th><th>Meaning</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>Pending / Approved / Rejected</td><td>Plan review state before any broker submission</td></tr>
+            <tr><td>Submitted / Partially Filled / Filled / Cancelled</td><td>Broker order lifecycle</td></tr>
+            <tr><td>Paused / Closed portfolio</td><td>Blocks new execution even if plans exist</td></tr>
+          </tbody>
+        </table>
+      </article>
+
+      <article id="tech-frontend" class="docs-section" data-doc-section data-doc-title="Frontend Runtime">
+        <header class="docs-section__header">
+          <p class="docs-section__eyebrow">Technical</p>
+          <h2>Frontend Runtime</h2>
+          <p>The regime UI is a server-rendered shell with progressively enhanced vanilla JavaScript for polling, rendering, storage-backed preferences, and interactive docs.</p>
+        </header>
+        <table class="docs-table">
+          <thead>
+            <tr><th>Concern</th><th>Client behavior</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>Job polling</td><td>Polls status endpoint, renders partial results as tickers finish</td></tr>
+            <tr><td>Preferences</td><td>Uses <code>localStorage</code> for tab, column, and section state</td></tr>
+            <tr><td>Error handling</td><td>Shows toast messages and degrades sections independently</td></tr>
+            <tr><td>Docs navigation</td><td>Searches section titles, keeps hash + active section synchronized</td></tr>
+          </tbody>
+        </table>
+      </article>
+
+      <article id="tech-deployment" class="docs-section" data-doc-section data-doc-title="Deployment & Operations">
+        <header class="docs-section__header">
+          <p class="docs-section__eyebrow">Technical</p>
+          <h2>Deployment &amp; Operations</h2>
+          <p>Investor runs as a FastAPI app with local static assets, scheduled jobs, broker polling, and environment-driven provider/broker configuration.</p>
+        </header>
+        <ol class="docs-steps">
+          <li>Start the FastAPI app from the Investor project root so relative data paths resolve correctly.</li>
+          <li>Run scheduled jobs from the same environment as the app to share caches, persistence, and broker settings.</li>
+          <li>Prefer route-level graceful degradation for external failures instead of process-level aborts.</li>
+        </ol>
+        <div class="docs-callout docs-callout--warning">
+          <strong>Operational rule:</strong> if a full suite run fails from <code>/Volumes/T9</code> but passes from the Investor root, treat it as an invocation-path issue before debugging code.
+        </div>
+      </article>
+
+      <article id="tech-config" class="docs-section" data-doc-section data-doc-title="Configuration Reference">
+        <header class="docs-section__header">
+          <p class="docs-section__eyebrow">Technical</p>
+          <h2>Configuration Reference</h2>
+          <p>Configuration is primarily environment-driven, with route defaults and config dataclasses controlling thresholds, providers, discovery scanning, and broker behavior.</p>
+        </header>
+        <table class="docs-table">
+          <thead>
+            <tr><th>Setting family</th><th>Examples</th><th>Effect</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>Frontier providers</td><td><code>OPENAI_API_KEY</code>, <code>GEMINI_API_KEY</code>, <code>ANTHROPIC_API_KEY</code></td><td>Enables specific qualitative backends</td></tr>
+            <tr><td>Model overrides</td><td><code>OPENAI_MODEL</code>, <code>GEMINI_MODEL</code>, <code>ANTHROPIC_MODEL</code></td><td>Overrides default model tiers</td></tr>
+            <tr><td>Broker mode</td><td>paper, ibkr</td><td>Selects adapter and monitoring behavior</td></tr>
+            <tr><td>Signal thresholds</td><td>Dataclass-backed defaults</td><td>Tunes action gating and earnings penalty</td></tr>
+          </tbody>
+        </table>
+      </article>
+
+      <article id="user-quickstart" class="docs-section" data-doc-section data-doc-title="Quick Start">
+        <header class="docs-section__header">
+          <p class="docs-section__eyebrow">User Guide</p>
+          <h2>Quick Start</h2>
+          <p>Use this sequence when opening the dashboard cold.</p>
+        </header>
+        <ol class="docs-steps">
+          <li>Select the benchmark, period, portfolio scope, and account filter.</li>
+          <li>Pick holdings from the searchable list or add custom symbols.</li>
+          <li>Enable Frontier only if you want qualitative analysis and the extra latency is acceptable.</li>
+          <li>Run analysis and watch partial ticker cards stream in as the job progresses.</li>
+          <li>Move to Trading only after reviewing action items and quantitative warnings in Analysis.</li>
+        </ol>
+      </article>
+
+      <article id="user-dashboard" class="docs-section" data-doc-section data-doc-title="Dashboard Orientation">
+        <header class="docs-section__header">
+          <p class="docs-section__eyebrow">User Guide</p>
+          <h2>Dashboard Orientation</h2>
+          <p>The regime page is organized around three tabs.</p>
+        </header>
+        <table class="docs-table">
+          <thead>
+            <tr><th>Tab</th><th>Primary use</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>Analysis</td><td>Run regime jobs, review exposures, inspect ticker detail cards</td></tr>
+            <tr><td>Trading</td><td>Review paper/IBKR plans, approvals, positions, performance, action items</td></tr>
+            <tr><td>Research</td><td>Theme management, discovery watchlists, supporting context</td></tr>
+          </tbody>
+        </table>
+      </article>
+
+      <article id="user-regime" class="docs-section" data-doc-section data-doc-title="Running Regime Analysis">
+        <header class="docs-section__header">
+          <p class="docs-section__eyebrow">User Guide</p>
+          <h2>Running Regime Analysis</h2>
+          <p>The job runner is asynchronous. The page shell loads immediately, then partial ticker results arrive as the background thread completes daily fits and optional frontier analysis.</p>
+        </header>
+        <div class="docs-callout docs-callout--info">
+          <strong>Status bar meaning:</strong> percentage completion is approximate when frontier analysis is enabled because cached qualitative hits and live LLM requests have different runtimes.
+        </div>
+        <ol class="docs-steps">
+          <li>Scope the universe with portfolio and account filters.</li>
+          <li>Use “Show all holdings” only when you explicitly want historical breadth beyond current snapshots.</li>
+          <li>Add custom symbols as comma, semicolon, newline, or whitespace-separated tickers. Share-class inputs like <code>BRK B</code> remain intact.</li>
+        </ol>
+      </article>
+
+      <article id="user-signals" class="docs-section" data-doc-section data-doc-title="Reading Signals">
+        <header class="docs-section__header">
+          <p class="docs-section__eyebrow">User Guide</p>
+          <h2>Reading Signals</h2>
+          <p>The detail card is intentionally layered: math first, frontier second, charts below.</p>
+        </header>
+        <div class="docs-card-grid">
+          <article class="docs-mini-card">
+            <h3>Math panel</h3>
+            <p>State stats, expected duration, volatility, price targets, sizing, earnings context.</p>
+          </article>
+          <article class="docs-mini-card">
+            <h3>Frontier panel</h3>
+            <p>Thesis validation, catalysts, divergence, verdict, urgency, risk trigger.</p>
+          </article>
+          <article class="docs-mini-card">
+            <h3>Warnings</h3>
+            <p>Risk/reward conflict, stop proximity, earnings risk, regime disagreement, tax drag.</p>
+          </article>
+        </div>
+      </article>
+
+      <article id="user-rules" class="docs-section" data-doc-section data-doc-title="Rules Engine Reference">
+        <header class="docs-section__header">
+          <p class="docs-section__eyebrow">User Guide</p>
+          <h2>Rules Engine Reference</h2>
+          <p>This section documents what the dashboard is supposed to do so rule gaps are visible when the UI disagrees with the engine.</p>
+        </header>
+        <table class="docs-table">
+          <thead>
+            <tr><th>Rule family</th><th>Expected behavior</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>Action column</td><td>Should always reflect the latest composite action computed from signal thresholds and overrides</td></tr>
+            <tr><td>Tax action</td><td>Should separate action from lot-term status and expose lot counts where applicable</td></tr>
+            <tr><td>Verdict override</td><td>Should downgrade qualitative conviction when regime is too new or low-confidence</td></tr>
+            <tr><td>Relative strength</td><td>Should map to Outperforming / In-line / Lagging in the main table and banner</td></tr>
+          </tbody>
+        </table>
+      </article>
+
+      <article id="user-paper" class="docs-section" data-doc-section data-doc-title="Paper Trading Workflow">
+        <header class="docs-section__header">
+          <p class="docs-section__eyebrow">User Guide</p>
+          <h2>Paper Trading Workflow</h2>
+          <p>Paper portfolios are review-first. The scheduler generates plans; execution remains an operator choice unless explicitly automated later.</p>
+        </header>
+        <ol class="docs-steps">
+          <li>Create or select a paper portfolio.</li>
+          <li>Generate plans to pull discovery entries and exit conditions into the review queue.</li>
+          <li>Approve, reject, or modify plans after precheck badges and guardrails render.</li>
+          <li>Execute approved trades and review the audit trail plus performance attribution.</li>
+        </ol>
+      </article>
+
+      <article id="user-discovery" class="docs-section" data-doc-section data-doc-title="Discovery Workflow">
+        <header class="docs-section__header">
+          <p class="docs-section__eyebrow">User Guide</p>
+          <h2>Discovery Workflow</h2>
+          <p>Discovery builds theme maps, scores crowding, and promotes promising candidates into the trading pipeline only after regime conditions and theme conviction align.</p>
+        </header>
+        <table class="docs-table">
+          <thead>
+            <tr><th>Status</th><th>Meaning</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>Watching</td><td>Candidate exists but entry gate has not triggered</td></tr>
+            <tr><td>Entry Signal</td><td>Candidate meets regime, crowd score, and conviction thresholds</td></tr>
+            <tr><td>Added</td><td>Promoted into the managed theme universe</td></tr>
+            <tr><td>Passed</td><td>Explicitly rejected or expired by operator decision</td></tr>
+          </tbody>
+        </table>
+      </article>
+
+      <article id="user-tax" class="docs-section" data-doc-section data-doc-title="Tax & Lot Interpretation">
+        <header class="docs-section__header">
+          <p class="docs-section__eyebrow">User Guide</p>
+          <h2>Tax &amp; Lot Interpretation</h2>
+          <p>Lot drill-downs reflect currently held lots from the scoped account snapshot path, not broad historical lots, unless the operator explicitly requests a broader view.</p>
+        </header>
+        <div class="docs-callout docs-callout--warning">
+          <strong>Active-lot rule:</strong> dust and exited positions should be filtered out by the current-holdings ORM path. If they appear, treat it as a data-path bug, not user error.
+        </div>
+        <table class="docs-table">
+          <thead>
+            <tr><th>Field</th><th>Interpretation</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>Tax status</td><td>Summarized as counts such as <code>2 ST · 3 LT</code></td></tr>
+            <tr><td>Days to LTCG</td><td>Days until a short-term lot crosses into long-term treatment</td></tr>
+            <tr><td>Action impact</td><td>Should compress to a dash when no material tax adjustment exists</td></tr>
+          </tbody>
+        </table>
+      </article>
+
+      <article id="user-glossary" class="docs-section" data-doc-section data-doc-title="Glossary">
+        <header class="docs-section__header">
+          <p class="docs-section__eyebrow">User Guide</p>
+          <h2>Glossary</h2>
+        </header>
+        <table class="docs-table">
+          <thead>
+            <tr><th>Term</th><th>Definition</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>Transition risk</td><td>Probability-weighted instability in the current regime state</td></tr>
+            <tr><td>Divergence</td><td>Mismatch between quant regime state and frontier qualitative read</td></tr>
+            <tr><td>Half-Kelly</td><td>Conservative sizing cap derived from the Kelly criterion</td></tr>
+            <tr><td>Critical-path role</td><td>Theme constituent whose behavior can invalidate the broader investment thesis</td></tr>
+            <tr><td>Guardrail</td><td>Pre-trade rule that can block, warn, or require review before execution</td></tr>
+          </tbody>
+        </table>
+      </article>
+    </section>
+  </div>
+{% endblock %}
+{% block extra_scripts %}
+  <script src="/static/docs.js?v={{ static_version or '0' }}"></script>
+{% endblock %}

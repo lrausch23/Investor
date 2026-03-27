@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>{{ title or "Investor MVP" }}</title>
     <link rel="stylesheet" href="/static/app.css?v={{ static_version or '0' }}" />
+    {% block extra_head %}{% endblock %}
   </head>
   <body>
     <header class="topbar">
@@ -16,6 +17,7 @@
         <a href="/reports">Reports</a>
         <a href="/taxes">Taxes</a>
         <a href="/regime">Regime</a>
+        <a href="/docs">Docs</a>
         <div class="topbar__dropdown">
           <a class="topbar__link" href="/maintenance" aria-haspopup="menu" aria-expanded="false">Maintenance ▾</a>
           <div class="dropdown__menu" role="menu">
@@ -131,5 +133,6 @@
         });
       })();
     </script>
+    {% block extra_scripts %}{% endblock %}
   </body>
 </html>

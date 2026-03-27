@@ -478,3 +478,23 @@ def test_fit_regime_with_adaptive_window_retries_short_history() -> None:
     payload = regime_route._fit_regime_with_adaptive_window({"fit_regime_model": fake_fit_regime_model}, ticker="SPY", market_frame=frame)
     assert calls[0] == 504
     assert payload["training_window"] < 504
+
+
+def test_docs_route_renders_navigation_and_sections(monkeypatch) -> None:
+    client = _client(monkeypatch)
+    response = client.get("/docs")
+    assert response.status_code == 200
+    assert 'href="/static/docs.css' in response.text
+    assert 'href="/docs"' in response.text
+    assert 'href="#tech-overview"' in response.text
+    assert 'id="tech-overview"' in response.text
+    assert 'id="user-glossary"' in response.text
+
+
+def test_docs_route_includes_search_and_script(monkeypatch) -> None:
+    client = _client(monkeypatch)
+    response = client.get("/docs")
+    assert response.status_code == 200
+    assert 'id="docs-search"' in response.text
+    assert 'data-doc-section' in response.text
+    assert 'src="/static/docs.js' in response.text

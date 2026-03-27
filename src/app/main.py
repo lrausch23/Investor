@@ -13,6 +13,7 @@ from src.app.routes.audit import router as audit_router
 from src.app.routes.cash_bills import api_router as cash_bills_api_router
 from src.app.routes.cash_bills import router as cash_bills_router
 from src.app.routes.dashboard import router as dashboard_router
+from src.app.routes.docs import router as docs_router
 from src.app.routes.holdings import router as holdings_router
 from src.app.routes.imports import router as imports_router
 from src.app.routes.expenses import router as expenses_router
@@ -49,7 +50,7 @@ templates.env.globals["auth_status_label"] = auth_status_label
 
 
 def create_app() -> FastAPI:
-    app = FastAPI(title="Investor MVP", version="0.1.0")
+    app = FastAPI(title="Investor MVP", version="0.1.0", docs_url=None, redoc_url=None)
 
     static_dir = BASE_DIR / "static"
     static_dir.mkdir(parents=True, exist_ok=True)
@@ -66,6 +67,7 @@ def create_app() -> FastAPI:
         init_db()
 
     app.include_router(dashboard_router)
+    app.include_router(docs_router)
     app.include_router(setup_router)
     app.include_router(policy_router)
     app.include_router(holdings_router)
