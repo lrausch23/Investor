@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import inspect
 import sys
 import time
+import threading
 from types import SimpleNamespace
 from pathlib import Path
 import pandas as pd
@@ -564,3 +566,80 @@ def test_ibkr_precheck_returns_error_when_adapter_times_out(monkeypatch) -> None
     payload = response.json()
     assert payload["plans"] == []
     assert "connection unavailable" in payload["error"].lower()
+
+
+def test_ibkr_portfolio_get_returns_unavailable_status_when_adapter_times_out(monkeypatch) -> None:
+    def slow_adapter(runtime, portfolio_id):
+        del runtime, portfolio_id
+        time.sleep(0.05)
+        return None
+
+    runtime = _fake_runtime()
+    runtime["get_paper_portfolio"] = lambda portfolio_id: {
+        "id": int(portfolio_id),
+        "name": "IBKR Sandbox",
+        "starting_budget": 100000.0,
+        "current_cash": 95000.0,
+        "broker_type": "ibkr",
+        "status": "Active",
+    }
+    monkeypatch.setattr(regime_route, "_load_hmm_runtime", lambda: (runtime, None))
+    monkeypatch.setattr(regime_route, "_get_broker_adapter", slow_adapter)
+    monkeypatch.setattr(regime_route, "_ADAPTER_TIMEOUT", 0.01)
+    client = TestClient(create_app())
+    response = client.get("/regime/paper-portfolio/2")
+    assert response.status_code == 200
+    assert response.json()["broker_status"]["connection"] == "unavailable"
+
+
+def test_ibkr_endpoints_are_async() -> None:
+    assert inspect.iscoroutinefunction(regime_route.regime_paper_portfolio_get)
+    assert inspect.iscoroutinefunction(regime_route.regime_paper_monitoring)
+    assert inspect.iscoroutinefunction(regime_route.regime_paper_pending_orders)
+    assert inspect.iscoroutinefunction(regime_route.regime_paper_cancel_order)
+    assert inspect.iscoroutinefunction(regime_route.regime_paper_plan_precheck)
+    assert inspect.iscoroutinefunction(regime_route.regime_paper_execute)
+
+
+def test_generate_plans_not_blocked_by_ibkr_timeout(monkeypatch) -> None:
+    def slow_adapter(runtime, portfolio_id):
+        del runtime, portfolio_id
+        time.sleep(0.05)
+        return None
+
+    runtime = _fake_runtime()
+    runtime["get_paper_portfolio"] = lambda portfolio_id: {
+        "id": int(portfolio_id),
+        "name": "IBKR Sandbox",
+        "starting_budget": 100000.0,
+        "current_cash": 95000.0,
+        "broker_type": "ibkr",
+        "status": "Active",
+    }
+    monkeypatch.setattr(regime_route, "_load_hmm_runtime", lambda: (runtime, None))
+    monkeypatch.setattr(regime_route, "_get_broker_adapter", slow_adapter)
+    monkeypatch.setattr(regime_route, "_ADAPTER_TIMEOUT", 0.01)
+    app = create_app()
+    client = TestClient(app)
+
+    results: list[int] = []
+
+    def hit_monitoring() -> None:
+        with TestClient(app) as thread_client:
+            thread_client.get("/regime/paper-portfolio/2/monitoring")
+            results.append(1)
+
+    threads = [threading.Thread(target=hit_monitoring) for _ in range(3)]
+    for thread in threads:
+        thread.start()
+    time.sleep(0.01)
+
+    started = time.monotonic()
+    response = client.post("/regime/paper-portfolio/2/plans/generate")
+    elapsed = time.monotonic() - started
+
+    for thread in threads:
+        thread.join()
+
+    assert response.status_code == 200
+    assert elapsed < 1.0

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 # HMM regime analysis is now built-in under src/regime/
 
+import asyncio
 import datetime as dt
 import json
 import logging
@@ -1109,6 +1110,10 @@ def _get_broker_adapter_safe(runtime: dict[str, Any], portfolio_id: int) -> Any:
         return None
     finally:
         pool.shutdown(wait=False, cancel_futures=True)
+
+
+async def _get_broker_adapter_safe_async(runtime: dict[str, Any], portfolio_id: int) -> Any:
+    return await asyncio.to_thread(_get_broker_adapter_safe, runtime, portfolio_id)
 
 
 def _prune_jobs(now: dt.datetime | None = None) -> None:
@@ -3318,6 +3323,31 @@ def _paper_portfolio_payload(runtime: dict[str, Any], portfolio_id: int) -> dict
     }
 
 
+async def _paper_portfolio_payload_async(runtime: dict[str, Any], portfolio_id: int) -> dict[str, Any]:
+    portfolio = runtime["get_paper_portfolio"](portfolio_id)
+    if portfolio is None:
+        raise HTTPException(status_code=404, detail="Paper portfolio not found.")
+    broker_status = None
+    if str(portfolio.get("broker_type") or "paper").lower() == "ibkr":
+        adapter = await _get_broker_adapter_safe_async(runtime, portfolio_id)
+        if adapter is not None:
+            try:
+                health = adapter.health()
+                broker_status = {
+                    "connection": "connected" if health.get("connected") else "disconnected",
+                    "market_hours": health.get("market_hours", "closed"),
+                }
+            except Exception:
+                broker_status = {"connection": "disconnected", "market_hours": "closed"}
+        else:
+            broker_status = {"connection": "unavailable", "market_hours": "closed"}
+    return {
+        "portfolio": _json_ready(portfolio),
+        "summary": _json_ready(runtime["get_paper_portfolio_summary"](portfolio_id)),
+        "broker_status": _json_ready(broker_status),
+    }
+
+
 @router.post("/paper-portfolio")
 async def regime_paper_portfolio_create(
     request: Request,
@@ -3355,7 +3385,7 @@ def regime_paper_portfolios(
 
 
 @router.get("/paper-portfolio/{portfolio_id}")
-def regime_paper_portfolio_get(
+async def regime_paper_portfolio_get(
     portfolio_id: int,
     session: Session = Depends(db_session),
     actor: str = Depends(require_actor),
@@ -3364,7 +3394,7 @@ def regime_paper_portfolio_get(
     runtime, runtime_error = _load_hmm_runtime()
     if runtime is None:
         raise HTTPException(status_code=503, detail=runtime_error or "Regime analytics are unavailable.")
-    return JSONResponse(content=_paper_portfolio_payload(runtime, portfolio_id))
+    return JSONResponse(content=await _paper_portfolio_payload_async(runtime, portfolio_id))
 
 
 @router.put("/paper-portfolio/{portfolio_id}")
@@ -3435,7 +3465,7 @@ def regime_paper_positions(
 
 
 @router.get("/paper-portfolio/{portfolio_id}/monitoring")
-def regime_paper_monitoring(
+async def regime_paper_monitoring(
     portfolio_id: int,
     session: Session = Depends(db_session),
     actor: str = Depends(require_actor),
@@ -3447,12 +3477,11 @@ def regime_paper_monitoring(
     portfolio = runtime["get_paper_portfolio"](portfolio_id)
     if portfolio is None:
         raise HTTPException(status_code=404, detail="Paper portfolio not found.")
-    adapter = _get_broker_adapter_safe(runtime, portfolio_id)
+    adapter = await _get_broker_adapter_safe_async(runtime, portfolio_id)
     connected = bool(adapter is not None and getattr(getattr(adapter, "_manager", None), "backend", None) and adapter._manager.backend.is_connected())
     if connected:
         try:
-            summary = adapter.get_account_summary()
-            positions = adapter.get_positions()
+            summary, positions = await asyncio.to_thread(lambda: (adapter.get_account_summary(), adapter.get_positions()))
             connection = adapter.health()
         except Exception as exc:
             logger.warning("Monitoring data fetch failed for portfolio %s: %s", portfolio_id, exc)
@@ -3526,7 +3555,7 @@ def regime_paper_plans(
 
 
 @router.get("/paper-portfolio/{portfolio_id}/orders/pending")
-def regime_paper_pending_orders(
+async def regime_paper_pending_orders(
     portfolio_id: int,
     session: Session = Depends(db_session),
     actor: str = Depends(require_actor),
@@ -3538,12 +3567,12 @@ def regime_paper_pending_orders(
     portfolio = runtime["get_paper_portfolio"](portfolio_id)
     if portfolio is None:
         raise HTTPException(status_code=404, detail="Paper portfolio not found.")
-    adapter = _get_broker_adapter_safe(runtime, portfolio_id)
+    adapter = await _get_broker_adapter_safe_async(runtime, portfolio_id)
     if adapter is None:
         return JSONResponse(content={"orders": [], "changed": [], "connection": "unavailable"})
     changed = []
     if str(portfolio.get("broker_type") or "paper").lower() == "ibkr":
-        changed = runtime["poll_pending_orders"](adapter, portfolio_id)
+        changed = await asyncio.to_thread(runtime["poll_pending_orders"], adapter, portfolio_id)
     pending = [
         plan for plan in runtime["get_trade_plans"](portfolio_id, status="all")
         if str(plan.get("status") or "") in {"Submitted", "Partially Filled"}
@@ -3552,7 +3581,7 @@ def regime_paper_pending_orders(
 
 
 @router.post("/paper-portfolio/{portfolio_id}/orders/{plan_id}/cancel")
-def regime_paper_cancel_order(
+async def regime_paper_cancel_order(
     portfolio_id: int,
     plan_id: int,
     session: Session = Depends(db_session),
@@ -3567,13 +3596,13 @@ def regime_paper_cancel_order(
         raise HTTPException(status_code=404, detail="Plan not found")
     if str(plan.get("status") or "") not in {"Submitted", "Partially Filled"}:
         raise HTTPException(status_code=400, detail=f"Cannot cancel plan in status: {plan.get('status')}")
-    adapter = _get_broker_adapter_safe(runtime, portfolio_id)
+    adapter = await _get_broker_adapter_safe_async(runtime, portfolio_id)
     if adapter is None:
         raise HTTPException(status_code=503, detail="IBKR connection unavailable.")
     broker_order_id = str(plan.get("broker_order_id") or "").strip()
     if not broker_order_id:
         raise HTTPException(status_code=400, detail="No broker order ID — plan not yet submitted")
-    cancelled = bool(adapter.cancel_order(broker_order_id))
+    cancelled = await asyncio.to_thread(lambda: bool(adapter.cancel_order(broker_order_id)))
     if cancelled:
         runtime["update_trade_plan_status"](plan_id, "Cancelled", broker_status="cancelled")
         runtime["log_audit_event"](
@@ -3605,7 +3634,7 @@ def regime_paper_generate_plans(
 
 
 @router.post("/paper-portfolio/{portfolio_id}/plans/precheck")
-def regime_paper_plan_precheck(
+async def regime_paper_plan_precheck(
     portfolio_id: int,
     session: Session = Depends(db_session),
     actor: str = Depends(require_actor),
@@ -3618,7 +3647,7 @@ def regime_paper_plan_precheck(
     if portfolio is None:
         raise HTTPException(status_code=404, detail="Paper portfolio not found.")
     plans = runtime["get_trade_plans"](portfolio_id, status="Pending")
-    adapter = _get_broker_adapter_safe(runtime, portfolio_id)
+    adapter = await _get_broker_adapter_safe_async(runtime, portfolio_id)
     if adapter is None:
         return JSONResponse(
             content={
@@ -3626,30 +3655,34 @@ def regime_paper_plan_precheck(
                 "error": "IBKR connection unavailable. Cannot validate guardrails without a live connection.",
             }
         )
-    checked: list[dict[str, Any]] = []
-    for plan in plans:
-        order = runtime["OrderRequest"](
-            portfolio_id=portfolio_id,
-            ticker=str(plan.get("ticker") or ""),
-            action=str(plan.get("action") or ""),
-            quantity=float(plan.get("quantity") or 0.0),
-            limit_price=float(plan.get("proposed_price") or 0.0) or None,
-            theme_id=int(plan["theme_id"]) if plan.get("theme_id") is not None else None,
-            source=str(plan.get("source") or "manual"),
-            notes=str(plan.get("rationale") or ""),
-        )
-        result = runtime["validate_guardrails"](order, adapter, runtime["DEFAULT_RISK_GUARDRAILS"])
-        checked.append(
-            {
-                "plan_id": int(plan["id"]),
-                "ticker": str(plan.get("ticker") or "").upper(),
-                "action": str(plan.get("action") or ""),
-                "guardrail_passed": bool(result.allowed),
-                "guardrail_checks": _json_ready(result.checks),
-                "guardrail_result": _json_ready(result),
-                "broker_type": str(portfolio.get("broker_type") or "paper"),
-            }
-        )
+    def _run_precheck_sync() -> list[dict[str, Any]]:
+        checked: list[dict[str, Any]] = []
+        for plan in plans:
+            order = runtime["OrderRequest"](
+                portfolio_id=portfolio_id,
+                ticker=str(plan.get("ticker") or ""),
+                action=str(plan.get("action") or ""),
+                quantity=float(plan.get("quantity") or 0.0),
+                limit_price=float(plan.get("proposed_price") or 0.0) or None,
+                theme_id=int(plan["theme_id"]) if plan.get("theme_id") is not None else None,
+                source=str(plan.get("source") or "manual"),
+                notes=str(plan.get("rationale") or ""),
+            )
+            result = runtime["validate_guardrails"](order, adapter, runtime["DEFAULT_RISK_GUARDRAILS"])
+            checked.append(
+                {
+                    "plan_id": int(plan["id"]),
+                    "ticker": str(plan.get("ticker") or "").upper(),
+                    "action": str(plan.get("action") or ""),
+                    "guardrail_passed": bool(result.allowed),
+                    "guardrail_checks": _json_ready(result.checks),
+                    "guardrail_result": _json_ready(result),
+                    "broker_type": str(portfolio.get("broker_type") or "paper"),
+                }
+            )
+        return checked
+
+    checked = await asyncio.to_thread(_run_precheck_sync)
     return JSONResponse(content={"plans": checked})
 
 
@@ -3689,7 +3722,7 @@ async def regime_paper_plan_update(
 
 
 @router.post("/paper-portfolio/{portfolio_id}/plans/execute")
-def regime_paper_execute(
+async def regime_paper_execute(
     portfolio_id: int,
     session: Session = Depends(db_session),
     actor: str = Depends(require_actor),
@@ -3706,10 +3739,11 @@ def regime_paper_execute(
         raise HTTPException(status_code=409, detail="Paper portfolio is paused.")
     if status == "Closed":
         raise HTTPException(status_code=409, detail="Paper portfolio is closed.")
-    adapter = _get_broker_adapter_safe(runtime, portfolio_id)
+    adapter = await _get_broker_adapter_safe_async(runtime, portfolio_id)
     if adapter is None:
         return JSONResponse(content={"executed": [], "errors": ["IBKR connection unavailable."], "submitted": 0, "filled": 0})
-    payload = runtime["execute_approved_plans_via_adapter"](
+    payload = await asyncio.to_thread(
+        runtime["execute_approved_plans_via_adapter"],
         portfolio_id,
         adapter,
         guardrails=runtime["DEFAULT_RISK_GUARDRAILS"],
@@ -3717,8 +3751,8 @@ def regime_paper_execute(
     )
     ibkr_adapter_cls = runtime.get("IBKRBrokerAdapter")
     if ibkr_adapter_cls is not None and isinstance(adapter, ibkr_adapter_cls):
-        time.sleep(1)
-        poll_results = runtime["poll_pending_orders"](adapter, portfolio_id)
+        await asyncio.sleep(1)
+        poll_results = await asyncio.to_thread(runtime["poll_pending_orders"], adapter, portfolio_id)
         payload["immediate_fills"] = len([row for row in poll_results if str(getattr(row, "status", "")).lower() == "filled"])
     return JSONResponse(content=_json_ready(payload))
 
