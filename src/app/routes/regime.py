@@ -229,6 +229,14 @@ def _load_hmm_runtime() -> tuple[dict[str, Any] | None, str | None]:
             aggregate_analysts,
             get_registry,
         )
+        from src.regime.meta_labeler import (
+            DEFAULT_META_LABELER_CONFIG,
+            META_FEATURES,
+            MetaLabelerConfig,
+            MetaLabelerEngine,
+            create_and_register,
+            extract_meta_features,
+        )
         from src.regime.alerts import format_alert_summary
         from src.regime.paper_trading import (
             allocate_budget,
@@ -361,6 +369,12 @@ def _load_hmm_runtime() -> tuple[dict[str, Any] | None, str | None]:
         "build_labeled_frame": build_labeled_frame,
         "BarrierConfig": BarrierConfig,
         "PassthroughAnalyst": PassthroughAnalyst,
+        "MetaLabelerEngine": MetaLabelerEngine,
+        "MetaLabelerConfig": MetaLabelerConfig,
+        "DEFAULT_META_LABELER_CONFIG": DEFAULT_META_LABELER_CONFIG,
+        "extract_meta_features": extract_meta_features,
+        "create_and_register_meta_labeler": create_and_register,
+        "META_FEATURES": META_FEATURES,
         "delete_thesis": delete_thesis,
         "format_alert_summary": format_alert_summary,
         "get_investor_db_path": get_investor_db_path,
@@ -2984,6 +2998,34 @@ def _ensemble_settings_payload(runtime: dict[str, Any]) -> dict[str, str]:
     return payload
 
 
+def _meta_labeler_config_from_runtime(runtime: dict[str, Any]) -> Any:
+    config_cls = runtime["MetaLabelerConfig"]
+    defaults = runtime["DEFAULT_META_LABELER_CONFIG"]
+
+    def _int_setting(key: str, default: int) -> int:
+        try:
+            return int(runtime["get_setting"](key) or default)
+        except Exception:
+            return default
+
+    def _float_setting(key: str, default: float) -> float:
+        try:
+            return float(runtime["get_setting"](key) or default)
+        except Exception:
+            return default
+
+    return config_cls(
+        n_estimators=_int_setting("meta_n_estimators", defaults.n_estimators),
+        learning_rate=_float_setting("meta_learning_rate", defaults.learning_rate),
+        max_depth=_int_setting("meta_max_depth", defaults.max_depth),
+        subsample=_float_setting("meta_subsample", defaults.subsample),
+        colsample_bytree=_float_setting("meta_colsample_bytree", defaults.colsample_bytree),
+        random_state=defaults.random_state,
+        min_training_samples=_int_setting("meta_min_training_samples", defaults.min_training_samples),
+        walk_forward_gap=_int_setting("meta_walk_forward_gap", defaults.walk_forward_gap),
+    )
+
+
 @router.get("/ensemble/settings")
 def regime_ensemble_settings_get(
     session: Session = Depends(db_session),
@@ -3036,6 +3078,71 @@ def regime_ensemble_analysts_list(
                 for analyst in (registry.get(name) for name in registry.list_analysts())
                 if analyst is not None
             ]
+        }
+    )
+
+
+@router.post("/ensemble/meta-labeler/train")
+async def regime_meta_labeler_train(
+    request: Request,
+    session: Session = Depends(db_session),
+    actor: str = Depends(require_actor),
+):
+    del session, actor
+    runtime, runtime_error = _load_hmm_runtime()
+    if runtime is None:
+        raise HTTPException(status_code=503, detail=runtime_error or "Regime analytics unavailable.")
+
+    body = await request.json()
+    ticker = str(body.get("ticker", "") or "").strip().upper()
+    if not ticker:
+        raise HTTPException(status_code=400, detail="Ticker is required.")
+    period = str(body.get("period", "3y") or "3y")
+    training_window = int(body.get("training_window", 504) or 504)
+    refit_step = int(body.get("refit_step", 21) or 21)
+
+    def _train_sync() -> dict[str, Any]:
+        market_series = runtime["download_market_frame"](ticker=ticker, period=period)
+        market_frame = getattr(market_series, "frame", market_series)
+        regime_result = runtime["fit_regime_model"](
+            ticker=ticker,
+            market_frame=market_frame,
+            training_window=training_window,
+            refit_step=refit_step,
+        )
+        labeled_frame = runtime["build_labeled_frame"](ticker, market_frame, regime_result)
+        registry = runtime["get_registry"]()
+        engine = registry.get("xgboost_meta_labeler")
+        if engine is None:
+            engine = runtime["create_and_register_meta_labeler"](_meta_labeler_config_from_runtime(runtime))
+        metrics = engine.train(labeled_frame)
+        return {"ticker": ticker, "metrics": metrics, "ready": engine.is_ready()}
+
+    result = await asyncio.to_thread(_train_sync)
+    return JSONResponse(content=_json_ready(result))
+
+
+@router.get("/ensemble/meta-labeler/status")
+def regime_meta_labeler_status(
+    session: Session = Depends(db_session),
+    actor: str = Depends(require_actor),
+):
+    del session, actor
+    runtime, runtime_error = _load_hmm_runtime()
+    if runtime is None:
+        raise HTTPException(status_code=503, detail=runtime_error or "Regime analytics unavailable.")
+
+    registry = runtime["get_registry"]()
+    engine = registry.get("xgboost_meta_labeler")
+    if engine is None:
+        return JSONResponse(content={"ready": False, "status": "not_created"})
+    ready = bool(engine.is_ready())
+    return JSONResponse(
+        content={
+            "ready": ready,
+            "status": "trained" if ready else "not_trained",
+            "metrics": getattr(engine, "_training_metrics", {}) if ready else {},
+            "feature_importances": getattr(engine, "_feature_importances", {}) if ready else {},
         }
     )
 
