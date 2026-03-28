@@ -3797,31 +3797,55 @@ async def regime_paper_plan_precheck(
     def _run_precheck_sync() -> list[dict[str, Any]]:
         checked: list[dict[str, Any]] = []
         for plan in plans:
-            order = runtime["OrderRequest"](
-                portfolio_id=portfolio_id,
-                ticker=str(plan.get("ticker") or ""),
-                action=str(plan.get("action") or ""),
-                quantity=float(plan.get("quantity") or 0.0),
-                limit_price=float(plan.get("proposed_price") or 0.0) or None,
-                theme_id=int(plan["theme_id"]) if plan.get("theme_id") is not None else None,
-                source=str(plan.get("source") or "manual"),
-                notes=str(plan.get("rationale") or ""),
-            )
-            result = runtime["validate_guardrails"](order, adapter, runtime["DEFAULT_RISK_GUARDRAILS"])
-            checked.append(
-                {
-                    "plan_id": int(plan["id"]),
-                    "ticker": str(plan.get("ticker") or "").upper(),
-                    "action": str(plan.get("action") or ""),
-                    "guardrail_passed": bool(result.allowed),
-                    "guardrail_checks": _json_ready(result.checks),
-                    "guardrail_result": _json_ready(result),
-                    "broker_type": str(portfolio.get("broker_type") or "paper"),
-                }
-            )
+            try:
+                order = runtime["OrderRequest"](
+                    portfolio_id=portfolio_id,
+                    ticker=str(plan.get("ticker") or ""),
+                    action=str(plan.get("action") or ""),
+                    quantity=float(plan.get("quantity") or 0.0),
+                    limit_price=float(plan.get("proposed_price") or 0.0) or None,
+                    theme_id=int(plan["theme_id"]) if plan.get("theme_id") is not None else None,
+                    source=str(plan.get("source") or "manual"),
+                    notes=str(plan.get("rationale") or ""),
+                )
+                result = runtime["validate_guardrails"](order, adapter, runtime["DEFAULT_RISK_GUARDRAILS"])
+                checked.append(
+                    {
+                        "plan_id": int(plan["id"]),
+                        "ticker": str(plan.get("ticker") or "").upper(),
+                        "action": str(plan.get("action") or ""),
+                        "guardrail_passed": bool(result.allowed),
+                        "guardrail_checks": _json_ready(result.checks),
+                        "guardrail_result": _json_ready(result),
+                        "broker_type": str(portfolio.get("broker_type") or "paper"),
+                    }
+                )
+            except Exception as exc:
+                logger.warning("Guardrail precheck failed for portfolio %s plan %s: %s", portfolio_id, plan.get("id"), exc)
+                checked.append(
+                    {
+                        "plan_id": int(plan["id"]),
+                        "ticker": str(plan.get("ticker") or "").upper(),
+                        "action": str(plan.get("action") or ""),
+                        "guardrail_passed": False,
+                        "guardrail_checks": [],
+                        "guardrail_result": {"allowed": False, "error": str(exc)},
+                        "broker_type": str(portfolio.get("broker_type") or "paper"),
+                        "error": str(exc),
+                    }
+                )
         return checked
 
-    checked = await asyncio.to_thread(_run_precheck_sync)
+    try:
+        checked = await asyncio.to_thread(_run_precheck_sync)
+    except Exception as exc:
+        logger.warning("Precheck failed for portfolio %s: %s", portfolio_id, exc)
+        return JSONResponse(
+            content={
+                "plans": [],
+                "error": str(exc) or "IBKR connection unavailable. Cannot validate guardrails right now.",
+            }
+        )
     return JSONResponse(content={"plans": checked})
 
 

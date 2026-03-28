@@ -578,6 +578,36 @@ def test_ibkr_precheck_returns_error_when_adapter_times_out(monkeypatch) -> None
     assert "connection unavailable" in payload["error"].lower()
 
 
+def test_ibkr_precheck_returns_error_when_to_thread_raises(monkeypatch) -> None:
+    runtime = _fake_runtime()
+    runtime["get_paper_portfolio"] = lambda portfolio_id: {
+        "id": int(portfolio_id),
+        "name": "IBKR Sandbox",
+        "starting_budget": 100000.0,
+        "current_cash": 95000.0,
+        "broker_type": "ibkr",
+        "status": "Active",
+    }
+
+    async def fake_adapter(runtime_arg, portfolio_id_arg):
+        del runtime_arg, portfolio_id_arg
+        return object()
+
+    async def broken_to_thread(*args, **kwargs):
+        del args, kwargs
+        raise RuntimeError("no current event loop")
+
+    monkeypatch.setattr(regime_route, "_load_hmm_runtime", lambda: (runtime, None))
+    monkeypatch.setattr(regime_route, "_get_broker_adapter_safe_async", fake_adapter)
+    monkeypatch.setattr(regime_route.asyncio, "to_thread", broken_to_thread)
+    client = TestClient(create_app())
+    response = client.post("/regime/paper-portfolio/2/plans/precheck")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["plans"] == []
+    assert "event loop" in payload["error"].lower()
+
+
 def test_ibkr_portfolio_get_returns_unavailable_status_when_adapter_times_out(monkeypatch) -> None:
     def slow_adapter(runtime, portfolio_id):
         del runtime, portfolio_id
@@ -653,3 +683,42 @@ def test_generate_plans_not_blocked_by_ibkr_timeout(monkeypatch) -> None:
 
     assert response.status_code == 200
     assert elapsed < 1.0
+
+
+def test_ibkr_precheck_continues_after_single_plan_failure(monkeypatch) -> None:
+    runtime = _fake_runtime()
+    runtime["get_paper_portfolio"] = lambda portfolio_id: {
+        "id": int(portfolio_id),
+        "name": "IBKR Sandbox",
+        "starting_budget": 100000.0,
+        "current_cash": 95000.0,
+        "broker_type": "ibkr",
+        "status": "Active",
+    }
+    runtime["get_trade_plans"] = lambda portfolio_id, status="Pending": [
+        {"id": 1, "portfolio_id": int(portfolio_id), "ticker": "FAIL", "action": "Buy", "quantity": 10.0, "proposed_price": 100.0, "rationale": "Bad plan", "status": status},
+        {"id": 2, "portfolio_id": int(portfolio_id), "ticker": "NVDA", "action": "Buy", "quantity": 5.0, "proposed_price": 100.0, "rationale": "Good plan", "status": status},
+    ]
+
+    def validate_guardrails(order, adapter, guardrails):
+        del adapter, guardrails
+        if getattr(order, "ticker", "") == "FAIL":
+            raise RuntimeError("guardrail blew up")
+        return SimpleNamespace(allowed=True, checks=[SimpleNamespace(name="ok", passed=True, message="", limit="1", actual="1")])
+
+    async def fake_adapter(runtime_arg, portfolio_id_arg):
+        del runtime_arg, portfolio_id_arg
+        return object()
+
+    runtime["validate_guardrails"] = validate_guardrails
+    monkeypatch.setattr(regime_route, "_load_hmm_runtime", lambda: (runtime, None))
+    monkeypatch.setattr(regime_route, "_get_broker_adapter_safe_async", fake_adapter)
+    client = TestClient(create_app())
+    response = client.post("/regime/paper-portfolio/2/plans/precheck")
+    assert response.status_code == 200
+    payload = response.json()
+    assert len(payload["plans"]) == 2
+    by_ticker = {row["ticker"]: row for row in payload["plans"]}
+    assert by_ticker["FAIL"]["guardrail_passed"] is False
+    assert "guardrail blew up" in by_ticker["FAIL"]["error"]
+    assert by_ticker["NVDA"]["guardrail_passed"] is True

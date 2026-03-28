@@ -3050,36 +3050,78 @@
         fetch(paperEndpoint("paper_precheck", portfolioId), { method: "POST", headers: { Accept: "application/json" } }),
         fetch(paperEndpoint("paper_monitoring", portfolioId), { headers: { Accept: "application/json" } }),
       ]);
-      const detail = await detailResponse.json();
-      const budget = await budgetResponse.json();
-      const plans = await plansResponse.json();
-      const positions = await positionsResponse.json();
-      const performance = await performanceResponse.json();
-      const audit = await auditResponse.json();
-      const precheck = await precheckResponse.json();
-      const monitoring = await monitoringResponse.json();
+      const parseJson = async (response) => {
+        try {
+          return await response.json();
+        } catch (_error) {
+          return {};
+        }
+      };
+      const [detail, budget, plans, positions, performance, audit, precheck, monitoring] = await Promise.all([
+        parseJson(detailResponse),
+        parseJson(budgetResponse),
+        parseJson(plansResponse),
+        parseJson(positionsResponse),
+        parseJson(performanceResponse),
+        parseJson(auditResponse),
+        parseJson(precheckResponse),
+        parseJson(monitoringResponse),
+      ]);
+      const warnPanel = (label, response, payload) => {
+        const message = payload && (payload.detail || payload.error) ? payload.detail || payload.error : `${label} failed (${response.status})`;
+        console.warn(`Paper trading ${label.toLowerCase()} unavailable:`, message);
+      };
       if (!detailResponse.ok) throw new Error(detail.detail || `Portfolio failed (${detailResponse.status})`);
-      if (!budgetResponse.ok) throw new Error(budget.detail || `Budget failed (${budgetResponse.status})`);
-      if (!plansResponse.ok) throw new Error(plans.detail || `Plans failed (${plansResponse.status})`);
-      if (!positionsResponse.ok) throw new Error(positions.detail || `Positions failed (${positionsResponse.status})`);
-      if (!performanceResponse.ok) throw new Error(performance.detail || `Performance failed (${performanceResponse.status})`);
-      if (!auditResponse.ok) throw new Error(audit.detail || `Audit failed (${auditResponse.status})`);
-      if (!precheckResponse.ok) throw new Error(precheck.detail || `Precheck failed (${precheckResponse.status})`);
-      if (!monitoringResponse.ok) throw new Error(monitoring.detail || `Monitoring failed (${monitoringResponse.status})`);
       state.paperPortfolioDetail = detail;
-      state.paperBudget = budget;
-      state.paperPlans = Array.isArray(plans.plans) ? plans.plans : [];
+      if (budgetResponse.ok) {
+        state.paperBudget = budget;
+      } else {
+        warnPanel("Budget", budgetResponse, budget);
+        state.paperBudget = null;
+      }
+      if (plansResponse.ok) {
+        state.paperPlans = Array.isArray(plans.plans) ? plans.plans : [];
+      } else {
+        warnPanel("Plans", plansResponse, plans);
+        state.paperPlans = [];
+      }
       const resultMap = new Map();
       const execResults = state.paperExecutionResults || {};
       (execResults.executed || []).forEach((row) => resultMap.set(String(row.plan_id), `Executed at ${formatCurrency(row.execution_price, 2)}`));
       (execResults.skipped || []).forEach((row) => resultMap.set(String(row.plan_id), row.reason || row.status || "Skipped"));
       state.paperPlans = state.paperPlans.map((plan) => ({ ...plan, execution_result: resultMap.get(String(plan.id)) || null }));
-      state.paperPositions = Array.isArray(positions.positions) ? positions.positions : [];
-      state.paperPerformance = performance;
-      state.paperAudit = Array.isArray(audit.audit) ? audit.audit : [];
-      state.paperAuditSummary = audit.summary || null;
-      state.paperMonitoring = monitoring;
-      state.paperPrecheck = Object.fromEntries((Array.isArray(precheck.plans) ? precheck.plans : []).map((row) => [String(row.plan_id), row]));
+      if (positionsResponse.ok) {
+        state.paperPositions = Array.isArray(positions.positions) ? positions.positions : [];
+      } else {
+        warnPanel("Positions", positionsResponse, positions);
+        state.paperPositions = [];
+      }
+      if (performanceResponse.ok) {
+        state.paperPerformance = performance;
+      } else {
+        warnPanel("Performance", performanceResponse, performance);
+        state.paperPerformance = null;
+      }
+      if (auditResponse.ok) {
+        state.paperAudit = Array.isArray(audit.audit) ? audit.audit : [];
+        state.paperAuditSummary = audit.summary || null;
+      } else {
+        warnPanel("Audit", auditResponse, audit);
+        state.paperAudit = [];
+        state.paperAuditSummary = null;
+      }
+      if (monitoringResponse.ok) {
+        state.paperMonitoring = monitoring;
+      } else {
+        warnPanel("Monitoring", monitoringResponse, monitoring);
+        state.paperMonitoring = null;
+      }
+      if (precheckResponse.ok) {
+        state.paperPrecheck = Object.fromEntries((Array.isArray(precheck.plans) ? precheck.plans : []).map((row) => [String(row.plan_id), row]));
+      } else {
+        warnPanel("Precheck", precheckResponse, precheck);
+        state.paperPrecheck = {};
+      }
       renderPaperBudget();
       renderPaperPlans();
       renderPaperPositions();
