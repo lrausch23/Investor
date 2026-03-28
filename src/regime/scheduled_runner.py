@@ -89,7 +89,7 @@ def run_scheduled_paper_plans() -> dict[str, Any]:
             continue
         portfolio_id = int(portfolio["id"])
         expired = expire_stale_plans(portfolio_id)
-        generated = generate_daily_plans(portfolio_id, cached_regime=cached_regime)
+        generated = generate_daily_plans(portfolio_id, cached_regime=cached_regime, cached_payload=cached_payload)
         polled = 0
         if str(portfolio.get("broker_type") or "paper").lower() == "ibkr":
             backend = get_ib_backend(

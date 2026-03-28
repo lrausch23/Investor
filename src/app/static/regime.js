@@ -798,7 +798,7 @@
                 <td class="num ui-tabular-nums" data-secondary-col="1" data-sort-val="${escapeHtml(row.days_in_regime)}">${escapeHtml(row.days_in_regime)}</td>
                 <td class="nowrap ${row.relative_strength === "Outperforming" ? "cell-ok" : row.relative_strength === "Lagging" ? "cell-bad" : ""}">${row.relative_strength === "Outperforming" ? "↑ " : row.relative_strength === "Lagging" ? "↓ " : "→ "}${escapeHtml(row.relative_strength || "In-line")}</td>
                 <td class="nowrap">
-                  ${row.ai_verdict ? `<button type="button" class="btn btn--secondary" data-regime-focus-frontier="${escapeHtml(row.ticker)}" style="padding:2px 8px">${escapeHtml(row.ai_verdict)}</button>` : '<span class="ui-muted">—</span>'}
+                  ${row.ai_verdict ? `<button type="button" class="btn btn--secondary" data-regime-focus-frontier="${escapeHtml(row.ticker)}" style="padding:2px 8px">${escapeHtml(row.ai_verdict)}</button>${row.frontier && row.frontier.llm_override ? `<span class="ui-badge ui-badge--bad" style="font-size:10px; margin-left:4px" title="${escapeHtml(row.frontier.llm_override_reason || "ML confidence below threshold")}">ML Override</span>` : ""}` : '<span class="ui-muted">—</span>'}
                 </td>
                 <td class="nowrap ${row.stop_proximity && row.stop_proximity.level === "critical" ? "cell-bad regime-table__stop--critical" : row.stop_proximity && row.stop_proximity.level === "warning" ? "regime-table__stop--warning" : "cell-ok regime-table__stop--safe"}" data-sort-val="${escapeHtml(row.stop_proximity ? row.stop_proximity.distance_pct : 999)}">
                   ${row.stop_proximity ? escapeHtml(row.stop_proximity.label) : "—"}
@@ -1065,7 +1065,8 @@
         <div class="ui-section-title">The Frontier Analysis</div>
         <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-top:4px">
           ${frontier.model_name ? `<div class="ui-muted">${escapeHtml(frontier.model_name)}</div>` : ""}
-          <span class="${frontier.source === "vader_fallback" ? "ui-badge ui-badge--warn" : "ui-badge ui-badge--safe"}">${frontier.source === "vader_fallback" ? "Heuristic Estimate" : "AI Analysis"}</span>
+          <span class="${frontier.source === "meta_labeler_override" ? "ui-badge ui-badge--bad" : frontier.source === "vader_fallback" ? "ui-badge ui-badge--warn" : "ui-badge ui-badge--safe"}">${frontier.source === "meta_labeler_override" ? "ML Override" : frontier.source === "vader_fallback" ? "Heuristic Estimate" : "AI Analysis"}</span>
+          ${frontier.llm_override ? `<span class="ui-badge ui-badge--bad" title="${escapeHtml(frontier.llm_override_reason || "ML confidence below threshold")}">Bypassed</span>` : ""}
         </div>
         <div class="${frontier.verdict_overridden ? "banner--warn" : "banner--ok"}" style="padding:8px; border-radius:10px; margin-top:8px">
           ${escapeHtml(thesis && thesis.answer ? thesis.answer : "Thesis check not triggered; current regime remains the working assumption.")}

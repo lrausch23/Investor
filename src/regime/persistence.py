@@ -69,6 +69,61 @@ def _ensure_paper_schema(conn: sqlite3.Connection) -> None:
         _ensure_column(conn, "paper_trade_plan", column, ddl)
 
 
+def _create_paper_trade_plan_table(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS paper_trade_plan (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            portfolio_id INTEGER NOT NULL REFERENCES paper_portfolio(id) ON DELETE CASCADE,
+            theme_id INTEGER REFERENCES investment_theme(id) ON DELETE SET NULL,
+            ticker TEXT NOT NULL,
+            action TEXT NOT NULL CHECK (action IN ('Buy', 'Sell')),
+            quantity REAL NOT NULL,
+            proposed_price REAL,
+            rationale TEXT NOT NULL DEFAULT '',
+            regime_label TEXT,
+            regime_probability REAL,
+            crowd_score INTEGER,
+            source TEXT NOT NULL DEFAULT 'discovery'
+                CHECK (source IN ('discovery', 'exit_signal', 'manual', 'rebalance', 'holdings')),
+            status TEXT NOT NULL DEFAULT 'Pending'
+                CHECK (status IN ('Pending', 'Approved', 'Rejected', 'Modified', 'Submitted', 'Partially Filled', 'Executed', 'Cancelled', 'Expired')),
+            reviewed_at TEXT,
+            executed_at TEXT,
+            execution_price REAL,
+            broker_order_id TEXT,
+            broker_status TEXT,
+            filled_quantity REAL NOT NULL DEFAULT 0,
+            notes TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+
+
+def _migrate_trade_plan_source_check(conn: sqlite3.Connection) -> None:
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'paper_trade_plan'"
+    ).fetchone()
+    create_sql = str(row["sql"] or "") if row else ""
+    if "'holdings'" in create_sql:
+        return
+    if not _table_exists(conn, "paper_trade_plan"):
+        return
+    logger.info("Migrating paper_trade_plan source CHECK constraint to include 'holdings'")
+    conn.execute("ALTER TABLE paper_trade_plan RENAME TO _paper_trade_plan_old")
+    _create_paper_trade_plan_table(conn)
+    old_columns = [str(col["name"]) for col in conn.execute("PRAGMA table_info(_paper_trade_plan_old)").fetchall()]
+    new_columns = [str(col["name"]) for col in conn.execute("PRAGMA table_info(paper_trade_plan)").fetchall()]
+    common_columns = [column for column in new_columns if column in old_columns]
+    columns_sql = ", ".join(common_columns)
+    conn.execute(
+        f"INSERT INTO paper_trade_plan ({columns_sql}) SELECT {columns_sql} FROM _paper_trade_plan_old"
+    )
+    conn.execute("DROP TABLE _paper_trade_plan_old")
+
+
 def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
     row = conn.execute(
         "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
@@ -441,36 +496,7 @@ def _connect() -> sqlite3.Connection:
         )
         """
     )
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS paper_trade_plan (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            portfolio_id INTEGER NOT NULL REFERENCES paper_portfolio(id) ON DELETE CASCADE,
-            theme_id INTEGER REFERENCES investment_theme(id) ON DELETE SET NULL,
-            ticker TEXT NOT NULL,
-            action TEXT NOT NULL CHECK (action IN ('Buy', 'Sell')),
-            quantity REAL NOT NULL,
-            proposed_price REAL,
-            rationale TEXT NOT NULL DEFAULT '',
-            regime_label TEXT,
-            regime_probability REAL,
-            crowd_score INTEGER,
-            source TEXT NOT NULL DEFAULT 'discovery'
-                CHECK (source IN ('discovery', 'exit_signal', 'manual', 'rebalance')),
-            status TEXT NOT NULL DEFAULT 'Pending'
-                CHECK (status IN ('Pending', 'Approved', 'Rejected', 'Modified', 'Submitted', 'Partially Filled', 'Executed', 'Cancelled', 'Expired')),
-            reviewed_at TEXT,
-            executed_at TEXT,
-            execution_price REAL,
-            broker_order_id TEXT,
-            broker_status TEXT,
-            filled_quantity REAL NOT NULL DEFAULT 0,
-            notes TEXT NOT NULL DEFAULT '',
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL
-        )
-        """
-    )
+    _create_paper_trade_plan_table(conn)
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS daily_snapshot (
@@ -490,6 +516,7 @@ def _connect() -> sqlite3.Connection:
         """
     )
     _ensure_paper_schema(conn)
+    _migrate_trade_plan_source_check(conn)
     _migrate_legacy_theses(conn)
     conn.execute(
         """

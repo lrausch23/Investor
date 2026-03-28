@@ -244,9 +244,10 @@ def test_scheduled_plan_generation(temp_modules, monkeypatch) -> None:
     portfolio = store.create_paper_portfolio("Sandbox", 100000.0)
     calls = []
     monkeypatch.setattr(scheduled, "load_payload", lambda: {"rows": [{"ticker": "NVDA", "regime": "Bull", "probability": 0.7}]})
-    monkeypatch.setattr(scheduled, "generate_daily_plans", lambda portfolio_id, cached_regime=None: calls.append((portfolio_id, cached_regime)) or {"buy_plans": [], "exit_plans": []})
+    monkeypatch.setattr(scheduled, "generate_daily_plans", lambda portfolio_id, cached_regime=None, cached_payload=None: calls.append((portfolio_id, cached_regime, cached_payload)) or {"buy_plans": [], "holdings_plans": [], "exit_plans": []})
     monkeypatch.setattr(scheduled, "expire_stale_plans", lambda portfolio_id: 0)
     payload = scheduled.run_scheduled_paper_plans()
     assert payload["portfolios"][0]["portfolio_id"] == portfolio["id"]
     assert calls[0][0] == portfolio["id"]
     assert calls[0][1]["NVDA"] == ("Bull", 0.7)
+    assert calls[0][2]["rows"][0]["ticker"] == "NVDA"

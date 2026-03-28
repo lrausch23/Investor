@@ -258,6 +258,7 @@ def _load_hmm_runtime() -> tuple[dict[str, Any] | None, str | None]:
             generate_buy_plans,
             generate_daily_plans,
             generate_exit_plans,
+            generate_holdings_plans,
             kill_switch,
             record_trade_outcome,
         )
@@ -396,6 +397,7 @@ def _load_hmm_runtime() -> tuple[dict[str, Any] | None, str | None]:
         "allocate_budget": allocate_budget,
         "generate_buy_plans": generate_buy_plans,
         "generate_exit_plans": generate_exit_plans,
+        "generate_holdings_plans": generate_holdings_plans,
         "generate_daily_plans": generate_daily_plans,
         "kill_switch": kill_switch,
         "execute_approved_plans": execute_approved_plans,
@@ -837,6 +839,14 @@ def _frontier_panel(
         return None
     llm_response = qualitative.get("llm_response") or {}
     institutional = llm_response.get("institutional_report", {})
+    qual_source = qualitative.get("source") if isinstance(qualitative, dict) else None
+    override_reason = None
+    if qual_source == "meta_labeler_override":
+        override_reason = str(
+            institutional.get("risk_trigger")
+            or llm_response.get("rationale")
+            or "Meta-labeler confidence below threshold"
+        )
     displayed_verdict, overridden = _verdict_display(
         regime_days=regime_days,
         latest_probability=probability,
@@ -853,7 +863,9 @@ def _frontier_panel(
         "confidence_score": _qualitative_confidence_gauge(qualitative),
         "sizing_guidance": {"text": sizing_text, "color": sizing_color},
         "model_name": model_name,
-        "source": qualitative.get("source") or "llm",
+        "source": qual_source or "llm",
+        "llm_override": qual_source == "meta_labeler_override",
+        "llm_override_reason": override_reason,
     }
 
 
@@ -4225,7 +4237,7 @@ async def regime_paper_cancel_order(
 
 
 @router.post("/paper-portfolio/{portfolio_id}/plans/generate")
-def regime_paper_generate_plans(
+async def regime_paper_generate_plans(
     portfolio_id: int,
     session: Session = Depends(db_session),
     actor: str = Depends(require_actor),
@@ -4235,7 +4247,16 @@ def regime_paper_generate_plans(
     if runtime is None:
         raise HTTPException(status_code=503, detail=runtime_error or "Regime analytics are unavailable.")
     cached_regime = _cached_regime_for_paper_trading()
-    payload = runtime["generate_daily_plans"](portfolio_id, cached_regime=cached_regime)
+    saved_payload = load_payload()
+
+    def _gen_sync() -> dict[str, Any]:
+        return runtime["generate_daily_plans"](
+            portfolio_id,
+            cached_regime=cached_regime,
+            cached_payload=saved_payload,
+        )
+
+    payload = await asyncio.to_thread(_gen_sync)
     return JSONResponse(content=_json_ready(payload))
 
 

@@ -220,7 +220,7 @@ def test_scheduled_runner_polls_ibkr_portfolios(temp_modules, monkeypatch) -> No
     store, _config, _broker, _ib_types, _translator, ib_connection, _ibkr, _paper, scheduled = temp_modules
     store.create_paper_portfolio("IB Sandbox", 100000.0, broker_type="ibkr")
     monkeypatch.setattr(scheduled, "load_payload", lambda: {"rows": []})
-    monkeypatch.setattr(scheduled, "generate_daily_plans", lambda portfolio_id, cached_regime=None: {"buy_plans": [], "exit_plans": []})
+    monkeypatch.setattr(scheduled, "generate_daily_plans", lambda portfolio_id, cached_regime=None, cached_payload=None: {"buy_plans": [], "holdings_plans": [], "exit_plans": []})
     monkeypatch.setattr(scheduled, "expire_stale_plans", lambda portfolio_id: 1)
     monkeypatch.setattr(scheduled, "get_mock_ib_backend", lambda portfolio_id, starting_cash=100000.0: ib_connection.MockIBBackend())
     monkeypatch.setattr(scheduled, "poll_pending_orders", lambda adapter, portfolio_id: ["changed"])

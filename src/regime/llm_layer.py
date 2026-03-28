@@ -29,6 +29,7 @@ _BEST_MODELS = {
     "ollama": "qwen3:32b",
 }
 _CODE_FENCE_RE = re.compile(r"^\s*```(?:json)?\s*(.*?)\s*```\s*$", re.DOTALL | re.IGNORECASE)
+META_LABELER_OVERRIDE_THRESHOLD = 0.30
 
 
 @dataclass
@@ -57,6 +58,59 @@ def _strip_code_fences(text: str) -> str:
 
 def _score_text(text: str) -> int:
     return int(round(_VADER.polarity_scores(text)["compound"] * 5))
+
+
+def _get_override_threshold() -> float:
+    try:
+        from .persistence import get_setting
+
+        value = get_setting("meta_labeler_override_threshold")
+        if value is not None:
+            return float(value)
+    except Exception:
+        pass
+    return META_LABELER_OVERRIDE_THRESHOLD
+
+
+def _deterministic_defensive_response(
+    ticker: str,
+    state_name: str,
+    meta_labeler_score: float,
+    threshold: float,
+) -> dict[str, Any]:
+    if state_name == "Bear":
+        verdict = "Exit"
+        action = "exit"
+        confidence_score = 2
+        rationale = (
+            f"Meta-labeler confidence critically low ({meta_labeler_score:.0%}). "
+            f"Bear regime active. Deterministic override: exit to protect capital."
+        )
+    else:
+        verdict = "Hold"
+        action = "hold"
+        confidence_score = 3
+        rationale = (
+            f"Meta-labeler confidence critically low ({meta_labeler_score:.0%}). "
+            f"Deterministic override: hold position, no new entries until ML confidence recovers."
+        )
+    return {
+        "action": action,
+        "confidence": confidence_score * 10,
+        "confidence_gauge": confidence_score,
+        "rationale": rationale,
+        "institutional_report": {
+            "regime_validation": "Fundamental Pivot",
+            "thesis_alignment": f"ML override at {meta_labeler_score:.0%} confidence",
+            "divergence_check": "None — deterministic override",
+            "verdict": verdict,
+            "confidence_score": confidence_score,
+            "risk_trigger": f"Meta-labeler below {threshold:.0%} threshold",
+            "rationale": rationale,
+        },
+        "override_threshold": threshold,
+        "ticker": ticker,
+    }
 
 
 def analyze_catalysts(
@@ -670,6 +724,35 @@ def build_qualitative_assessment(
 ) -> QualitativeAssessment:
     catalysts, sentiment_score, sentiment = analyze_catalysts(ticker, context_symbols=context_symbols)
     previous_state = previous_label or state_name
+    threshold = _get_override_threshold()
+    if meta_labeler_score is not None and meta_labeler_score < threshold:
+        logger.info(
+            "Deterministic LLM override for %s: meta_labeler_score=%.3f < %.3f threshold",
+            ticker,
+            meta_labeler_score,
+            threshold,
+        )
+        decision_prompt = build_decision_prompt(
+            ticker=ticker,
+            previous_state=previous_state,
+            new_state=state_name,
+            state_confidence=latest_probability,
+            benchmark_state=benchmark_state,
+            catalysts=catalysts,
+            meta_labeler_score=meta_labeler_score,
+        )
+        return QualitativeAssessment(
+            ticker=ticker,
+            catalyst_sentiment=sentiment,
+            sentiment_score=sentiment_score,
+            catalysts=catalysts,
+            decision_prompt=decision_prompt,
+            llm_response=_deterministic_defensive_response(ticker, state_name, meta_labeler_score, threshold),
+            fallback_confidence=_fallback_confidence(state_name, latest_probability, sentiment_score),
+            thesis_check_prompt=None,
+            thesis_check_response=None,
+            source="meta_labeler_override",
+        )
     decision_prompt = build_decision_prompt(
         ticker=ticker,
         previous_state=previous_state,

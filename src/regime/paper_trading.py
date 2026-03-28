@@ -297,6 +297,98 @@ def generate_buy_plans(
     return created
 
 
+def generate_holdings_plans(
+    portfolio_id: int,
+    *,
+    cached_payload: dict[str, Any] | None = None,
+    config: PaperTradingConfig = DEFAULT_PAPER_TRADING_CONFIG,
+) -> list[dict[str, Any]]:
+    if not cached_payload:
+        return []
+    rows = cached_payload.get("rows", [])
+    if not isinstance(rows, list) or not rows:
+        return []
+    portfolio = get_paper_portfolio(portfolio_id)
+    if portfolio is None:
+        return []
+    pending_buy_keys = {
+        (str(plan.get("ticker") or "").upper(), int(plan["theme_id"]) if plan.get("theme_id") is not None else None)
+        for plan in get_trade_plans(portfolio_id, status="Pending")
+        if str(plan.get("action") or "") == "Buy"
+    }
+    open_positions = _open_position_index(portfolio_id)
+    seen: set[tuple[str, int | None]] = set()
+    created: list[dict[str, Any]] = []
+    cash = float(portfolio.get("current_cash") or portfolio.get("cash_balance") or 0.0)
+    max_per_trade = float(getattr(config, "max_single_order_value", 10000.0) or 10000.0)
+    role_budget = min(cash * 0.10, max_per_trade)
+    if role_budget <= 0:
+        return []
+
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        ticker = str(row.get("ticker") or "").strip().upper()
+        if not ticker or not row.get("is_portfolio_holding"):
+            continue
+        ai_verdict = str(row.get("ai_verdict") or "").strip()
+        action = str(row.get("action") or "").strip()
+        composite = str(row.get("composite_signal") or "").strip()
+        is_actionable = (
+            ai_verdict.lower() == "entry"
+            or action.lower() in {"buy", "strong buy"}
+            or composite.lower() in {"buy", "strong buy"}
+        )
+        if not is_actionable:
+            continue
+        theme_membership = row.get("theme_membership") if isinstance(row.get("theme_membership"), list) else []
+        theme_entry = theme_membership[0] if theme_membership else None
+        theme_id = None
+        if isinstance(theme_entry, dict) and theme_entry.get("theme_id") is not None:
+            theme_id = int(theme_entry["theme_id"])
+        key = (ticker, theme_id)
+        if key in pending_buy_keys or ticker in open_positions:
+            continue
+        if key in seen:
+            continue
+        price_targets = row.get("price_targets") if isinstance(row.get("price_targets"), dict) else {}
+        proposed_price = float(price_targets.get("entry_price") or 0.0) or float(row.get("current_price") or 0.0)
+        if proposed_price <= 0:
+            continue
+        quantity = math.floor(role_budget / proposed_price)
+        if quantity <= 0:
+            continue
+        seen.add(key)
+        parts: list[str] = []
+        if ai_verdict:
+            parts.append(f"AI verdict: {ai_verdict}")
+        if composite:
+            parts.append(f"Composite: {composite}")
+        ml_prob = row.get("meta_labeler_probability")
+        if ml_prob is not None:
+            try:
+                parts.append(f"ML confidence: {float(ml_prob):.0%}")
+            except Exception:
+                pass
+        rationale = f"Holdings bridge — {'; '.join(parts)}" if parts else "Holdings bridge plan"
+        created.append(
+            create_trade_plan(
+                portfolio_id,
+                ticker,
+                "Buy",
+                quantity,
+                rationale,
+                theme_id=theme_id,
+                proposed_price=proposed_price,
+                regime_label=str(row.get("regime") or ""),
+                regime_probability=float(row.get("probability") or 0.0) if row.get("probability") is not None else None,
+                source="holdings",
+            )
+        )
+        pending_buy_keys.add(key)
+    return created
+
+
 def generate_exit_plans(
     portfolio_id: int,
     *,
@@ -371,14 +463,17 @@ def generate_daily_plans(
     portfolio_id: int,
     *,
     cached_regime: CachedRegimeMap | dict[str, Any] | None = None,
+    cached_payload: dict[str, Any] | None = None,
     config: PaperTradingConfig = DEFAULT_PAPER_TRADING_CONFIG,
 ) -> dict[str, Any]:
     buy_plans = generate_buy_plans(portfolio_id, config=config)
+    holdings_plans = generate_holdings_plans(portfolio_id, cached_payload=cached_payload, config=config)
     exit_plans = generate_exit_plans(portfolio_id, cached_regime=cached_regime)
     return {
         "buy_plans": buy_plans,
+        "holdings_plans": holdings_plans,
         "exit_plans": exit_plans,
-        "created_count": len(buy_plans) + len(exit_plans),
+        "created_count": len(buy_plans) + len(holdings_plans) + len(exit_plans),
         "generated_at": _now().isoformat(),
     }
 
