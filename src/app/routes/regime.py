@@ -3936,18 +3936,40 @@ async def regime_paper_execute(
     adapter = await _get_broker_adapter_safe_async(runtime, portfolio_id)
     if adapter is None:
         return JSONResponse(content={"executed": [], "errors": ["IBKR connection unavailable."], "submitted": 0, "filled": 0})
-    payload = await asyncio.to_thread(
-        runtime["execute_approved_plans_via_adapter"],
-        portfolio_id,
-        adapter,
-        guardrails=runtime["DEFAULT_RISK_GUARDRAILS"],
-        actor="user",
-    )
-    ibkr_adapter_cls = runtime.get("IBKRBrokerAdapter")
-    if ibkr_adapter_cls is not None and isinstance(adapter, ibkr_adapter_cls):
-        await asyncio.sleep(1)
-        poll_results = await asyncio.to_thread(runtime["poll_pending_orders"], adapter, portfolio_id)
-        payload["immediate_fills"] = len([row for row in poll_results if str(getattr(row, "status", "")).lower() == "filled"])
+    used_fallback = False
+    try:
+        payload = await asyncio.to_thread(
+            runtime["execute_approved_plans_via_adapter"],
+            portfolio_id,
+            adapter,
+            guardrails=runtime["DEFAULT_RISK_GUARDRAILS"],
+            actor="user",
+        )
+    except Exception as exc:
+        logger.warning(
+            "Execute via IBKR adapter failed for portfolio %s, retrying with local paper adapter: %s",
+            portfolio_id,
+            exc,
+        )
+        fallback_adapter = runtime["PaperBrokerAdapter"](portfolio_id)
+        payload = await asyncio.to_thread(
+            runtime["execute_approved_plans_via_adapter"],
+            portfolio_id,
+            fallback_adapter,
+            guardrails=runtime["DEFAULT_RISK_GUARDRAILS"],
+            actor="user",
+        )
+        used_fallback = True
+
+    if not used_fallback:
+        ibkr_adapter_cls = runtime.get("IBKRBrokerAdapter")
+        if ibkr_adapter_cls is not None and isinstance(adapter, ibkr_adapter_cls):
+            await asyncio.sleep(1)
+            poll_results = await asyncio.to_thread(runtime["poll_pending_orders"], adapter, portfolio_id)
+            payload["immediate_fills"] = len([row for row in poll_results if str(getattr(row, "status", "")).lower() == "filled"])
+    if used_fallback:
+        payload["fallback"] = True
+        payload["fallback_reason"] = "IBKR adapter unavailable in thread context; executed with local paper adapter."
     return JSONResponse(content=_json_ready(payload))
 
 
