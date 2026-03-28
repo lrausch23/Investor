@@ -224,6 +224,11 @@ def _load_hmm_runtime() -> tuple[dict[str, Any] | None, str | None]:
             run_discovery_scan,
             run_full_discovery,
         )
+        from src.regime.ensemble import (
+            PassthroughAnalyst,
+            aggregate_analysts,
+            get_registry,
+        )
         from src.regime.alerts import format_alert_summary
         from src.regime.paper_trading import (
             allocate_budget,
@@ -257,6 +262,7 @@ def _load_hmm_runtime() -> tuple[dict[str, Any] | None, str | None]:
             tax_adjusted_signals,
             compute_unified_confidence,
         )
+        from src.regime.triple_barrier import BarrierConfig, apply_triple_barrier_labels, build_labeled_frame
     except ImportError:
         return None, (
             "Regime analytics are unavailable because hmm-market-regime-tool is not installed "
@@ -349,6 +355,12 @@ def _load_hmm_runtime() -> tuple[dict[str, Any] | None, str | None]:
         "check_entry_signals": check_entry_signals,
         "expire_stale_candidates": expire_stale_candidates,
         "promote_candidate": promote_candidate,
+        "get_registry": get_registry,
+        "aggregate_analysts": aggregate_analysts,
+        "apply_triple_barrier_labels": apply_triple_barrier_labels,
+        "build_labeled_frame": build_labeled_frame,
+        "BarrierConfig": BarrierConfig,
+        "PassthroughAnalyst": PassthroughAnalyst,
         "delete_thesis": delete_thesis,
         "format_alert_summary": format_alert_summary,
         "get_investor_db_path": get_investor_db_path,
@@ -2951,6 +2963,79 @@ async def regime_frontier_settings_update(
         content={
             "provider": runtime["get_setting"]("frontier_provider") or "auto",
             "model": runtime["get_setting"]("frontier_model") or "",
+        }
+    )
+
+
+def _ensemble_settings_payload(runtime: dict[str, Any]) -> dict[str, str]:
+    payload = {
+        "ensemble_enabled": "false",
+        "ensemble_veto_threshold": "0.50",
+        "ensemble_confirm_threshold": "0.65",
+        "ensemble_aggregation_method": "mean",
+        "barrier_profit_target_atr_mult": "2.0",
+        "barrier_stop_loss_atr_mult": "2.0",
+        "barrier_max_holding_days": "21",
+        "meta_compute_backend": "local",
+    }
+    payload.update(runtime["get_all_settings"]("ensemble_"))
+    payload.update(runtime["get_all_settings"]("barrier_"))
+    payload.update(runtime["get_all_settings"]("meta_"))
+    return payload
+
+
+@router.get("/ensemble/settings")
+def regime_ensemble_settings_get(
+    session: Session = Depends(db_session),
+    actor: str = Depends(require_actor),
+):
+    del session, actor
+    runtime, runtime_error = _load_hmm_runtime()
+    if runtime is None:
+        raise HTTPException(status_code=503, detail=runtime_error or "Regime analytics are unavailable.")
+    return JSONResponse(content=_ensemble_settings_payload(runtime))
+
+
+@router.put("/ensemble/settings")
+async def regime_ensemble_settings_put(
+    request: Request,
+    session: Session = Depends(db_session),
+    actor: str = Depends(require_actor),
+):
+    del session, actor
+    runtime, runtime_error = _load_hmm_runtime()
+    if runtime is None:
+        raise HTTPException(status_code=503, detail=runtime_error or "Regime analytics are unavailable.")
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=422, detail="Request body must be a JSON object.")
+    allowed_prefixes = ("ensemble_", "barrier_", "meta_")
+    for key, value in body.items():
+        if any(str(key).startswith(prefix) for prefix in allowed_prefixes):
+            runtime["set_setting"](str(key), str(value))
+    return JSONResponse(content=_ensemble_settings_payload(runtime))
+
+
+@router.get("/ensemble/analysts")
+def regime_ensemble_analysts_list(
+    session: Session = Depends(db_session),
+    actor: str = Depends(require_actor),
+):
+    del session, actor
+    runtime, runtime_error = _load_hmm_runtime()
+    if runtime is None:
+        raise HTTPException(status_code=503, detail=runtime_error or "Regime analytics are unavailable.")
+    registry = runtime["get_registry"]()
+    return JSONResponse(
+        content={
+            "analysts": [
+                {"name": analyst.name, "ready": analyst.is_ready()}
+                for analyst in (registry.get(name) for name in registry.list_analysts())
+                if analyst is not None
+            ]
         }
     )
 
