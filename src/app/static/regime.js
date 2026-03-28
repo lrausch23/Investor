@@ -3690,7 +3690,9 @@
     if (providerSelect) {
       providerSelect.addEventListener("change", async () => {
         const provider = currentFrontierProvider();
-        await saveFrontierSettings(provider, provider === "auto" || provider === "best" ? "" : currentFrontierModel());
+        const modelSelect = document.querySelector("[data-regime-frontier-model]");
+        if (modelSelect) modelSelect.value = "";
+        await saveFrontierSettings(provider, "");
         syncFrontierControlVisibility();
         await loadFrontierModels(provider);
       });
