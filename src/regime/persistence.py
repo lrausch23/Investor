@@ -923,7 +923,7 @@ def upsert_watchlist_candidate(
 
 def get_watchlist(
     theme_id: int | None = None,
-    status: str | None = None,
+    status: str | list[str] | None = None,
     max_crowd_score: int | None = None,
 ) -> list[dict[str, Any]]:
     query = [
@@ -942,9 +942,13 @@ def get_watchlist(
     if theme_id is not None:
         query.append("AND dw.theme_id = ?")
         params.append(int(theme_id))
-    if status:
+    if isinstance(status, str) and status:
         query.append("AND dw.status = ?")
         params.append(status)
+    elif isinstance(status, list) and status:
+        placeholders = ", ".join("?" for _ in status)
+        query.append(f"AND dw.status IN ({placeholders})")
+        params.extend(status)
     else:
         query.append("AND dw.status NOT IN ('Expired', 'Passed')")
     if max_crowd_score is not None:

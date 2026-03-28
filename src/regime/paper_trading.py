@@ -255,12 +255,14 @@ def generate_buy_plans(
     theme_budgets = {int(item["theme_id"]): item for item in allocation.get("themes", [])}
     pending_buys = _pending_plan_index(portfolio_id, "Buy")
     open_positions = _open_position_index(portfolio_id)
+    planned_keys: set[tuple[str, int]] = set()
     created: list[dict[str, Any]] = []
-    for item in get_watchlist(status="Entry Signal"):
+    for item in get_watchlist(status=["Entry Signal", "Added"]):
         ticker = str(item.get("ticker") or "").upper()
-        if not ticker or ticker in pending_buys or ticker in open_positions:
-            continue
         theme_id = int(item.get("theme_id") or 0)
+        key = (ticker, theme_id)
+        if not ticker or ticker in pending_buys or ticker in open_positions or key in planned_keys:
+            continue
         theme_budget = theme_budgets.get(theme_id)
         if not theme_budget:
             continue
@@ -272,6 +274,7 @@ def generate_buy_plans(
         quantity = math.floor(role_budget / proposed_price)
         if quantity <= 0:
             continue
+        planned_keys.add(key)
         rationale = (
             f"Entry Signal from discovery watchlist. "
             f"{item.get('discovery_rationale') or 'Candidate meets paper-trading entry criteria.'}"
