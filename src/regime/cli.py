@@ -49,7 +49,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--barrier-vol-multiplier", type=float, default=1.0, help="Triple-barrier width multiplier.")
     parser.add_argument("--macro-weighting", action="store_true", help="Boost ^VIX and ^TNX influence in the HMM features.")
     parser.add_argument("--frontier-on", action="store_true", help="Enable live OpenAI/Gemini calls.")
-    parser.add_argument("--frontier-provider", default="auto", choices=["auto", "openai", "gemini", "claude", "best"])
+    parser.add_argument("--frontier-provider", default="auto", choices=["auto", "openai", "gemini", "claude", "ollama", "best"])
     parser.add_argument("--chart-dir", default=str(Path(__file__).resolve().parents[1] / "charts"))
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--weekly-digest", action="store_true")

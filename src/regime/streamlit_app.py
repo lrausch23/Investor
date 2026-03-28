@@ -310,7 +310,12 @@ def main() -> None:
                 format="%.2f",
             )
         frontier_enabled = st.toggle("Frontier API Toggle", value=False)
-        frontier_provider = st.selectbox("Frontier Provider", options=["auto", "openai", "gemini", "claude", "best"], index=0, format_func=lambda value: "Best Available" if value == "auto" else value.title() if value != "best" else "Best Available")
+        frontier_provider = st.selectbox(
+            "Frontier Provider",
+            options=["auto", "openai", "gemini", "claude", "ollama", "best"],
+            index=0,
+            format_func=lambda value: "Best Available" if value == "auto" else "Ollama (local)" if value == "ollama" else value.title() if value != "best" else "Best Available",
+        )
         if frontier_enabled:
             st.caption(f"Frontier model configured: {configured_frontier_model(frontier_provider)}")
         thesis_ticker = st.selectbox("Thesis Ticker", options=selected_tickers or available_tickers)

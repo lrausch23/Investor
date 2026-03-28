@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import warnings
 from dataclasses import dataclass
 import logging
@@ -23,7 +24,9 @@ _BEST_MODELS = {
     "openai": "gpt-4o",
     "gemini": "gemini-2.5-pro",
     "claude": "claude-sonnet-4-20250514",
+    "ollama": "qwen3:32b",
 }
+_CODE_FENCE_RE = re.compile(r"^\s*```(?:json)?\s*(.*?)\s*```\s*$", re.DOTALL | re.IGNORECASE)
 
 
 @dataclass
@@ -38,6 +41,16 @@ class QualitativeAssessment:
     thesis_check_prompt: str | None
     thesis_check_response: dict[str, Any] | None
     source: str = "llm"
+
+
+def _strip_code_fences(text: str) -> str:
+    payload = str(text or "").strip()
+    if not payload:
+        return payload
+    match = _CODE_FENCE_RE.match(payload)
+    if match:
+        return match.group(1).strip()
+    return payload
 
 
 def _score_text(text: str) -> int:
@@ -285,9 +298,11 @@ def _request_openai(prompt: str) -> dict[str, Any] | None:
     text = getattr(response, "output_text", "").strip()
     if not text:
         return None
+    cleaned = _strip_code_fences(text)
     try:
-        return json.loads(text)
+        return json.loads(cleaned)
     except json.JSONDecodeError:
+        logger.warning("OpenAI response was not valid JSON after fence stripping: %r", text[:400])
         return {"raw_response": text}
 
 
@@ -313,9 +328,11 @@ def _request_gemini(prompt: str) -> dict[str, Any] | None:
     text = text.strip()
     if not text:
         return None
+    cleaned = _strip_code_fences(text)
     try:
-        return json.loads(text)
+        return json.loads(cleaned)
     except json.JSONDecodeError:
+        logger.warning("Gemini response was not valid JSON after fence stripping: %r", text[:400])
         return {"raw_response": text}
 
 
@@ -349,10 +366,42 @@ def _request_claude(prompt: str) -> dict[str, Any] | None:
     payload = "\n".join(parts).strip()
     if not payload:
         return None
+    cleaned = _strip_code_fences(payload)
     try:
-        return json.loads(payload)
+        return json.loads(cleaned)
     except json.JSONDecodeError:
+        logger.warning("Claude response was not valid JSON after fence stripping: %r", payload[:400])
         return {"raw_response": payload}
+
+
+def _request_ollama(prompt: str) -> dict[str, Any] | None:
+    base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434/v1")
+    model = os.getenv("OLLAMA_MODEL", "qwen3:32b")
+    client = OpenAI(base_url=base_url, api_key=os.getenv("OLLAMA_API_KEY", "ollama"))
+    logger.info("Requesting Frontier analysis from Ollama model=%s base_url=%s", model, base_url)
+    try:
+        response = client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.3,
+        )
+    except Exception as exc:
+        logger.warning("Ollama request failed.", exc_info=exc)
+        raise LLMProviderError("Ollama request failed.") from exc
+    text = ""
+    choices = getattr(response, "choices", []) or []
+    if choices:
+        message = getattr(choices[0], "message", None)
+        text = getattr(message, "content", "") or ""
+    text = text.strip()
+    if not text:
+        return None
+    cleaned = _strip_code_fences(text)
+    try:
+        return json.loads(cleaned)
+    except json.JSONDecodeError:
+        logger.warning("Ollama response was not valid JSON after fence stripping: %r", text[:400])
+        return {"raw_response": text}
 
 
 def _provider_request(prompt: str, provider: str, *, use_best: bool = False) -> dict[str, Any] | None:
@@ -360,11 +409,13 @@ def _provider_request(prompt: str, provider: str, *, use_best: bool = False) -> 
         "OPENAI_MODEL": os.getenv("OPENAI_MODEL"),
         "GEMINI_MODEL": os.getenv("GEMINI_MODEL"),
         "ANTHROPIC_MODEL": os.getenv("ANTHROPIC_MODEL"),
+        "OLLAMA_MODEL": os.getenv("OLLAMA_MODEL"),
     }
     if use_best:
         os.environ["OPENAI_MODEL"] = _BEST_MODELS["openai"]
         os.environ["GEMINI_MODEL"] = _BEST_MODELS["gemini"]
         os.environ["ANTHROPIC_MODEL"] = _BEST_MODELS["claude"]
+        os.environ["OLLAMA_MODEL"] = _BEST_MODELS["ollama"]
     try:
         if provider == "openai":
             return _request_openai(prompt)
@@ -372,6 +423,8 @@ def _provider_request(prompt: str, provider: str, *, use_best: bool = False) -> 
             return _request_gemini(prompt)
         if provider == "claude":
             return _request_claude(prompt)
+        if provider == "ollama":
+            return _request_ollama(prompt)
         return None
     finally:
         for key, value in original.items():
@@ -390,6 +443,7 @@ def request_frontier_decision(prompt: str, enabled: bool, provider: str = "auto"
                 _provider_request(prompt, "claude", use_best=True)
                 or _provider_request(prompt, "openai", use_best=True)
                 or _provider_request(prompt, "gemini", use_best=True)
+                or _provider_request(prompt, "ollama", use_best=True)
             )
         if provider == "openai":
             return _request_openai(prompt)
@@ -397,7 +451,9 @@ def request_frontier_decision(prompt: str, enabled: bool, provider: str = "auto"
             return _request_gemini(prompt)
         if provider == "claude":
             return _request_claude(prompt)
-        return _request_openai(prompt) or _request_gemini(prompt) or _request_claude(prompt)
+        if provider == "ollama":
+            return _request_ollama(prompt)
+        return _request_openai(prompt) or _request_gemini(prompt) or _request_claude(prompt) or _request_ollama(prompt)
     except LLMProviderError:
         logger.warning("Frontier provider request failed; returning fallback decision path.")
         return None
@@ -411,20 +467,22 @@ def configured_frontier_model(provider: str = "auto") -> str:
             return f"OpenAI: {_BEST_MODELS['openai']} (best)"
         if os.getenv("GEMINI_API_KEY"):
             return f"Gemini: {_BEST_MODELS['gemini']} (best)"
-        return f"Claude: {_BEST_MODELS['claude']} (best)"
+        return f"Ollama: {_BEST_MODELS['ollama']} (best)"
     if provider == "openai":
         return f"OpenAI: {os.getenv('OPENAI_MODEL', 'gpt-4o')}"
     if provider == "gemini":
         return f"Gemini: {os.getenv('GEMINI_MODEL', 'gemini-2.5-pro')}"
     if provider == "claude":
         return f"Claude: {os.getenv('ANTHROPIC_MODEL', 'claude-sonnet-4-20250514')}"
+    if provider == "ollama":
+        return f"Ollama: {os.getenv('OLLAMA_MODEL', 'qwen3:32b')}"
     if os.getenv("OPENAI_API_KEY"):
         return f"OpenAI: {os.getenv('OPENAI_MODEL', 'gpt-4o')}"
     if os.getenv("GEMINI_API_KEY"):
         return f"Gemini: {os.getenv('GEMINI_MODEL', 'gemini-2.5-pro')}"
     if os.getenv("ANTHROPIC_API_KEY"):
         return f"Claude: {os.getenv('ANTHROPIC_MODEL', 'claude-sonnet-4-20250514')}"
-    return f"OpenAI: {os.getenv('OPENAI_MODEL', 'gpt-4o')}"
+    return f"Ollama: {os.getenv('OLLAMA_MODEL', 'qwen3:32b')}"
 
 
 def build_qualitative_assessment(

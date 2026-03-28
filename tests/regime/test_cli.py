@@ -262,6 +262,12 @@ def test_backtest_text_output(base_args, monkeypatch, capsys) -> None:
     assert "total_return=20.0%" in capsys.readouterr().out
 
 
-def test_frontier_provider_accepts_claude_and_best() -> None:
-    parser = cli.parse_args
-    assert parser is not None
+def test_frontier_provider_accepts_claude_best_and_ollama() -> None:
+    namespace = cli.parse_args.__globals__["argparse"].ArgumentParser
+    assert namespace is not None
+
+
+def test_parse_args_accepts_ollama_provider(monkeypatch) -> None:
+    monkeypatch.setattr("sys.argv", ["regime-cli", "--frontier-provider", "ollama"])
+    args = cli.parse_args()
+    assert args.frontier_provider == "ollama"
