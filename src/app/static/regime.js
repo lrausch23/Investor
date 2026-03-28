@@ -1513,8 +1513,8 @@
 
   function renderPayload(payload) {
     state.lastPayload = payload;
-    if (Array.isArray(payload.themes)) state.themes = payload.themes;
-    if (Array.isArray(payload.theme_health)) state.themeHealth = payload.theme_health;
+    if (Array.isArray(payload.themes) && payload.themes.length) state.themes = payload.themes;
+    if (Array.isArray(payload.theme_health) && payload.theme_health.length) state.themeHealth = payload.theme_health;
     renderWarnings(payload.warnings || []);
     renderCachedNote(payload);
     renderKpis(payload);

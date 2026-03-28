@@ -28,3 +28,7 @@ class LLMProviderError(RegimeError):
 
 class ConfigurationError(RegimeError):
     """Missing or invalid configuration."""
+
+
+class DuplicateThemeError(PersistenceError):
+    """Attempted to create or rename a theme with a name that already exists."""

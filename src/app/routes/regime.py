@@ -36,6 +36,7 @@ from src.app.routes.regime_cache import (
     save_qualitative_cache,
 )
 from src.db.session import get_session
+from src.regime.exceptions import DuplicateThemeError
 
 
 router = APIRouter(prefix="/regime", tags=["regime"])
@@ -3088,13 +3089,16 @@ async def regime_themes_create(
     if runtime is None:
         raise HTTPException(status_code=503, detail=runtime_error or "Regime analytics are unavailable.")
     form = await _read_run_request(request)
-    theme = runtime["create_theme"](
-        _normalize_theme_name(form.get("name")),
-        _normalize_theme_narrative(form.get("narrative")),
-        _normalize_theme_conviction(form.get("conviction")),
-        _normalize_theme_status(form.get("status")),
-        sector_hint=_normalize_theme_sector_hint(form.get("sector_hint", "")),
-    )
+    try:
+        theme = runtime["create_theme"](
+            _normalize_theme_name(form.get("name")),
+            _normalize_theme_narrative(form.get("narrative")),
+            _normalize_theme_conviction(form.get("conviction")),
+            _normalize_theme_status(form.get("status")),
+            sector_hint=_normalize_theme_sector_hint(form.get("sector_hint", "")),
+        )
+    except DuplicateThemeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
     return JSONResponse(content=_json_ready(theme))
 
 
@@ -3128,14 +3132,17 @@ async def regime_theme_update(
     if runtime is None:
         raise HTTPException(status_code=503, detail=runtime_error or "Regime analytics are unavailable.")
     form = await _read_run_request(request)
-    updated = runtime["update_theme"](
-        theme_id,
-        name=_normalize_theme_name(form["name"]) if "name" in form else None,
-        narrative=_normalize_theme_narrative(form["narrative"]) if "narrative" in form else None,
-        sector_hint=_normalize_theme_sector_hint(form["sector_hint"]) if "sector_hint" in form else None,
-        conviction=_normalize_theme_conviction(form["conviction"]) if "conviction" in form else None,
-        status=_normalize_theme_status(form["status"]) if "status" in form else None,
-    )
+    try:
+        updated = runtime["update_theme"](
+            theme_id,
+            name=_normalize_theme_name(form["name"]) if "name" in form else None,
+            narrative=_normalize_theme_narrative(form["narrative"]) if "narrative" in form else None,
+            sector_hint=_normalize_theme_sector_hint(form["sector_hint"]) if "sector_hint" in form else None,
+            conviction=_normalize_theme_conviction(form["conviction"]) if "conviction" in form else None,
+            status=_normalize_theme_status(form["status"]) if "status" in form else None,
+        )
+    except DuplicateThemeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
     if updated is None:
         raise HTTPException(status_code=404, detail="Theme not found.")
     get_supply_chain_fn = runtime.get("get_supply_chain")

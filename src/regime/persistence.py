@@ -9,7 +9,7 @@ from pathlib import Path
 from dataclasses import asdict, is_dataclass
 from typing import Any
 
-from .exceptions import PersistenceError
+from .exceptions import DuplicateThemeError, PersistenceError
 from .logging_config import setup_regime_logging
 
 setup_regime_logging()
@@ -576,13 +576,18 @@ def delete_setting(key: str) -> bool:
 def create_theme(name: str, narrative: str = "", conviction: int = 3, status: str = "Active", sector_hint: str = "") -> dict[str, Any]:
     now = datetime.now(timezone.utc).isoformat()
     with _connect() as conn:
-        cursor = conn.execute(
-            """
-            INSERT INTO investment_theme (name, narrative, sector_hint, conviction, status, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            (name.strip(), narrative.strip(), sector_hint.strip(), int(conviction), status, now, now),
-        )
+        try:
+            cursor = conn.execute(
+                """
+                INSERT INTO investment_theme (name, narrative, sector_hint, conviction, status, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (name.strip(), narrative.strip(), sector_hint.strip(), int(conviction), status, now, now),
+            )
+        except sqlite3.IntegrityError as exc:
+            if "UNIQUE constraint" in str(exc):
+                raise DuplicateThemeError(f"A theme named '{name.strip()}' already exists.") from exc
+            raise
         theme_id = int(cursor.lastrowid)
     return get_theme(theme_id) or {}
 
@@ -619,7 +624,12 @@ def update_theme(
     params.append(datetime.now(timezone.utc).isoformat())
     params.append(int(theme_id))
     with _connect() as conn:
-        cursor = conn.execute(f"UPDATE investment_theme SET {', '.join(updates)} WHERE id = ?", params)
+        try:
+            cursor = conn.execute(f"UPDATE investment_theme SET {', '.join(updates)} WHERE id = ?", params)
+        except sqlite3.IntegrityError as exc:
+            if "UNIQUE constraint" in str(exc):
+                raise DuplicateThemeError("A theme with that name already exists.") from exc
+            raise
         if not cursor.rowcount:
             return None
     return get_theme(theme_id)
