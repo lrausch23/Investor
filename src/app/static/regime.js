@@ -492,6 +492,7 @@
     const riskTone = avgTransitionRisk > 50 ? "negative" : avgTransitionRisk >= 25 ? "warning" : "positive";
     const pendingPlans = (state.paperPlans || []).filter((plan) => ["Pending", "Approved", "Submitted", "Partially Filled"].includes(String(plan.status || ""))).length;
     const actionItems = Number(payload.action_items_count || 0) + pendingPlans;
+    const mlActive = !!(payload.ensemble_status && payload.ensemble_status.meta_labeler_active);
     const actionDetail = pendingPlans
       ? `${pendingPlans} trade plan${pendingPlans === 1 ? "" : "s"} pending review`
       : actionItems
@@ -502,6 +503,7 @@
         <div class="ui-card__label">Portfolio P&amp;L</div>
         <div class="ui-card__value ui-tabular-nums">${totalEquity ? escapeHtml(formatCurrency(totalEquity, 0)) : "No portfolio"}</div>
         <div class="ui-card__subtext ui-muted">${totalEquity ? `Today: ${escapeHtml(formatCurrency(dailyPnl, 0))}` : "Create or select a trading portfolio"}</div>
+        <div class="ui-card__subtext ui-muted" style="margin-top:6px"><span class="ui-badge ${mlActive ? "ui-badge--safe" : "ui-badge--neutral"}">ML ${mlActive ? "Active" : "Inactive"}</span></div>
       </div>
       <div class="ui-card ui-kpi regime-kpi--exposure">
         <div class="ui-card__label">Exposure</div>
@@ -760,6 +762,7 @@
               <th scope="col" data-sort="text">Regime</th>
               <th scope="col" data-sort="text">Weekly Regime</th>
               <th scope="col" class="num" data-sort="num">Probability</th>
+              <th scope="col" data-sort="text">ML</th>
               <th scope="col" data-sort="text">Composite Signal</th>
               <th scope="col" data-sort="text">Forward Signal</th>
               <th scope="col" data-sort="text">Technical Signal</th>
@@ -780,6 +783,11 @@
                 <td class="nowrap regime-table__regime-cell ${escapeHtml(row.regime_class || "")}" style="${row.regime === "Bull" ? `background:${COLORS.bullBg}; color:${COLORS.pnlPositive};` : row.regime === "Bear" ? `background:${COLORS.bearBg}; color:${COLORS.pnlNegative};` : `background:${COLORS.neutralBg}; color:${COLORS.muted};`}">${escapeHtml(row.regime)}</td>
                 <td class="nowrap">${escapeHtml(row.weekly_regime || "—")} ${divergenceBadge(row)}</td>
                 <td class="num ui-tabular-nums" data-sort-val="${escapeHtml(row.probability_pct)}">${Number(row.probability_pct || 0).toFixed(1)}%</td>
+                <td class="nowrap">
+                  ${row.meta_labeler_probability != null
+                    ? `<span class="${badgeClass(String(row.meta_labeler_signal || "").toLowerCase() === "confirm" ? "Bull" : String(row.meta_labeler_signal || "").toLowerCase() === "veto" ? "Bear" : "Neutral")}">ML ${(Number(row.meta_labeler_probability) * 100).toFixed(0)}%</span>`
+                    : '<span class="ui-muted">Inactive</span>'}
+                </td>
                 <td class="nowrap ${escapeHtml(row.composite_signal_class || signalClass(row.composite_signal))}">${escapeHtml(row.composite_signal)}</td>
                 <td class="nowrap ${escapeHtml(row.forward_signal_class || signalClass(row.forward_signal))}">${escapeHtml(row.forward_signal)}</td>
                 <td>${escapeHtml(row.technical_signal)}</td>
@@ -824,11 +832,11 @@
     const diag = row.signal_diagnostics || {};
     return `
       <tr class="regime-diagnostics-row">
-        <td colspan="15">
+        <td colspan="16">
           <div class="ui-card" style="padding:12px; margin:6px 0; background:${COLORS.neutralBg}">
             <div class="ui-section-title">Signal Diagnostics · ${escapeHtml(row.ticker || "")}</div>
             <div class="ui-muted" style="margin-top:4px">Forward signal → Technical signal → Composite signal</div>
-            <div style="display:grid; grid-template-columns:repeat(3, minmax(0,1fr)); gap:10px; margin-top:10px">
+            <div style="display:grid; grid-template-columns:repeat(4, minmax(0,1fr)); gap:10px; margin-top:10px">
               <div class="ui-card" style="padding:10px; border:1px solid ${COLORS.border}">
                 <div style="font-weight:600">Forward Signal</div>
                 <div class="${signalClass(diag.forward_action)}" style="margin-top:6px">${escapeHtml(diag.forward_action || "—")}</div>
@@ -844,6 +852,11 @@
                 <div style="font-weight:600">Composite Signal</div>
                 <div class="${signalClass(diag.composite_action)}" style="margin-top:6px">${escapeHtml(diag.composite_action || "—")}</div>
                 <div class="ui-muted" style="margin-top:6px">Strength ${escapeHtml(formatFixed(diag.composite_strength, 3))}</div>
+              </div>
+              <div class="ui-card" style="padding:10px; border:1px solid ${COLORS.border}">
+                <div style="font-weight:600">Meta-Labeler</div>
+                <div class="${signalClass(String(diag.meta_labeler_signal || "").toLowerCase() === "confirm" ? "Buy" : String(diag.meta_labeler_signal || "").toLowerCase() === "veto" ? "Sell" : "Hold")}" style="margin-top:6px">${escapeHtml(diag.meta_labeler_signal || "Inactive")}</div>
+                <div class="ui-muted" style="margin-top:6px">Probability ${diag.meta_labeler_probability != null ? escapeHtml(formatSignedPct(Number(diag.meta_labeler_probability || 0), 1)) : "—"}</div>
               </div>
             </div>
             <div class="ui-card" style="padding:10px; margin-top:10px; border:1px solid ${COLORS.border}">
@@ -1098,6 +1111,7 @@
           <div class="ui-muted" style="margin-top:6px">Suggested allocation: ${escapeHtml(formatFixed(row.position_size.suggested_pct, 1))}%${row.position_size.suggested_dollars != null ? ` (${escapeHtml(formatCurrency(row.position_size.suggested_dollars, 0))})` : ""}</div>
           <div class="ui-muted">Max risk: ${escapeHtml(formatCurrency(row.position_size.max_loss_dollars, 0))}</div>
           <div class="ui-muted">Kelly fraction: ${row.position_size.kelly_fraction != null ? escapeHtml(formatSignedPct(row.position_size.kelly_fraction, 1)) : "—"}</div>
+          <div class="ui-muted">ML confidence: ${row.position_size.meta_labeler_probability != null ? escapeHtml(formatSignedPct(row.position_size.meta_labeler_probability, 1)) : "Inactive"}</div>
           ${Number(row.position_size.portfolio_adjustment || 1) < 0.999 ? `<div class="banner--warn" style="padding:8px; border-radius:10px; margin-top:8px">Position reduced ${escapeHtml(((1 - Number(row.position_size.portfolio_adjustment || 1)) * 100).toFixed(0))}% for portfolio concentration.${row.position_size.adjustment_rationale ? ` ${escapeHtml(row.position_size.adjustment_rationale)}` : ""}</div>` : ""}
           <div class="ui-muted">${escapeHtml(row.position_size.sizing_rationale || "")}</div>
         </div>
@@ -1245,6 +1259,10 @@
                 <div class="regime-ticker-detail__metric-value">${escapeHtml(formatFixed(((row.unified_confidence || {}).value), 1))}/100</div>
               </div>
               <div class="regime-ticker-detail__metric">
+                <div class="regime-ticker-detail__metric-label">ML Confidence</div>
+                <div class="regime-ticker-detail__metric-value">${row.meta_labeler_probability != null ? `${escapeHtml(formatFixed(Number(row.meta_labeler_probability || 0) * 100, 1))}%` : "Inactive"}</div>
+              </div>
+              <div class="regime-ticker-detail__metric">
                 <div class="regime-ticker-detail__metric-label">Relative Strength</div>
                 <div class="regime-ticker-detail__metric-value">${escapeHtml(row.relative_strength || "In-line")}</div>
               </div>
@@ -1261,6 +1279,7 @@
           <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-right:20px">
             <span class="${badgeClass(row.regime)}">${escapeHtml(row.regime)}</span>
             <span class="ui-badge ui-badge--outline">${escapeHtml(row.composite_signal)}</span>
+            <span class="ui-badge ${row.meta_labeler_probability != null ? (String(row.meta_labeler_signal || "").toLowerCase() === "confirm" ? "ui-badge--safe" : String(row.meta_labeler_signal || "").toLowerCase() === "veto" ? "ui-badge--bad" : "ui-badge--neutral") : "ui-badge--neutral"}">${row.meta_labeler_probability != null ? `ML ${(Number(row.meta_labeler_probability || 0) * 100).toFixed(0)}%` : "ML inactive"}</span>
             <span class="${sentimentClass(row.sentiment_trend)}">${escapeHtml(row.sentiment_trend || "not available")}</span>
             <span class="ui-badge ui-badge--outline">${escapeHtml(formatFixed(((row.unified_confidence || {}).value), 1))}/100</span>
           </div>

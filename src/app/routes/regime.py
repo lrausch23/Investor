@@ -1469,6 +1469,7 @@ def _load_qualitative_result(
     frontier_provider: str,
     frontier_enabled: bool,
     force_refresh: bool,
+    meta_labeler_score: float | None = None,
 ) -> tuple[dict[str, Any] | None, bool]:
     save_regime_event_fn = runtime.get("save_regime_event")
     previous_event = (
@@ -1494,6 +1495,7 @@ def _load_qualitative_result(
         initial_thesis=_build_theme_context(ticker, runtime),
         previous_label=(previous_event or {}).get("previous_label"),
         benchmark_state=benchmark_state,
+        meta_labeler_score=meta_labeler_score,
     )
     qualitative = _json_ready(qualitative_obj)
     save_qualitative_cache(ticker, provider=provider_key, data=qualitative)
@@ -1599,6 +1601,17 @@ def _build_regime_dashboard_payload(
         return payload
     previous_payload = load_previous_payload()
     payload["themes"] = _load_themes(runtime)
+    registry = runtime["get_registry"]() if callable(runtime.get("get_registry")) else None
+    meta_labeler_engine = registry.get("xgboost_meta_labeler") if registry else None
+    meta_labeler_active = bool(
+        meta_labeler_engine is not None
+        and callable(getattr(meta_labeler_engine, "is_ready", None))
+        and meta_labeler_engine.is_ready()
+    )
+    payload["ensemble_status"] = {
+        "meta_labeler_active": meta_labeler_active,
+        "meta_labeler_name": getattr(meta_labeler_engine, "name", "xgboost_meta_labeler") if meta_labeler_engine else "xgboost_meta_labeler",
+    }
 
     investor_db_path, available_tickers = _portfolio_tickers(runtime, session, show_all, portfolio_scope, account_id)
     _refresh_transition_outcomes(runtime, investor_db_path)
@@ -1975,6 +1988,22 @@ def _build_regime_dashboard_payload(
                 item["composite_signal"].composite_strength = adjusted_strength
         except Exception as exc:
             logger.warning("Unable to compute concentration-adjusted signal strengths.", exc_info=exc)
+    meta_scores: dict[str, float] = {}
+    meta_results: dict[str, Any] = {}
+    if meta_labeler_active and callable(runtime.get("extract_meta_features")):
+        for item in fitted_rows:
+            try:
+                ticker_key = str(item["ticker"]).upper()
+                features = runtime["extract_meta_features"](item["regime_obj"].price_frame.iloc[-1])
+                ml_result = meta_labeler_engine.analyze(
+                    ticker=ticker_key,
+                    features=features,
+                    regime_result=item["regime_obj"],
+                )
+                meta_results[ticker_key] = ml_result
+                meta_scores[ticker_key] = float(getattr(ml_result, "confidence", 0.0) or 0.0)
+            except Exception as exc:
+                logger.debug("Unable to compute meta-labeler score for %s.", item.get("ticker"), exc_info=exc)
     frontier_batch_size = max(1, int(frontier_batch_size or _DEFAULT_FRONTIER_BATCH_SIZE))
 
     def load_frontier(item: dict[str, Any]) -> tuple[str, dict[str, Any] | None, bool]:
@@ -1991,6 +2020,7 @@ def _build_regime_dashboard_payload(
             frontier_provider=frontier_provider,
             frontier_enabled=frontier_enabled,
             force_refresh=force_refresh,
+            meta_labeler_score=meta_scores.get(str(item["ticker"]).upper()),
         )
         return item["ticker"], qualitative, fresh
 
@@ -2058,6 +2088,9 @@ def _build_regime_dashboard_payload(
         ticker = item["ticker"]
         regime = item["regime_obj"]
         qualitative, _fresh = frontier_results.get(ticker, (None, False))
+        ticker_key = str(ticker).upper()
+        ml_result = meta_results.get(ticker_key)
+        meta_prob = meta_scores.get(ticker_key)
         frontier_panel = _frontier_panel(
             qualitative=qualitative,
             label=regime.latest_label,
@@ -2093,6 +2126,9 @@ def _build_regime_dashboard_payload(
             "regime_days": int(regime.regime_days),
             "weekly_regime": getattr(item["composite_signal"], "weekly_regime", None),
             "multi_timeframe_note": getattr(item["composite_signal"], "multi_timeframe_note", None),
+            "meta_labeler_probability": round(float(meta_prob), 4) if meta_prob is not None else None,
+            "meta_labeler_signal": str(getattr(ml_result, "signal", "") or "") if ml_result is not None else None,
+            "meta_labeler_details": _json_ready(getattr(ml_result, "details", {}) or {}) if ml_result is not None else None,
             "thresholds_applied": _identify_threshold_path(
                 regime=regime.latest_label,
                 transition_risk=float(getattr(item["forward_signal"], "transition_risk", 0.0)),
@@ -2159,6 +2195,9 @@ def _build_regime_dashboard_payload(
                 "risk_reward_warning": getattr(item["composite_signal"], "risk_reward_warning", None),
                 "duration_accuracy": item.get("duration_accuracy"),
                 "unified_confidence": item.get("unified_confidence"),
+                "meta_labeler_probability": meta_prob,
+                "meta_labeler_signal": str(getattr(ml_result, "signal", "") or "") if ml_result is not None else None,
+                "meta_labeler_details": _json_ready(getattr(ml_result, "details", {}) or {}) if ml_result is not None else None,
                 "forward_curve_json": json.dumps(_json_ready(item["forward_curve"])),
                 "confidence_curve_json": json.dumps(item["confidence_points"]),
                 "sentiment_history_json": json.dumps(
@@ -2196,6 +2235,7 @@ def _build_regime_dashboard_payload(
                         regime_exposure=payload.get("regime_exposure"),
                         sector_exposure_pct=sector_exposure_pct,
                         correlation_penalty=float(row_payload.get("concentration_penalty") or 0.0),
+                        meta_labeler_probability=meta_prob,
                     )
                 )
             except Exception as exc:
@@ -2248,6 +2288,7 @@ def _build_regime_dashboard_payload(
                         regime_exposure=payload.get("regime_exposure"),
                         sector_exposure_pct=sector_exposure_pct,
                         correlation_penalty=float(row.get("concentration_penalty") or 0.0),
+                        meta_labeler_probability=float(row.get("meta_labeler_probability")) if row.get("meta_labeler_probability") is not None else None,
                     )
                 )
             except Exception as exc:

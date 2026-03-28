@@ -111,6 +111,7 @@ class PositionSize:
     max_loss_dollars: float | None
     kelly_fraction: float | None
     sizing_rationale: str
+    meta_labeler_probability: float | None = None
     portfolio_adjustment: float = 1.0
     adjustment_rationale: str | None = None
 
@@ -431,6 +432,7 @@ def compute_position_size(
     regime_exposure: dict[str, float] | None = None,
     sector_exposure_pct: float | None = None,
     correlation_penalty: float = 0.0,
+    meta_labeler_probability: float | None = None,
 ) -> PositionSize:
     """Compute suggested position size based on regime confidence and risk parameters."""
     base_pct = float(regime_probability or 0.0) * 100.0
@@ -439,9 +441,17 @@ def compute_position_size(
     elif composite_action in {"Sell", "Strong Sell"}:
         base_pct = 0.0
 
+    effective_win_prob = float(regime_probability or 0.0)
+    if meta_labeler_probability is not None:
+        effective_win_prob = max(0.0, min(1.0, float(meta_labeler_probability)))
+        denominator = max(float(regime_probability or 0.0), 0.01)
+        ml_ratio = effective_win_prob / denominator
+        ml_ratio = max(0.25, min(1.5, ml_ratio))
+        base_pct *= ml_ratio
+
     kelly_fraction: float | None = None
     if risk_reward_ratio is not None and risk_reward_ratio > 0:
-        win_prob = min(0.95, float(regime_probability or 0.0))
+        win_prob = min(0.95, effective_win_prob)
         lose_prob = 1.0 - win_prob
         kelly_fraction = max(0.0, (win_prob * risk_reward_ratio - lose_prob) / risk_reward_ratio)
         kelly_fraction *= 0.5
@@ -481,6 +491,8 @@ def compute_position_size(
     suggested_pct = round(max(0.0, min(100.0, base_pct)), 1)
     suggested_dollars = round(portfolio_value * (suggested_pct / 100.0), 2) if portfolio_value is not None else None
     rationale_parts = [f"Base sizing: {float(regime_probability or 0.0):.0%} regime confidence"]
+    if meta_labeler_probability is not None:
+        rationale_parts.append(f"ML confidence: {effective_win_prob:.0%}")
     if kelly_fraction is not None:
         rationale_parts.append(f"Half-Kelly: {kelly_fraction:.1%}")
     if max_loss_dollars is not None:
@@ -497,6 +509,7 @@ def compute_position_size(
         max_loss_dollars=max_loss_dollars,
         kelly_fraction=kelly_fraction,
         sizing_rationale=rationale,
+        meta_labeler_probability=effective_win_prob if meta_labeler_probability is not None else None,
         portfolio_adjustment=portfolio_adjustment,
         adjustment_rationale=adjustment_rationale,
     )

@@ -395,6 +395,8 @@ def check_entry_signals(
     theme_id: int | None = None,
     *,
     thresholds: DiscoveryThresholds = DEFAULT_DISCOVERY_THRESHOLDS,
+    meta_labeler_engine=None,
+    regime_results: dict[str, Any] | None = None,
 ) -> list[dict]:
     triggered: list[dict] = []
     themes = [get_theme(theme_id)] if theme_id is not None else list_themes(include_closed=False)
@@ -408,6 +410,19 @@ def check_entry_signals(
             probability = float(item.get("regime_probability") or 0.0)
             crowd = int(item.get("crowd_score") or 50)
             if label == "Bull" and probability >= thresholds.entry_signal_min_probability and crowd <= thresholds.entry_signal_max_crowd_score:
+                if meta_labeler_engine is not None and callable(getattr(meta_labeler_engine, "is_ready", None)) and meta_labeler_engine.is_ready():
+                    try:
+                        ticker = str(item.get("ticker") or "").upper()
+                        regime_result = (regime_results or {}).get(ticker)
+                        if regime_result is not None:
+                            from .meta_labeler import extract_meta_features
+
+                            features = extract_meta_features(regime_result.price_frame.iloc[-1])
+                            ml_result = meta_labeler_engine.analyze(ticker=ticker, features=features, regime_result=regime_result)
+                            if str(getattr(ml_result, "signal", "")).lower() == "veto":
+                                continue
+                    except Exception as exc:
+                        logger.warning("Meta-labeler veto check failed for discovery candidate %s; continuing without veto gate.", item.get("ticker"), exc_info=exc)
                 updated = update_watchlist_status(int(item["id"]), "Entry Signal")
                 if updated:
                     triggered.append(updated)

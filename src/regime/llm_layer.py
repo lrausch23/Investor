@@ -121,9 +121,29 @@ def build_decision_prompt(
     state_confidence: float,
     benchmark_state: str,
     catalysts: list[dict[str, Any]],
+    meta_labeler_score: float | None = None,
 ) -> str:
     filtered = _filter_relevant_catalysts(ticker, catalysts)
     catalysts_block = _raw_news_blob(filtered)
+    meta_section = ""
+    if meta_labeler_score is not None:
+        score = float(meta_labeler_score)
+        if score >= 0.65:
+            assessment = "HIGH"
+            guidance = "The ML layer strongly confirms the HMM signal's probability of success."
+        elif score < 0.50:
+            assessment = "LOW"
+            guidance = "The ML layer is skeptical and views the HMM signal as likely to fail."
+        else:
+            assessment = "MODERATE"
+            guidance = "The ML layer is mixed and offers only partial confirmation of the HMM signal."
+        meta_section = f"""
+
+1b. XGBoost Meta-Labeler Assessment:
+- Probability of Success: {score:.0%}
+- Assessment: {assessment}
+- Interpretation: {guidance}
+""".rstrip()
     return f"""
 You are a Senior Quantitative Strategist and Institutional Portfolio Manager specializing in the 2026 Semiconductor and Physical AI cycles. Your goal is to validate or invalidate technical regime shifts detected by a Hidden Markov Model. You prioritize long-term structural trends over short-term retail noise.
 
@@ -140,6 +160,7 @@ Market Intelligence Report: {ticker}
 - HMM Transition: The model has shifted from {previous_state} to {new_state}.
 - Model Confidence: {state_confidence:.0%}
 - Relative Strength: The sector benchmark (SOXX) is currently in {benchmark_state}.
+{meta_section}
 
 2. Qualitative Data Feed (Raw):
 {catalysts_block}
@@ -645,6 +666,7 @@ def build_qualitative_assessment(
     initial_thesis: str | None = None,
     previous_label: str | None = None,
     benchmark_state: str = "Neutral",
+    meta_labeler_score: float | None = None,
 ) -> QualitativeAssessment:
     catalysts, sentiment_score, sentiment = analyze_catalysts(ticker, context_symbols=context_symbols)
     previous_state = previous_label or state_name
@@ -655,6 +677,7 @@ def build_qualitative_assessment(
         state_confidence=latest_probability,
         benchmark_state=benchmark_state,
         catalysts=catalysts,
+        meta_labeler_score=meta_labeler_score,
     )
     llm_response = request_frontier_decision(decision_prompt, enabled=frontier_enabled, provider=frontier_provider)
     fallback_confidence = _fallback_confidence(state_name, latest_probability, sentiment_score)
