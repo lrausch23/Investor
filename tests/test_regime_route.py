@@ -24,6 +24,11 @@ from _fixtures import FakeRegime
 
 
 def _fake_runtime() -> dict:
+    settings_store = {
+        "frontier_provider": "auto",
+        "frontier_model": "",
+    }
+
     class FakePaperBrokerAdapter:
         def __init__(self, portfolio_id, **kwargs):
             self.portfolio_id = int(portfolio_id)
@@ -83,6 +88,11 @@ def _fake_runtime() -> dict:
         "generate_weekly_digest": lambda **kwargs: FakeDigest(),
         "fit_regime_model": lambda ticker, market_frame: FakeRegime(ticker, "Bear" if ticker == "SOXX" else "Bull"),
         "configured_frontier_model": lambda provider="auto": f"OpenAI: {provider}",
+        "list_provider_models": lambda provider: [{"id": f"{provider}-model", "name": f"{provider.title()} Model"}],
+        "get_setting": lambda key: settings_store.get(str(key)),
+        "set_setting": lambda key, value: settings_store.__setitem__(str(key), str(value)),
+        "get_all_settings": lambda prefix="": {k: v for k, v in settings_store.items() if not prefix or k.startswith(prefix)},
+        "delete_setting": lambda key: settings_store.pop(str(key), None) is not None,
         "delete_thesis": lambda ticker: True,
         "format_alert_summary": lambda alerts: "summary",
         "get_investor_db_path": lambda: "/tmp/investor.db",

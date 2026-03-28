@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import os
 import re
+import urllib.error
+import urllib.request
 import warnings
 from dataclasses import dataclass
 import logging
@@ -283,10 +285,139 @@ def _theme_time_horizon(initial_thesis: str | None) -> str:
     return "strategic"
 
 
+def _apply_saved_model(provider: str) -> None:
+    try:
+        from .persistence import get_setting
+    except Exception:
+        return
+    saved_provider = str(get_setting("frontier_provider") or "").strip().lower()
+    saved_model = str(get_setting("frontier_model") or "").strip()
+    if saved_provider != provider or not saved_model:
+        return
+    env_key = {
+        "openai": "OPENAI_MODEL",
+        "gemini": "GEMINI_MODEL",
+        "claude": "ANTHROPIC_MODEL",
+        "ollama": "OLLAMA_MODEL",
+    }.get(provider)
+    if env_key:
+        os.environ[env_key] = saved_model
+
+
+def _list_openai_models() -> list[dict[str, str]]:
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        return []
+    client = OpenAI(api_key=api_key)
+    try:
+        raw = client.models.list()
+    except Exception as exc:
+        logger.warning("Failed to list OpenAI models.", exc_info=exc)
+        raise LLMProviderError("Failed to list OpenAI models.") from exc
+    results: list[dict[str, str]] = []
+    for model in raw:
+        model_id = str(getattr(model, "id", "") or "")
+        if any(prefix in model_id for prefix in ("gpt-4", "gpt-3.5", "o1", "o3", "o4")):
+            results.append({"id": model_id, "name": model_id, "owned_by": str(getattr(model, "owned_by", "") or "")})
+    results.sort(key=lambda item: item["id"])
+    return results
+
+
+def _list_gemini_models() -> list[dict[str, str]]:
+    api_key = os.getenv("GEMINI_API_KEY")
+    if not api_key:
+        return []
+    try:
+        from google import genai  # type: ignore
+    except Exception:
+        return []
+    client = genai.Client(api_key=api_key)
+    try:
+        raw = client.models.list()
+    except Exception as exc:
+        logger.warning("Failed to list Gemini models.", exc_info=exc)
+        raise LLMProviderError("Failed to list Gemini models.") from exc
+    results: list[dict[str, str]] = []
+    for model in raw:
+        actions = getattr(model, "supported_actions", []) or []
+        if "generateContent" in actions:
+            model_name = str(getattr(model, "name", "") or "")
+            short_name = model_name.removeprefix("models/")
+            display = str(getattr(model, "display_name", "") or short_name)
+            results.append({"id": short_name, "name": display})
+    results.sort(key=lambda item: item["id"])
+    return results
+
+
+def _list_claude_models() -> list[dict[str, str]]:
+    api_key = os.getenv("ANTHROPIC_API_KEY")
+    if not api_key:
+        return []
+    try:
+        from anthropic import Anthropic  # type: ignore
+    except Exception:
+        return []
+    client = Anthropic(api_key=api_key)
+    try:
+        page = client.models.list()
+    except Exception as exc:
+        logger.warning("Failed to list Claude models.", exc_info=exc)
+        raise LLMProviderError("Failed to list Claude models.") from exc
+    results: list[dict[str, str]] = []
+    for model in page:
+        model_id = str(getattr(model, "id", "") or "")
+        display = str(getattr(model, "display_name", "") or model_id)
+        results.append({"id": model_id, "name": display})
+    results.sort(key=lambda item: item["id"])
+    return results
+
+
+def _list_ollama_models() -> list[dict[str, str]]:
+    base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434/v1")
+    host = base_url.rsplit("/v1", 1)[0].rstrip("/")
+    tags_url = f"{host}/api/tags"
+    try:
+        req = urllib.request.Request(tags_url, headers={"Accept": "application/json"})
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            data = json.loads(resp.read().decode())
+    except Exception as exc:
+        logger.warning("Failed to list Ollama models at %s.", tags_url, exc_info=exc)
+        raise LLMProviderError("Failed to list Ollama models.") from exc
+    results: list[dict[str, str]] = []
+    for model in data.get("models", []) or []:
+        model_name = str(model.get("name", "") or "")
+        details = model.get("details", {}) or {}
+        param_size = str(details.get("parameter_size", "") or "")
+        quant = str(details.get("quantization_level", "") or "")
+        display = model_name
+        if param_size:
+            display += f" ({param_size}"
+            if quant:
+                display += f", {quant}"
+            display += ")"
+        results.append({"id": model_name, "name": display})
+    results.sort(key=lambda item: item["id"])
+    return results
+
+
+def list_provider_models(provider: str) -> list[dict[str, str]]:
+    provider_key = str(provider or "").strip().lower()
+    if provider_key == "openai":
+        return _list_openai_models()
+    if provider_key == "gemini":
+        return _list_gemini_models()
+    if provider_key == "claude":
+        return _list_claude_models()
+    if provider_key == "ollama":
+        return _list_ollama_models()
+    raise LLMProviderError(f"Unknown provider: {provider}")
+
+
 def _request_openai(prompt: str) -> dict[str, Any] | None:
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
         return None
+    _apply_saved_model("openai")
     client = OpenAI(api_key=api_key)
     model = os.getenv("OPENAI_MODEL", "gpt-4o")
     logger.info("Requesting Frontier analysis from OpenAI model=%s", model)
@@ -310,6 +441,7 @@ def _request_gemini(prompt: str) -> dict[str, Any] | None:
     api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
         return None
+    _apply_saved_model("gemini")
     try:
         from google import genai  # type: ignore
     except Exception as exc:
@@ -340,6 +472,7 @@ def _request_claude(prompt: str) -> dict[str, Any] | None:
     api_key = os.getenv("ANTHROPIC_API_KEY")
     if not api_key:
         return None
+    _apply_saved_model("claude")
     try:
         from anthropic import Anthropic  # type: ignore
     except Exception as exc:
@@ -375,6 +508,7 @@ def _request_claude(prompt: str) -> dict[str, Any] | None:
 
 
 def _request_ollama(prompt: str) -> dict[str, Any] | None:
+    _apply_saved_model("ollama")
     base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434/v1")
     model = os.getenv("OLLAMA_MODEL", "qwen3:32b")
     client = OpenAI(base_url=base_url, api_key=os.getenv("OLLAMA_API_KEY", "ollama"))
@@ -460,6 +594,29 @@ def request_frontier_decision(prompt: str, enabled: bool, provider: str = "auto"
 
 
 def configured_frontier_model(provider: str = "auto") -> str:
+    provider_key = str(provider or "auto").strip().lower() or "auto"
+    if provider_key in {"openai", "gemini", "claude", "ollama"}:
+        original: dict[str, str | None] = {
+            "OPENAI_MODEL": os.getenv("OPENAI_MODEL"),
+            "GEMINI_MODEL": os.getenv("GEMINI_MODEL"),
+            "ANTHROPIC_MODEL": os.getenv("ANTHROPIC_MODEL"),
+            "OLLAMA_MODEL": os.getenv("OLLAMA_MODEL"),
+        }
+        try:
+            _apply_saved_model(provider_key)
+            if provider_key == "openai":
+                return f"OpenAI: {os.getenv('OPENAI_MODEL', 'gpt-4o')}"
+            if provider_key == "gemini":
+                return f"Gemini: {os.getenv('GEMINI_MODEL', 'gemini-2.5-pro')}"
+            if provider_key == "claude":
+                return f"Claude: {os.getenv('ANTHROPIC_MODEL', 'claude-sonnet-4-20250514')}"
+            return f"Ollama: {os.getenv('OLLAMA_MODEL', 'qwen3:32b')}"
+        finally:
+            for key, value in original.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
     if provider == "best":
         if os.getenv("ANTHROPIC_API_KEY"):
             return f"Claude: {_BEST_MODELS['claude']} (best)"
@@ -468,14 +625,6 @@ def configured_frontier_model(provider: str = "auto") -> str:
         if os.getenv("GEMINI_API_KEY"):
             return f"Gemini: {_BEST_MODELS['gemini']} (best)"
         return f"Ollama: {_BEST_MODELS['ollama']} (best)"
-    if provider == "openai":
-        return f"OpenAI: {os.getenv('OPENAI_MODEL', 'gpt-4o')}"
-    if provider == "gemini":
-        return f"Gemini: {os.getenv('GEMINI_MODEL', 'gemini-2.5-pro')}"
-    if provider == "claude":
-        return f"Claude: {os.getenv('ANTHROPIC_MODEL', 'claude-sonnet-4-20250514')}"
-    if provider == "ollama":
-        return f"Ollama: {os.getenv('OLLAMA_MODEL', 'qwen3:32b')}"
     if os.getenv("OPENAI_API_KEY"):
         return f"OpenAI: {os.getenv('OPENAI_MODEL', 'gpt-4o')}"
     if os.getenv("GEMINI_API_KEY"):

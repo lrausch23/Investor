@@ -47,6 +47,7 @@ _MIN_REGIME_DAYS = 5
 _MIN_SIGNAL_PROBABILITY = 0.70
 _DEFAULT_FRONTIER_BATCH_SIZE = 5
 _ADAPTER_TIMEOUT = 15
+_MODEL_CACHE_TTL_SECONDS = 300
 _JOBS: dict[str, "RegimeJob"] = {}
 _JOBS_LOCK = threading.Lock()
 _DISCOVERY_JOBS: dict[str, "DiscoveryJob"] = {}
@@ -145,7 +146,7 @@ def _load_hmm_runtime() -> tuple[dict[str, Any] | None, str | None]:
             get_wash_sale_risk,
             positions_by_ticker_and_account,
         )
-        from src.regime.llm_layer import build_qualitative_assessment, configured_frontier_model
+        from src.regime.llm_layer import build_qualitative_assessment, configured_frontier_model, list_provider_models
         from src.regime.diagnostics import calibration_payload, duration_accuracy
         from src.regime.diagnostics import fit_probability_calibrator
         from src.regime.backtest import compare_to_benchmark, run_backtest
@@ -176,10 +177,13 @@ def _load_hmm_runtime() -> tuple[dict[str, Any] | None, str | None]:
             get_trade_plan,
             get_trade_plans,
             count_todays_trades,
+            delete_setting,
             get_supply_chain,
             get_theme,
             get_theme_tickers,
             get_theme_health_data,
+            get_all_settings,
+            get_setting,
             get_ticker_themes,
             get_transition_journal,
             get_transition_statistics,
@@ -199,6 +203,7 @@ def _load_hmm_runtime() -> tuple[dict[str, Any] | None, str | None]:
             save_regime_event,
             save_sentiment,
             save_signal_snapshot,
+            set_setting,
             update_paper_portfolio,
             update_theme,
             update_trade_plan_status,
@@ -291,6 +296,7 @@ def _load_hmm_runtime() -> tuple[dict[str, Any] | None, str | None]:
         "fit_regime_model_weekly": fit_regime_model_weekly,
         "build_qualitative_assessment": build_qualitative_assessment,
         "configured_frontier_model": configured_frontier_model,
+        "list_provider_models": list_provider_models,
         "calibration_payload": calibration_payload,
         "compare_to_benchmark": compare_to_benchmark,
         "portfolio_risk_summary_dict": portfolio_risk_summary_dict,
@@ -313,6 +319,10 @@ def _load_hmm_runtime() -> tuple[dict[str, Any] | None, str | None]:
         "get_trade_plans": get_trade_plans,
         "get_audit_trail": get_audit_trail,
         "count_todays_trades": count_todays_trades,
+        "get_setting": get_setting,
+        "set_setting": set_setting,
+        "get_all_settings": get_all_settings,
+        "delete_setting": delete_setting,
         "get_daily_audit_summary": get_daily_audit_summary,
         "get_daily_snapshots": get_daily_snapshots,
         "save_supply_chain_layers": save_supply_chain_layers,
@@ -2634,6 +2644,8 @@ def _build_shell_context(
             "paper_audit_summary": "/regime/paper-portfolio/__PORTFOLIO_ID__/audit/summary",
             "ibkr_settings": "/regime/ibkr/settings",
             "ibkr_test_connection": "/regime/ibkr/test-connection",
+            "frontier_models": "/regime/frontier/models",
+            "frontier_settings": "/regime/frontier/settings",
         },
         "initial_payload": payload,
         "portfolio_scopes": get_available_portfolio_scopes(session) if session is not None else [],
@@ -2829,6 +2841,115 @@ async def regime_ibkr_settings_update(
             "saved": True,
             "restart_required": True,
             "message": "Settings saved to .env. Restart the server to apply changes.",
+        }
+    )
+
+
+@router.get("/frontier/models")
+def regime_frontier_models(
+    provider: str = "openai",
+    refresh: str = "",
+    session: Session = Depends(db_session),
+    actor: str = Depends(require_actor),
+):
+    del session, actor
+    runtime, runtime_error = _load_hmm_runtime()
+    if runtime is None:
+        raise HTTPException(status_code=503, detail=runtime_error or "Regime analytics are unavailable.")
+
+    force_refresh = str(refresh).strip().lower() in {"1", "true", "yes"}
+    provider_key = str(provider or "openai").strip().lower() or "openai"
+
+    if not force_refresh:
+        cache_json = runtime["get_setting"]("frontier_models_cache") or "{}"
+        try:
+            cache = json.loads(cache_json)
+        except json.JSONDecodeError:
+            cache = {}
+        entry = cache.get(provider_key)
+        if isinstance(entry, dict):
+            fetched_at = str(entry.get("fetched_at", "") or "")
+            if fetched_at:
+                try:
+                    age = (dt.datetime.now(dt.timezone.utc) - dt.datetime.fromisoformat(fetched_at)).total_seconds()
+                except ValueError:
+                    age = _MODEL_CACHE_TTL_SECONDS + 1
+                if age < _MODEL_CACHE_TTL_SECONDS:
+                    return JSONResponse(
+                        content={
+                            "provider": provider_key,
+                            "models": entry.get("models", []),
+                            "cached": True,
+                            "fetched_at": fetched_at,
+                        }
+                    )
+
+    try:
+        models = runtime["list_provider_models"](provider_key)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Failed to query {provider_key} models: {exc}")
+
+    cache_json = runtime["get_setting"]("frontier_models_cache") or "{}"
+    try:
+        cache = json.loads(cache_json)
+    except json.JSONDecodeError:
+        cache = {}
+    fetched_at = dt.datetime.now(dt.timezone.utc).isoformat()
+    cache[provider_key] = {
+        "models": models,
+        "fetched_at": fetched_at,
+    }
+    runtime["set_setting"]("frontier_models_cache", json.dumps(cache))
+    return JSONResponse(
+        content={
+            "provider": provider_key,
+            "models": models,
+            "cached": False,
+            "fetched_at": fetched_at,
+        }
+    )
+
+
+@router.get("/frontier/settings")
+def regime_frontier_settings(
+    session: Session = Depends(db_session),
+    actor: str = Depends(require_actor),
+):
+    del session, actor
+    runtime, runtime_error = _load_hmm_runtime()
+    if runtime is None:
+        raise HTTPException(status_code=503, detail=runtime_error or "Regime analytics are unavailable.")
+    return JSONResponse(
+        content={
+            "provider": runtime["get_setting"]("frontier_provider") or "auto",
+            "model": runtime["get_setting"]("frontier_model") or "",
+        }
+    )
+
+
+@router.put("/frontier/settings")
+async def regime_frontier_settings_update(
+    request: Request,
+    session: Session = Depends(db_session),
+    actor: str = Depends(require_actor),
+):
+    del session, actor
+    runtime, runtime_error = _load_hmm_runtime()
+    if runtime is None:
+        raise HTTPException(status_code=503, detail=runtime_error or "Regime analytics are unavailable.")
+    form = await _read_run_request(request)
+    provider = str(form.get("provider", "") or "").strip().lower()
+    model = str(form.get("model", "") or "").strip()
+    if provider:
+        runtime["set_setting"]("frontier_provider", provider)
+    if provider and not model:
+        runtime["delete_setting"]("frontier_model")
+    elif model:
+        runtime["set_setting"]("frontier_model", model)
+    return JSONResponse(
+        content={
+            "provider": runtime["get_setting"]("frontier_provider") or "auto",
+            "model": runtime["get_setting"]("frontier_model") or "",
         }
     )
 

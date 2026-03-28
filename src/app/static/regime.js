@@ -62,6 +62,7 @@
     ibkrTestResult: null,
     ibkrRestartRequired: false,
     expandedDiagnosticsTicker: null,
+    frontierSettings: null,
   };
 
   function byId(id) {
@@ -195,6 +196,11 @@
     return (el && el.value ? el.value : "auto").trim().toLowerCase();
   }
 
+  function currentFrontierModel() {
+    const el = document.querySelector("[data-regime-frontier-model]");
+    return (el && el.value ? el.value : "").trim();
+  }
+
   function currentForceRefresh() {
     const el = document.querySelector("[data-regime-force-refresh]");
     return !!(el && el.checked);
@@ -226,6 +232,75 @@
       .split(/[,;\n]+/)
       .flatMap((token) => expandTickerToken(token))
       .filter(Boolean);
+  }
+
+  function syncFrontierControlVisibility() {
+    const providerWrap = document.querySelector("[data-regime-provider-wrap]");
+    const modelWrap = document.querySelector("[data-regime-model-wrap]");
+    const enabled = currentFrontierEnabled();
+    const provider = currentFrontierProvider();
+    if (providerWrap) providerWrap.style.display = enabled ? "" : "none";
+    if (modelWrap) {
+      modelWrap.style.display = enabled && provider && provider !== "auto" && provider !== "best" ? "" : "none";
+    }
+  }
+
+  async function saveFrontierSettings(provider, model) {
+    const response = await fetch("/regime/frontier/settings", {
+      method: "PUT",
+      headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" },
+      body: new URLSearchParams({ provider: String(provider || "auto"), model: String(model || "") }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.detail || "Unable to save frontier settings");
+    state.frontierSettings = data;
+    return data;
+  }
+
+  async function loadFrontierSettings() {
+    const response = await fetch("/regime/frontier/settings", { headers: { Accept: "application/json" } });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.detail || "Unable to load frontier settings");
+    state.frontierSettings = data;
+    return data;
+  }
+
+  async function loadFrontierModels(provider, forceRefresh = false) {
+    const modelSelect = document.querySelector("[data-regime-frontier-model]");
+    const modelWrap = document.querySelector("[data-regime-model-wrap]");
+    if (!modelSelect || !modelWrap) return;
+    if (!provider || provider === "auto" || provider === "best" || !currentFrontierEnabled()) {
+      modelWrap.style.display = "none";
+      return;
+    }
+    modelWrap.style.display = "";
+    modelSelect.innerHTML = '<option value="">Loading...</option>';
+    modelSelect.disabled = true;
+    try {
+      const url = `/regime/frontier/models?provider=${encodeURIComponent(provider)}${forceRefresh ? "&refresh=1" : ""}`;
+      const response = await fetch(url, { headers: { Accept: "application/json" } });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.detail || "Failed to load models");
+      const models = Array.isArray(data.models) ? data.models : [];
+      modelSelect.innerHTML = '<option value="">Default (env)</option>';
+      models.forEach((model) => {
+        const opt = document.createElement("option");
+        opt.value = model.id;
+        opt.textContent = model.name || model.id;
+        modelSelect.appendChild(opt);
+      });
+      const settings = state.frontierSettings || (await loadFrontierSettings());
+      if (settings.provider === provider && settings.model) {
+        modelSelect.value = settings.model;
+      } else {
+        modelSelect.value = "";
+      }
+    } catch (error) {
+      modelSelect.innerHTML = '<option value="">Failed to load</option>';
+      showToast(`Unable to load ${provider} models: ${error.message || error}`, "error");
+    } finally {
+      modelSelect.disabled = false;
+    }
   }
 
   function getSelectedTickers() {
@@ -3602,11 +3677,38 @@
     }
     const frontier = document.querySelector("[data-regime-frontier-enabled]");
     if (frontier) {
-      frontier.addEventListener("change", () => {
-        const wrap = document.querySelector("[data-regime-provider-wrap]");
-        if (wrap) wrap.style.display = currentFrontierEnabled() ? "" : "none";
+      frontier.addEventListener("change", async () => {
+        syncFrontierControlVisibility();
+        if (currentFrontierEnabled()) {
+          await loadFrontierModels(currentFrontierProvider());
+        }
         updateSelectionCounter();
         renderPayload({ ...(state.lastPayload || state.config.initial_payload), frontier_enabled: currentFrontierEnabled() });
+      });
+    }
+    const providerSelect = document.querySelector("[data-regime-frontier-provider]");
+    if (providerSelect) {
+      providerSelect.addEventListener("change", async () => {
+        const provider = currentFrontierProvider();
+        await saveFrontierSettings(provider, provider === "auto" || provider === "best" ? "" : currentFrontierModel());
+        syncFrontierControlVisibility();
+        await loadFrontierModels(provider);
+      });
+    }
+    const modelSelect = document.querySelector("[data-regime-frontier-model]");
+    if (modelSelect) {
+      modelSelect.addEventListener("change", async () => {
+        try {
+          await saveFrontierSettings(currentFrontierProvider(), currentFrontierModel());
+        } catch (error) {
+          showToast(`Unable to save frontier model: ${error.message || error}`, "error");
+        }
+      });
+    }
+    const refreshModels = document.querySelector("[data-regime-refresh-models]");
+    if (refreshModels) {
+      refreshModels.addEventListener("click", async () => {
+        await loadFrontierModels(currentFrontierProvider(), true);
       });
     }
     const portfolioScope = document.querySelector("[data-regime-portfolio-scope]");
@@ -3699,6 +3801,7 @@
     wireControls();
     initTabs();
     initDisclosurePrefs();
+    syncFrontierControlVisibility();
     setDrawerOpen(!!prefs.themeDrawerOpen);
     if (Array.isArray(state.config.portfolio_scopes) && state.config.portfolio_scopes.length) {
       state.portfolioScopes = state.config.portfolio_scopes;
@@ -3714,6 +3817,20 @@
       renderAccountOptions(currentPortfolioScope(), false);
     }
     loadPortfolioScopes().then(() => loadHoldings());
+    loadFrontierSettings()
+      .then(async (settings) => {
+        const providerSelect = document.querySelector("[data-regime-frontier-provider]");
+        if (settings.provider && providerSelect) {
+          providerSelect.value = settings.provider;
+        }
+        syncFrontierControlVisibility();
+        if (settings.provider && settings.provider !== "auto" && settings.provider !== "best" && currentFrontierEnabled()) {
+          await loadFrontierModels(settings.provider);
+        }
+      })
+      .catch(() => {
+        syncFrontierControlVisibility();
+      });
     try {
       renderPayload(state.config.initial_payload || {});
     } catch (error) {

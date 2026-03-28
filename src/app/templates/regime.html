@@ -153,6 +153,15 @@
             </select>
             <div class="ui-muted">Best available uses the strongest model from each provider.</div>
           </label>
+          <label data-regime-model-wrap style="display:none; gap:6px">
+            Model
+            <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap">
+              <select data-regime-frontier-model>
+                <option value="">Default (env)</option>
+              </select>
+              <button class="btn btn--secondary" type="button" data-regime-refresh-models style="padding:4px 8px; font-size:0.85rem">Refresh</button>
+            </div>
+          </label>
           <div>
             <div class="ui-section-title" style="font-size:0.95rem">Portfolio</div>
             <div style="display:grid; gap:8px; margin-top:8px">

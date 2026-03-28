@@ -316,6 +316,15 @@ def _connect() -> sqlite3.Connection:
     )
     conn.execute(
         """
+        CREATE TABLE IF NOT EXISTS regime_settings (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL DEFAULT '',
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
         CREATE TABLE IF NOT EXISTS theme_supply_chain (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             theme_id INTEGER NOT NULL REFERENCES investment_theme(id) ON DELETE CASCADE,
@@ -518,7 +527,50 @@ def list_theses() -> list[dict[str, str]]:
             ORDER BY ticker ASC
             """
         ).fetchall()
-    return [dict(row) for row in rows]
+        return [dict(row) for row in rows]
+
+
+def get_setting(key: str) -> str | None:
+    with _connect() as conn:
+        row = conn.execute("SELECT value FROM regime_settings WHERE key = ?", (str(key),)).fetchone()
+        if row is None:
+            return None
+        return str(row["value"])
+
+
+def set_setting(key: str, value: str) -> None:
+    now = datetime.now(timezone.utc).isoformat()
+    with _connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO regime_settings (key, value, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(key) DO UPDATE SET
+                value = excluded.value,
+                updated_at = excluded.updated_at
+            """,
+            (str(key), str(value), now),
+        )
+
+
+def get_all_settings(prefix: str = "") -> dict[str, str]:
+    clause = ""
+    params: tuple[Any, ...] = ()
+    if prefix:
+        clause = "WHERE key LIKE ?"
+        params = (f"{prefix}%",)
+    with _connect() as conn:
+        rows = conn.execute(
+            f"SELECT key, value FROM regime_settings {clause} ORDER BY key ASC",
+            params,
+        ).fetchall()
+    return {str(row["key"]): str(row["value"]) for row in rows}
+
+
+def delete_setting(key: str) -> bool:
+    with _connect() as conn:
+        cursor = conn.execute("DELETE FROM regime_settings WHERE key = ?", (str(key),))
+        return bool(cursor.rowcount)
 
 
 def create_theme(name: str, narrative: str = "", conviction: int = 3, status: str = "Active", sector_hint: str = "") -> dict[str, Any]:
