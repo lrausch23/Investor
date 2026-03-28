@@ -3795,12 +3795,14 @@ async def regime_paper_plan_precheck(
             }
         )
     def _run_precheck_sync() -> list[dict[str, Any]]:
+        fallback_adapter = None
         checked: list[dict[str, Any]] = []
         for plan in plans:
+            ticker = str(plan.get("ticker") or "").upper()
             try:
                 order = runtime["OrderRequest"](
                     portfolio_id=portfolio_id,
-                    ticker=str(plan.get("ticker") or ""),
+                    ticker=ticker,
                     action=str(plan.get("action") or ""),
                     quantity=float(plan.get("quantity") or 0.0),
                     limit_price=float(plan.get("proposed_price") or 0.0) or None,
@@ -3812,7 +3814,7 @@ async def regime_paper_plan_precheck(
                 checked.append(
                     {
                         "plan_id": int(plan["id"]),
-                        "ticker": str(plan.get("ticker") or "").upper(),
+                        "ticker": ticker,
                         "action": str(plan.get("action") or ""),
                         "guardrail_passed": bool(result.allowed),
                         "guardrail_checks": _json_ready(result.checks),
@@ -3821,19 +3823,48 @@ async def regime_paper_plan_precheck(
                     }
                 )
             except Exception as exc:
-                logger.warning("Guardrail precheck failed for portfolio %s plan %s: %s", portfolio_id, plan.get("id"), exc)
-                checked.append(
-                    {
-                        "plan_id": int(plan["id"]),
-                        "ticker": str(plan.get("ticker") or "").upper(),
-                        "action": str(plan.get("action") or ""),
-                        "guardrail_passed": False,
-                        "guardrail_checks": [],
-                        "guardrail_result": {"allowed": False, "error": str(exc)},
-                        "broker_type": str(portfolio.get("broker_type") or "paper"),
-                        "error": str(exc),
-                    }
+                logger.warning(
+                    "Guardrail precheck failed for portfolio %s plan %s (%s), retrying with local data: %s",
+                    portfolio_id,
+                    plan.get("id"),
+                    ticker,
+                    exc,
                 )
+                try:
+                    if fallback_adapter is None:
+                        fallback_adapter = runtime["PaperBrokerAdapter"](portfolio_id)
+                    result = runtime["validate_guardrails"](order, fallback_adapter, runtime["DEFAULT_RISK_GUARDRAILS"])
+                    checked.append(
+                        {
+                            "plan_id": int(plan["id"]),
+                            "ticker": ticker,
+                            "action": str(plan.get("action") or ""),
+                            "guardrail_passed": bool(result.allowed),
+                            "guardrail_checks": _json_ready(result.checks),
+                            "guardrail_result": _json_ready(result),
+                            "broker_type": "paper_fallback",
+                            "fallback": True,
+                        }
+                    )
+                except Exception as fallback_exc:
+                    logger.warning(
+                        "Fallback precheck also failed for plan %s (%s): %s",
+                        plan.get("id"),
+                        ticker,
+                        fallback_exc,
+                    )
+                    checked.append(
+                        {
+                            "plan_id": int(plan["id"]),
+                            "ticker": ticker,
+                            "action": str(plan.get("action") or ""),
+                            "guardrail_passed": False,
+                            "guardrail_checks": [],
+                            "guardrail_result": {"allowed": False, "error": str(fallback_exc)},
+                            "broker_type": str(portfolio.get("broker_type") or "paper"),
+                            "error": str(fallback_exc),
+                        }
+                    )
         return checked
 
     try:
