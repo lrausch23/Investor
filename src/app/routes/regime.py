@@ -175,6 +175,8 @@ def _load_hmm_runtime() -> tuple[dict[str, Any] | None, str | None]:
             get_pending_transition_outcomes,
             get_signal_effectiveness,
             get_historical_regime_durations,
+            get_training_history,
+            get_training_run,
             get_trade_plan,
             get_trade_plans,
             count_todays_trades,
@@ -193,6 +195,7 @@ def _load_hmm_runtime() -> tuple[dict[str, Any] | None, str | None]:
             get_watchlist_entry,
             get_watchlist_stats,
             log_audit_event,
+            log_training_run,
             list_paper_portfolios,
             list_theses,
             list_themes,
@@ -208,6 +211,7 @@ def _load_hmm_runtime() -> tuple[dict[str, Any] | None, str | None]:
             update_paper_portfolio,
             update_theme,
             update_trade_plan_status,
+            update_training_status,
             update_ticker_in_theme,
             update_watchlist_status,
             update_transition_outcome,
@@ -234,8 +238,13 @@ def _load_hmm_runtime() -> tuple[dict[str, Any] | None, str | None]:
             META_FEATURES,
             MetaLabelerConfig,
             MetaLabelerEngine,
+            auto_load_active_model,
             create_and_register,
             extract_meta_features,
+            get_next_version,
+            list_saved_versions,
+            should_retrain,
+            _version_path,
         )
         from src.regime.alerts import format_alert_summary
         from src.regime.paper_trading import (
@@ -277,7 +286,7 @@ def _load_hmm_runtime() -> tuple[dict[str, Any] | None, str | None]:
             "in the Investor environment."
         )
 
-    return {
+    runtime = {
         "DEFAULT_TICKERS": DEFAULT_TICKERS,
         "IBKRConfig": IBKRConfig,
         "DEFAULT_IBKR_CONFIG": DEFAULT_IBKR_CONFIG,
@@ -374,6 +383,11 @@ def _load_hmm_runtime() -> tuple[dict[str, Any] | None, str | None]:
         "DEFAULT_META_LABELER_CONFIG": DEFAULT_META_LABELER_CONFIG,
         "extract_meta_features": extract_meta_features,
         "create_and_register_meta_labeler": create_and_register,
+        "auto_load_active_model": auto_load_active_model,
+        "should_retrain": should_retrain,
+        "get_next_version": get_next_version,
+        "list_saved_versions": list_saved_versions,
+        "_version_path": _version_path,
         "META_FEATURES": META_FEATURES,
         "delete_thesis": delete_thesis,
         "format_alert_summary": format_alert_summary,
@@ -398,12 +412,15 @@ def _load_hmm_runtime() -> tuple[dict[str, Any] | None, str | None]:
         "get_pending_outcomes": get_pending_outcomes,
         "get_pending_transition_outcomes": get_pending_transition_outcomes,
         "get_signal_effectiveness": get_signal_effectiveness,
+        "get_training_history": get_training_history,
+        "get_training_run": get_training_run,
         "get_transition_journal": get_transition_journal,
         "get_transition_statistics": get_transition_statistics,
         "list_theses": list_theses,
         "open_paper_position": open_paper_position,
         "close_paper_position": close_paper_position,
         "log_audit_event": log_audit_event,
+        "log_training_run": log_training_run,
         "get_portfolio_positions": get_portfolio_positions,
         "get_portfolio_tickers": get_portfolio_tickers,
         "get_sector_map": get_sector_map,
@@ -415,6 +432,7 @@ def _load_hmm_runtime() -> tuple[dict[str, Any] | None, str | None]:
         "get_tax_assumptions": get_tax_assumptions,
         "update_transition_outcome": update_transition_outcome,
         "update_signal_outcome": update_signal_outcome,
+        "update_training_status": update_training_status,
         "upsert_thesis": upsert_thesis,
         "get_wash_sale_risk": get_wash_sale_risk,
         "positions_by_ticker_and_account": positions_by_ticker_and_account,
@@ -436,7 +454,22 @@ def _load_hmm_runtime() -> tuple[dict[str, Any] | None, str | None]:
         "fit_probability_calibrator": fit_probability_calibrator,
         "compute_unified_confidence": compute_unified_confidence,
         "compute_position_size": compute_position_size,
-    }, None
+    }
+    try:
+        registry = runtime["get_registry"]()
+        ml_engine = registry.get("xgboost_meta_labeler")
+        if ml_engine is None:
+            ml_engine = runtime["create_and_register_meta_labeler"](runtime["DEFAULT_META_LABELER_CONFIG"])
+        if not ml_engine.is_ready():
+            active_version = runtime["get_setting"]("meta_labeler_active_version")
+            load_result = runtime["auto_load_active_model"](ml_engine, active_version)
+            if load_result.get("loaded"):
+                logger.info("Auto-loaded meta-labeler model v%s on startup", load_result.get("version"))
+            else:
+                logger.debug("No meta-labeler model auto-loaded: %s", load_result.get("status"))
+    except Exception as exc:
+        logger.debug("Meta-labeler auto-load skipped: %s", exc)
+    return runtime, None
 
 
 def _json_ready(value: Any) -> Any:
@@ -1602,6 +1635,9 @@ def _build_regime_dashboard_payload(
     previous_payload = load_previous_payload()
     payload["themes"] = _load_themes(runtime)
     registry = runtime["get_registry"]() if callable(runtime.get("get_registry")) else None
+    get_setting_fn = runtime.get("get_setting")
+    get_setting = get_setting_fn if callable(get_setting_fn) else None
+    active_version_raw = get_setting("meta_labeler_active_version") if get_setting else None
     meta_labeler_engine = registry.get("xgboost_meta_labeler") if registry else None
     meta_labeler_active = bool(
         meta_labeler_engine is not None
@@ -1611,6 +1647,7 @@ def _build_regime_dashboard_payload(
     payload["ensemble_status"] = {
         "meta_labeler_active": meta_labeler_active,
         "meta_labeler_name": getattr(meta_labeler_engine, "name", "xgboost_meta_labeler") if meta_labeler_engine else "xgboost_meta_labeler",
+        "meta_labeler_version": int(active_version_raw) if active_version_raw else None,
     }
 
     investor_db_path, available_tickers = _portfolio_tickers(runtime, session, show_all, portfolio_scope, account_id)
@@ -1988,6 +2025,64 @@ def _build_regime_dashboard_payload(
                 item["composite_signal"].composite_strength = adjusted_strength
         except Exception as exc:
             logger.warning("Unable to compute concentration-adjusted signal strengths.", exc_info=exc)
+    should_retrain_fn = runtime.get("should_retrain")
+    get_training_history_fn = runtime.get("get_training_history")
+    get_next_version_fn = runtime.get("get_next_version")
+    version_path_fn = runtime.get("_version_path")
+    log_training_run_fn = runtime.get("log_training_run")
+    update_training_status_fn = runtime.get("update_training_status")
+    set_setting_fn = get_setting_fn if callable(get_setting_fn) else None
+    if (
+        get_setting
+        and callable(should_retrain_fn)
+        and callable(get_training_history_fn)
+        and callable(get_next_version_fn)
+        and callable(version_path_fn)
+        and callable(log_training_run_fn)
+        and callable(set_setting_fn)
+        and str(get_setting("meta_labeler_auto_retrain") or "").lower() in {"true", "1", "yes"}
+    ):
+        retrain_ticker = str(get_setting("meta_labeler_retrain_ticker") or "").strip().upper()
+        retrain_period = str(get_setting("meta_labeler_retrain_period") or "3y")
+        retrain_day = str(get_setting("meta_labeler_retrain_day") or "Sunday")
+        if retrain_ticker:
+            history = get_training_history_fn(limit=1)
+            last_trained = history[0]["trained_at"] if history else None
+            if should_retrain_fn(last_trained, retrain_day):
+                try:
+                    logger.info("Auto-retrain triggered for meta-labeler on %s", retrain_ticker)
+                    market_series = runtime["download_market_frame"](ticker=retrain_ticker, period=retrain_period)
+                    market_frame = getattr(market_series, "frame", market_series)
+                    regime_result = runtime["fit_regime_model"](ticker=retrain_ticker, market_frame=market_frame)
+                    labeled_frame = runtime["build_labeled_frame"](retrain_ticker, market_frame, regime_result)
+                    registry = runtime["get_registry"]()
+                    engine = registry.get("xgboost_meta_labeler")
+                    if engine is None:
+                        engine = runtime["create_and_register_meta_labeler"](_meta_labeler_config_from_runtime(runtime))
+                    metrics = engine.train(labeled_frame)
+                    if engine.is_ready():
+                        active_str = get_setting("meta_labeler_active_version")
+                        if active_str and callable(update_training_status_fn):
+                            try:
+                                update_training_status_fn(int(active_str), "superseded")
+                            except Exception:
+                                pass
+                        new_version = get_next_version_fn()
+                        model_path = version_path_fn(new_version)
+                        engine.save_model(model_path)
+                        log_training_run_fn(
+                            version=new_version,
+                            ticker=retrain_ticker,
+                            model_path=model_path,
+                            metrics=metrics,
+                            notes="auto-retrain",
+                        )
+                        set_setting_fn("meta_labeler_active_version", str(new_version))
+                        payload["ensemble_status"]["meta_labeler_version"] = new_version
+                        payload["ensemble_status"]["meta_labeler_active"] = True
+                        logger.info("Auto-retrain complete: meta-labeler v%d saved", new_version)
+                except Exception as exc:
+                    logger.warning("Auto-retrain failed: %s", exc, exc_info=True)
     meta_scores: dict[str, float] = {}
     meta_results: dict[str, Any] = {}
     if meta_labeler_active and callable(runtime.get("extract_meta_features")):
@@ -3157,7 +3252,36 @@ async def regime_meta_labeler_train(
         if engine is None:
             engine = runtime["create_and_register_meta_labeler"](_meta_labeler_config_from_runtime(runtime))
         metrics = engine.train(labeled_frame)
-        return {"ticker": ticker, "metrics": metrics, "ready": engine.is_ready()}
+        save_result: dict[str, Any] = {}
+        if engine.is_ready():
+            active_version_str = runtime["get_setting"]("meta_labeler_active_version")
+            if active_version_str:
+                try:
+                    runtime["update_training_status"](int(active_version_str), "superseded")
+                except Exception:
+                    pass
+            new_version = runtime["get_next_version"]()
+            model_path = runtime["_version_path"](new_version)
+            save_result = engine.save_model(model_path)
+            save_result["version"] = new_version
+            config_dict = {
+                "n_estimators": engine._config.n_estimators,
+                "learning_rate": engine._config.learning_rate,
+                "max_depth": engine._config.max_depth,
+                "subsample": engine._config.subsample,
+                "colsample_bytree": engine._config.colsample_bytree,
+                "min_training_samples": engine._config.min_training_samples,
+                "walk_forward_gap": engine._config.walk_forward_gap,
+            }
+            runtime["log_training_run"](
+                version=new_version,
+                ticker=ticker,
+                model_path=model_path,
+                metrics=metrics,
+                config=config_dict,
+            )
+            runtime["set_setting"]("meta_labeler_active_version", str(new_version))
+        return {"ticker": ticker, "metrics": metrics, "ready": engine.is_ready(), **save_result}
 
     result = await asyncio.to_thread(_train_sync)
     return JSONResponse(content=_json_ready(result))
@@ -3178,14 +3302,124 @@ def regime_meta_labeler_status(
     if engine is None:
         return JSONResponse(content={"ready": False, "status": "not_created"})
     ready = bool(engine.is_ready())
+    active_version_str = runtime["get_setting"]("meta_labeler_active_version")
+    active_version = int(active_version_str) if active_version_str else None
     return JSONResponse(
         content={
             "ready": ready,
             "status": "trained" if ready else "not_trained",
+            "active_version": active_version,
             "metrics": getattr(engine, "_training_metrics", {}) if ready else {},
             "feature_importances": getattr(engine, "_feature_importances", {}) if ready else {},
         }
     )
+
+
+@router.post("/ensemble/meta-labeler/rollback")
+async def regime_meta_labeler_rollback(
+    request: Request,
+    session: Session = Depends(db_session),
+    actor: str = Depends(require_actor),
+):
+    del session, actor
+    runtime, runtime_error = _load_hmm_runtime()
+    if runtime is None:
+        raise HTTPException(status_code=503, detail=runtime_error or "Regime analytics unavailable.")
+    body = await request.json()
+    target_version = body.get("version")
+    if target_version is None:
+        raise HTTPException(status_code=400, detail="Target version is required.")
+    target_version = int(target_version)
+
+    def _rollback_sync() -> dict[str, Any]:
+        path = runtime["_version_path"](target_version)
+        if not os.path.isfile(path):
+            return {"error": f"Model v{target_version} not found on disk.", "success": False}
+        current_version_str = runtime["get_setting"]("meta_labeler_active_version")
+        current_version = int(current_version_str) if current_version_str else None
+        registry = runtime["get_registry"]()
+        engine = registry.get("xgboost_meta_labeler")
+        if engine is None:
+            engine = runtime["create_and_register_meta_labeler"](_meta_labeler_config_from_runtime(runtime))
+        load_result = runtime["auto_load_active_model"](engine, target_version)
+        if not load_result.get("loaded"):
+            return {"error": f"Failed to load model v{target_version}: {load_result.get('status')}", "success": False}
+        if current_version is not None and current_version != target_version:
+            runtime["update_training_status"](current_version, "rolled_back")
+        runtime["update_training_status"](target_version, "active")
+        runtime["set_setting"]("meta_labeler_active_version", str(target_version))
+        return {
+            "success": True,
+            "rolled_back_from": current_version,
+            "active_version": target_version,
+            "load_result": load_result,
+        }
+
+    result = await asyncio.to_thread(_rollback_sync)
+    if result.get("error"):
+        raise HTTPException(status_code=404, detail=result["error"])
+    return JSONResponse(content=_json_ready(result))
+
+
+@router.get("/ensemble/meta-labeler/versions")
+def regime_meta_labeler_versions(
+    session: Session = Depends(db_session),
+    actor: str = Depends(require_actor),
+):
+    del session, actor
+    runtime, runtime_error = _load_hmm_runtime()
+    if runtime is None:
+        raise HTTPException(status_code=503, detail=runtime_error or "Regime analytics unavailable.")
+    active_version_str = runtime["get_setting"]("meta_labeler_active_version")
+    active_version = int(active_version_str) if active_version_str else None
+    versions = runtime["list_saved_versions"]()
+    history = runtime["get_training_history"](limit=50)
+    history_by_version = {int(row["version"]): row for row in history}
+    for version in versions:
+        log_entry = history_by_version.get(int(version["version"]))
+        if log_entry:
+            version["accuracy"] = log_entry.get("accuracy")
+            version["f1"] = log_entry.get("f1")
+            version["train_samples"] = log_entry.get("train_samples")
+            version["test_samples"] = log_entry.get("test_samples")
+            version["status"] = log_entry.get("status", "unknown")
+            version["trained_at"] = log_entry.get("trained_at")
+            version["ticker"] = log_entry.get("ticker")
+        version["is_active"] = int(version["version"]) == active_version
+    comparison = None
+    if len(versions) >= 2 and active_version is not None:
+        active_entry = history_by_version.get(active_version)
+        previous_entries = [row for row in history if int(row["version"]) != active_version and row.get("status") != "rolled_back"]
+        if active_entry and previous_entries:
+            prev = previous_entries[0]
+            comparison = {
+                "active_version": active_version,
+                "compare_version": int(prev["version"]),
+                "accuracy_delta": round((active_entry.get("accuracy") or 0) - (prev.get("accuracy") or 0), 4),
+                "f1_delta": round((active_entry.get("f1") or 0) - (prev.get("f1") or 0), 4),
+                "sample_delta": (active_entry.get("train_samples") or 0) - (prev.get("train_samples") or 0),
+            }
+            active_fi = json.loads(active_entry.get("feature_importances") or "{}")
+            prev_fi = json.loads(prev.get("feature_importances") or "{}")
+            if active_fi and prev_fi:
+                drift: dict[str, float] = {}
+                for feat in runtime["META_FEATURES"]:
+                    drift[feat] = round(float(active_fi.get(feat, 0.0)) - float(prev_fi.get(feat, 0.0)), 4)
+                comparison["feature_importance_drift"] = drift
+    return JSONResponse(content=_json_ready({"active_version": active_version, "versions": versions, "comparison": comparison}))
+
+
+@router.get("/ensemble/meta-labeler/training-history")
+def regime_meta_labeler_training_history(
+    session: Session = Depends(db_session),
+    actor: str = Depends(require_actor),
+):
+    del session, actor
+    runtime, runtime_error = _load_hmm_runtime()
+    if runtime is None:
+        raise HTTPException(status_code=503, detail=runtime_error or "Regime analytics unavailable.")
+    history = runtime["get_training_history"](limit=50)
+    return JSONResponse(content=_json_ready({"history": history}))
 
 
 @router.post("/ibkr/test-connection")

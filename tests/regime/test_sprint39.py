@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import json
 from types import SimpleNamespace
 
 import pandas as pd
@@ -216,6 +217,7 @@ def test_registry_lists_meta_labeler(temp_modules) -> None:
 
 def _route_runtime(meta, ensemble, labeled_frame):
     registry = ensemble.AnalystRegistry()
+    training_log: list[dict[str, object]] = []
 
     def get_registry():
         return registry
@@ -229,6 +231,33 @@ def _route_runtime(meta, ensemble, labeled_frame):
     fake_market = pd.DataFrame({"price": [100.0], "high": [101.0], "low": [99.0], "volume": [1_000_000], "vix": [20.0], "yield_10y": [4.0]})
     fake_regime = SimpleNamespace(price_frame=labeled_frame.copy())
 
+    def log_training_run(*, version, ticker, model_path, metrics, config, status="active", notes=None):
+        entry = {
+            "version": int(version),
+            "ticker": ticker,
+            "model_path": model_path,
+            "status": status,
+            "notes": notes,
+            "accuracy": metrics.get("accuracy"),
+            "f1": metrics.get("f1"),
+            "train_samples": metrics.get("train_samples"),
+            "test_samples": metrics.get("test_samples"),
+            "feature_importances": json.dumps(metrics.get("feature_importances", {})),
+            "config_json": json.dumps(config),
+            "trained_at": "2026-03-28T00:00:00+00:00",
+        }
+        training_log.insert(0, entry)
+        return entry
+
+    def get_training_history(limit=20):
+        return training_log[:limit]
+
+    def update_training_status(version, status):
+        for entry in training_log:
+            if int(entry["version"]) == int(version):
+                entry["status"] = status
+        return None
+
     return {
         "download_market_frame": lambda ticker, period="3y": SimpleNamespace(ticker=ticker, frame=fake_market),
         "fit_regime_model": lambda ticker, market_frame, training_window=504, refit_step=21: fake_regime,
@@ -239,6 +268,14 @@ def _route_runtime(meta, ensemble, labeled_frame):
         "DEFAULT_META_LABELER_CONFIG": meta.DEFAULT_META_LABELER_CONFIG,
         "get_setting": lambda key: settings.get(key),
         "set_setting": lambda key, value: settings.__setitem__(str(key), str(value)),
+        "get_next_version": meta.get_next_version,
+        "_version_path": meta._version_path,
+        "list_saved_versions": meta.list_saved_versions,
+        "auto_load_active_model": meta.auto_load_active_model,
+        "log_training_run": log_training_run,
+        "get_training_history": get_training_history,
+        "update_training_status": update_training_status,
+        "META_FEATURES": meta.META_FEATURES,
     }
 
 

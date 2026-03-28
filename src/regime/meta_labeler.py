@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import glob
 import logging
+import os
+from datetime import datetime, timezone
 from dataclasses import dataclass
 from typing import Any
 
@@ -47,6 +50,94 @@ class MetaLabelerConfig:
 
 
 DEFAULT_META_LABELER_CONFIG = MetaLabelerConfig()
+
+
+def _default_models_dir() -> str:
+    configured = os.getenv("HMM_DATA_DIR")
+    if configured:
+        return os.path.join(os.path.abspath(configured), "models")
+    return os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "data", "regime", "models"))
+
+
+_MODELS_DIR = _default_models_dir()
+
+
+def _models_dir() -> str:
+    d = os.path.abspath(_MODELS_DIR)
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def _version_path(version: int) -> str:
+    return os.path.join(_models_dir(), f"meta_labeler_v{int(version)}.json")
+
+
+def get_next_version() -> int:
+    existing = glob.glob(os.path.join(_models_dir(), "meta_labeler_v*.json"))
+    if not existing:
+        return 1
+    versions: list[int] = []
+    for path in existing:
+        base = os.path.basename(path)
+        try:
+            versions.append(int(base.replace("meta_labeler_v", "").replace(".json", "")))
+        except ValueError:
+            continue
+    return (max(versions) + 1) if versions else 1
+
+
+def list_saved_versions() -> list[dict[str, Any]]:
+    existing = sorted(glob.glob(os.path.join(_models_dir(), "meta_labeler_v*.json")))
+    results: list[dict[str, Any]] = []
+    for path in existing:
+        base = os.path.basename(path)
+        try:
+            version = int(base.replace("meta_labeler_v", "").replace(".json", ""))
+        except ValueError:
+            continue
+        stat = os.stat(path)
+        results.append(
+            {
+                "version": version,
+                "path": path,
+                "filename": base,
+                "size_bytes": stat.st_size,
+                "modified_at": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
+            }
+        )
+    return results
+
+
+def auto_load_active_model(engine: "MetaLabelerEngine", active_version: int | str | None) -> dict[str, Any]:
+    if active_version is None:
+        return {"status": "no_active_version", "loaded": False}
+    try:
+        version = int(active_version)
+    except (ValueError, TypeError):
+        return {"status": "invalid_version", "loaded": False, "version": str(active_version)}
+    path = _version_path(version)
+    if not os.path.isfile(path):
+        return {"status": "file_not_found", "loaded": False, "version": version, "path": path}
+    try:
+        result = engine.load_model(path)
+        return {"status": "loaded", "loaded": True, "version": version, **result}
+    except Exception as exc:
+        logger.warning("Failed to auto-load meta-labeler v%d: %s", version, exc)
+        return {"status": "load_error", "loaded": False, "version": version, "error": str(exc)}
+
+
+def should_retrain(last_trained_at: str | None, retrain_day: str = "Sunday") -> bool:
+    if not last_trained_at:
+        return True
+    now = datetime.now(timezone.utc)
+    if now.strftime("%A") != str(retrain_day or "Sunday"):
+        return False
+    try:
+        last = datetime.fromisoformat(last_trained_at)
+        days_since = (now - last).total_seconds() / 86400.0
+        return days_since >= 5.0
+    except (ValueError, TypeError):
+        return True
 
 
 def extract_meta_features(price_frame_row: pd.Series) -> dict[str, float]:
@@ -162,6 +253,36 @@ class MetaLabelerEngine(AnalystBase):
         return {
             **self._training_metrics,
             "feature_importances": self._feature_importances,
+        }
+
+    def save_model(self, path: str) -> dict[str, Any]:
+        if not self.is_ready():
+            raise RuntimeError("Cannot save untrained model.")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        self._model.get_booster().save_model(path)
+        return {
+            "path": path,
+            "format": "json",
+            "training_metrics": self._training_metrics.copy(),
+            "feature_importances": self._feature_importances.copy(),
+        }
+
+    def load_model(self, path: str) -> dict[str, Any]:
+        if not os.path.isfile(path):
+            raise FileNotFoundError(f"Model file not found: {path}")
+        loaded = xgb.XGBClassifier()
+        loaded.load_model(path)
+        self._model = loaded
+        self._trained = True
+        self._training_metrics = {}
+        try:
+            self._feature_importances = dict(zip(META_FEATURES, map(float, self._model.feature_importances_)))
+        except Exception:
+            self._feature_importances = {}
+        return {
+            "path": path,
+            "format": "json",
+            "feature_importances": self._feature_importances.copy(),
         }
 
     def analyze(

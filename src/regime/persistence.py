@@ -325,6 +325,42 @@ def _connect() -> sqlite3.Connection:
     )
     conn.execute(
         """
+        CREATE TABLE IF NOT EXISTS meta_labeler_training_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            version INTEGER NOT NULL,
+            ticker TEXT NOT NULL,
+            model_path TEXT NOT NULL,
+            accuracy REAL,
+            precision_score REAL,
+            recall REAL,
+            f1 REAL,
+            train_samples INTEGER,
+            test_samples INTEGER,
+            positive_rate_train REAL,
+            positive_rate_test REAL,
+            avg_probability_test REAL,
+            feature_importances TEXT NOT NULL DEFAULT '{}',
+            config_json TEXT NOT NULL DEFAULT '{}',
+            trained_at TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'superseded', 'rolled_back')),
+            notes TEXT NOT NULL DEFAULT ''
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS ix_training_log_version
+        ON meta_labeler_training_log (version)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS ix_training_log_status
+        ON meta_labeler_training_log (status)
+        """
+    )
+    conn.execute(
+        """
         CREATE TABLE IF NOT EXISTS theme_supply_chain (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             theme_id INTEGER NOT NULL REFERENCES investment_theme(id) ON DELETE CASCADE,
@@ -571,6 +607,74 @@ def delete_setting(key: str) -> bool:
     with _connect() as conn:
         cursor = conn.execute("DELETE FROM regime_settings WHERE key = ?", (str(key),))
         return bool(cursor.rowcount)
+
+
+def log_training_run(
+    *,
+    version: int,
+    ticker: str,
+    model_path: str,
+    metrics: dict[str, Any],
+    config: dict[str, Any] | None = None,
+    notes: str = "",
+) -> dict[str, Any]:
+    now = datetime.now(timezone.utc).isoformat()
+    with _connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO meta_labeler_training_log
+                (version, ticker, model_path, accuracy, precision_score, recall, f1,
+                 train_samples, test_samples, positive_rate_train, positive_rate_test,
+                 avg_probability_test, feature_importances, config_json, trained_at, status, notes)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?)
+            """,
+            (
+                int(version),
+                str(ticker).upper(),
+                str(model_path),
+                metrics.get("accuracy"),
+                metrics.get("precision"),
+                metrics.get("recall"),
+                metrics.get("f1"),
+                metrics.get("train_samples"),
+                metrics.get("test_samples"),
+                metrics.get("positive_rate_train"),
+                metrics.get("positive_rate_test"),
+                metrics.get("avg_probability_test"),
+                json.dumps(metrics.get("feature_importances", {})),
+                json.dumps(config or {}),
+                now,
+                str(notes or ""),
+            ),
+        )
+    return {"version": int(version), "logged_at": now}
+
+
+def get_training_history(*, limit: int = 20) -> list[dict[str, Any]]:
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT * FROM meta_labeler_training_log ORDER BY id DESC LIMIT ?",
+            (int(limit),),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def get_training_run(version: int) -> dict[str, Any] | None:
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM meta_labeler_training_log WHERE version = ? ORDER BY id DESC LIMIT 1",
+            (int(version),),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def update_training_status(version: int, status: str) -> bool:
+    with _connect() as conn:
+        cursor = conn.execute(
+            "UPDATE meta_labeler_training_log SET status = ? WHERE version = ?",
+            (str(status), int(version)),
+        )
+    return bool(cursor.rowcount)
 
 
 def create_theme(name: str, narrative: str = "", conviction: int = 3, status: str = "Active", sector_hint: str = "") -> dict[str, Any]:

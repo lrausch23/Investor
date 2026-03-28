@@ -493,6 +493,7 @@
     const pendingPlans = (state.paperPlans || []).filter((plan) => ["Pending", "Approved", "Submitted", "Partially Filled"].includes(String(plan.status || ""))).length;
     const actionItems = Number(payload.action_items_count || 0) + pendingPlans;
     const mlActive = !!(payload.ensemble_status && payload.ensemble_status.meta_labeler_active);
+    const mlVersion = payload.ensemble_status && payload.ensemble_status.meta_labeler_version;
     const actionDetail = pendingPlans
       ? `${pendingPlans} trade plan${pendingPlans === 1 ? "" : "s"} pending review`
       : actionItems
@@ -503,7 +504,7 @@
         <div class="ui-card__label">Portfolio P&amp;L</div>
         <div class="ui-card__value ui-tabular-nums">${totalEquity ? escapeHtml(formatCurrency(totalEquity, 0)) : "No portfolio"}</div>
         <div class="ui-card__subtext ui-muted">${totalEquity ? `Today: ${escapeHtml(formatCurrency(dailyPnl, 0))}` : "Create or select a trading portfolio"}</div>
-        <div class="ui-card__subtext ui-muted" style="margin-top:6px"><span class="ui-badge ${mlActive ? "ui-badge--safe" : "ui-badge--neutral"}">ML ${mlActive ? "Active" : "Inactive"}</span></div>
+        <div class="ui-card__subtext ui-muted" style="margin-top:6px"><span class="ui-badge ${mlActive ? "ui-badge--safe" : "ui-badge--neutral"}">ML ${mlActive ? `Active v${mlVersion || "?"}` : "Inactive"}</span></div>
       </div>
       <div class="ui-card ui-kpi regime-kpi--exposure">
         <div class="ui-card__label">Exposure</div>
