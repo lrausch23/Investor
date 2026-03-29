@@ -3990,8 +3990,8 @@ def regime_autonomy_settings(
             "operating_mode": runtime["get_operating_mode"](),
             "auto_approve_threshold": runtime["get_auto_approve_threshold"](),
             "daily_capital_ceiling_pct": runtime["get_daily_capital_ceiling_pct"](),
-            "lot_selection_method": runtime["get_lot_selection_method"](),
-            "ltcg_defer_window_days": runtime["get_ltcg_defer_window_days"](),
+            "lot_selection_method": runtime["get_lot_selection_method"]() if "get_lot_selection_method" in runtime else "HIFO_LTCG",
+            "ltcg_defer_window_days": runtime["get_ltcg_defer_window_days"]() if "get_ltcg_defer_window_days" in runtime else 30,
             "operating_modes": list(runtime["OPERATING_MODES"]),
         }
     )
@@ -4028,8 +4028,8 @@ async def regime_autonomy_settings_update(
             "operating_mode": runtime["get_operating_mode"](),
             "auto_approve_threshold": runtime["get_auto_approve_threshold"](),
             "daily_capital_ceiling_pct": runtime["get_daily_capital_ceiling_pct"](),
-            "lot_selection_method": runtime["get_lot_selection_method"](),
-            "ltcg_defer_window_days": runtime["get_ltcg_defer_window_days"](),
+            "lot_selection_method": runtime["get_lot_selection_method"]() if "get_lot_selection_method" in runtime else "HIFO_LTCG",
+            "ltcg_defer_window_days": runtime["get_ltcg_defer_window_days"]() if "get_ltcg_defer_window_days" in runtime else 30,
             "operating_modes": list(runtime["OPERATING_MODES"]),
         }
     )
