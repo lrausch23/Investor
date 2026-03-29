@@ -67,6 +67,14 @@ def _ensure_paper_schema(conn: sqlite3.Connection) -> None:
         _ensure_column(conn, "paper_portfolio", column, ddl)
     for column, ddl in _PAPER_TRADE_PLAN_COLUMNS.items():
         _ensure_column(conn, "paper_trade_plan", column, ddl)
+    try:
+        conn.execute("ALTER TABLE daily_snapshot ADD COLUMN drawdown_pct REAL")
+    except Exception:
+        pass
+    try:
+        conn.execute("ALTER TABLE daily_snapshot ADD COLUMN regime_exposure_json TEXT")
+    except Exception:
+        pass
 
 
 def _create_paper_trade_plan_table(conn: sqlite3.Connection) -> None:
@@ -1482,6 +1490,8 @@ def save_daily_snapshot(
     unrealized_pnl: float = 0.0,
     position_count: int = 0,
     trades_today: int = 0,
+    drawdown_pct: float | None = None,
+    regime_exposure_json: str | None = None,
 ) -> dict[str, Any]:
     now = datetime.now(timezone.utc).isoformat()
     with _connect() as conn:
@@ -1489,9 +1499,9 @@ def save_daily_snapshot(
             """
             INSERT INTO daily_snapshot (
                 portfolio_id, snapshot_date, equity, cash, market_value,
-                realized_pnl, unrealized_pnl, position_count, trades_today, created_at
+                realized_pnl, unrealized_pnl, position_count, trades_today, drawdown_pct, regime_exposure_json, created_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(portfolio_id, snapshot_date) DO UPDATE SET
                 equity = excluded.equity,
                 cash = excluded.cash,
@@ -1500,6 +1510,8 @@ def save_daily_snapshot(
                 unrealized_pnl = excluded.unrealized_pnl,
                 position_count = excluded.position_count,
                 trades_today = excluded.trades_today,
+                drawdown_pct = excluded.drawdown_pct,
+                regime_exposure_json = excluded.regime_exposure_json,
                 created_at = excluded.created_at
             """,
             (
@@ -1512,6 +1524,8 @@ def save_daily_snapshot(
                 float(unrealized_pnl),
                 int(position_count),
                 int(trades_today),
+                float(drawdown_pct) if drawdown_pct is not None else None,
+                str(regime_exposure_json) if regime_exposure_json is not None else None,
                 now,
             ),
         )
@@ -1539,6 +1553,52 @@ def get_daily_snapshots(
     with _connect() as conn:
         rows = conn.execute(query, params).fetchall()
     return [dict(row) for row in rows]
+
+
+def get_performance_timeseries(portfolio_id: int, days: int = 90) -> list[dict[str, Any]]:
+    end_date = datetime.now(timezone.utc).date()
+    start_date = end_date - timedelta(days=max(1, int(days)) - 1)
+    snapshots = get_daily_snapshots(int(portfolio_id), start_date=start_date.isoformat(), end_date=end_date.isoformat())
+    if not snapshots:
+        return []
+    first_equity = float(snapshots[0].get("equity") or 0.0)
+    previous_equity = None
+    rows: list[dict[str, Any]] = []
+    for snapshot in snapshots:
+        equity = float(snapshot.get("equity") or 0.0)
+        daily_return_pct = None
+        if previous_equity and previous_equity > 0:
+            daily_return_pct = ((equity - previous_equity) / previous_equity) * 100.0
+        cumulative_return_pct = ((equity - first_equity) / first_equity * 100.0) if first_equity > 0 else None
+        item = dict(snapshot)
+        item["daily_return_pct"] = daily_return_pct
+        item["cumulative_return_pct"] = cumulative_return_pct
+        exposure_raw = item.get("regime_exposure_json")
+        if isinstance(exposure_raw, str) and exposure_raw.strip():
+            try:
+                item["regime_exposure"] = json.loads(exposure_raw)
+            except json.JSONDecodeError:
+                item["regime_exposure"] = None
+        else:
+            item["regime_exposure"] = None
+        rows.append(item)
+        previous_equity = equity
+    return rows
+
+
+def get_latest_regime_label(ticker: str, as_of: str) -> str | None:
+    with _connect() as conn:
+        row = conn.execute(
+            """
+            SELECT current_label
+            FROM regime_change_history
+            WHERE ticker = ? AND changed_at <= ?
+            ORDER BY changed_at DESC
+            LIMIT 1
+            """,
+            (str(ticker or "").upper(), str(as_of)),
+        ).fetchone()
+    return str(row["current_label"]) if row and row["current_label"] else None
 
 
 def log_audit_event(

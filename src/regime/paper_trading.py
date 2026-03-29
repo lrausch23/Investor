@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import json
 import logging
 import math
 from dataclasses import asdict
@@ -22,6 +23,7 @@ from .persistence import (
     count_todays_trades,
     create_trade_plan,
     get_daily_snapshots,
+    get_performance_timeseries,
     get_paper_portfolio,
     get_paper_portfolio_summary,
     get_paper_positions,
@@ -715,7 +717,7 @@ def compute_paper_performance(portfolio_id: int) -> dict[str, Any]:
         benchmark = compute_benchmark_comparison(portfolio_id, benchmark_data=benchmark_data)
     except TypeError:
         benchmark = compute_benchmark_comparison(portfolio_id)
-    snapshots = get_daily_snapshots(portfolio_id)
+    snapshots = get_performance_timeseries(portfolio_id)
     return {
         **summary,
         "portfolio_id": portfolio_id,
@@ -754,16 +756,43 @@ def compute_daily_snapshot(portfolio_id: int) -> dict[str, Any]:
     if portfolio is None or not summary:
         return {}
     positions = get_paper_positions(portfolio_id, status="Open")
+    snapshots = get_daily_snapshots(portfolio_id)
+    equity = float(summary.get("current_cash") or 0.0) + float(summary.get("total_market_value") or 0.0)
+    max_equity = max([float(row.get("equity") or 0.0) for row in snapshots] + [equity])
+    drawdown_pct = ((equity - max_equity) / max_equity * 100.0) if max_equity > 0 else 0.0
+    regime_exposure = {"Bull": 0.0, "Neutral": 0.0, "Bear": 0.0}
+    if positions:
+        try:
+            from src.app.routes.regime_cache import load_payload
+
+            cached = load_payload() or {}
+            rows = cached.get("rows") if isinstance(cached, dict) else []
+            regime_by_ticker = {
+                str(row.get("ticker") or "").upper(): str(row.get("regime") or "")
+                for row in (rows or [])
+                if isinstance(row, dict)
+            }
+        except Exception:
+            regime_by_ticker = {}
+        total_market_value = float(summary.get("total_market_value") or 0.0)
+        if total_market_value > 0 and summary.get("positions"):
+            for row in summary.get("positions") or []:
+                ticker = str(row.get("ticker") or "").upper()
+                label = regime_by_ticker.get(ticker)
+                if label in regime_exposure:
+                    regime_exposure[label] += float(row.get("market_value") or 0.0) / total_market_value
     return {
         "snapshot_date": dt.datetime.now(ET).date().isoformat(),
         "portfolio_id": int(portfolio_id),
-        "equity": float(summary.get("current_cash") or 0.0) + float(summary.get("total_market_value") or 0.0),
+        "equity": equity,
         "cash": float(summary.get("current_cash") or 0.0),
         "market_value": float(summary.get("total_market_value") or 0.0),
         "realized_pnl": float(summary.get("realized_pnl") or 0.0),
         "unrealized_pnl": float(summary.get("unrealized_pnl") or 0.0),
         "position_count": len(positions),
         "trades_today": count_todays_trades(portfolio_id),
+        "drawdown_pct": drawdown_pct,
+        "regime_exposure_json": json.dumps(regime_exposure),
     }
 
 

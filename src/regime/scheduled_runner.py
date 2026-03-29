@@ -11,6 +11,7 @@ from .alerts import (
 )
 from .discovery import check_entry_signals, expire_stale_candidates, run_full_discovery
 from .investor_adapter import get_investor_db_path, get_portfolio_tickers_filtered, get_latest_prices
+from .attribution import compute_ml_accuracy, compute_theme_attribution
 from .paper_trading import compute_daily_snapshot, expire_stale_plans, generate_daily_plans, record_trade_outcome
 from .persistence import (
     get_daily_snapshots,
@@ -140,6 +141,8 @@ def run_end_of_day_processing() -> dict[str, Any]:
                 unrealized_pnl=snapshot["unrealized_pnl"],
                 position_count=snapshot["position_count"],
                 trades_today=snapshot["trades_today"],
+                drawdown_pct=snapshot.get("drawdown_pct"),
+                regime_exposure_json=snapshot.get("regime_exposure_json"),
             )
             snapshots.append(saved)
         if str(portfolio.get("broker_type") or "paper").lower() == "ibkr":
@@ -163,9 +166,32 @@ def run_end_of_day_processing() -> dict[str, Any]:
         for position in get_paper_positions(portfolio_id, status="Closed"):
             if position.get("exit_date"):
                 outcomes.append(record_trade_outcome(portfolio_id, position, float(position.get("exit_price") or 0.0)))
+    performance = run_performance_snapshot()
     return {
         "snapshots": snapshots,
         "snapshot_count": len(snapshots),
         "outcomes": outcomes,
+        "performance": performance,
         "history_counts": {str(row["portfolio_id"]): len(get_daily_snapshots(int(row["portfolio_id"]))) for row in snapshots if row.get("portfolio_id") is not None},
     }
+
+
+def run_performance_snapshot() -> dict[str, Any]:
+    portfolios: list[dict[str, Any]] = []
+    for portfolio in list_paper_portfolios(include_closed=False):
+        if str(portfolio.get("status") or "") != "Active":
+            continue
+        portfolio_id = int(portfolio["id"])
+        snapshot = compute_daily_snapshot(portfolio_id)
+        theme = compute_theme_attribution(portfolio_id)
+        ml = compute_ml_accuracy(portfolio_id)
+        portfolios.append(
+            {
+                "portfolio_id": portfolio_id,
+                "snapshot_date": snapshot.get("snapshot_date"),
+                "drawdown_pct": snapshot.get("drawdown_pct"),
+                "theme_count": int(theme.get("theme_count") or 0),
+                "ml_trades": int(ml.get("total_trades_with_ml") or 0),
+            }
+        )
+    return {"portfolios": portfolios, "count": len(portfolios)}

@@ -43,6 +43,7 @@
     paperPlans: [],
     paperPositions: [],
     paperPerformance: null,
+    paperAttribution: null,
     paperAudit: [],
     paperAuditSummary: null,
     paperMonitoring: null,
@@ -2865,6 +2866,7 @@
     const mount = byId("regimePerformanceMount");
     if (!mount) return;
     const performance = state.paperPerformance || null;
+    const attribution = state.paperAttribution || null;
     if (!currentPaperPortfolioId()) {
       mount.innerHTML = '<div class="regime-empty-state"><div class="regime-empty-state__title">No active portfolio</div><div class="ui-muted">Performance attribution appears after you select a paper portfolio.</div></div>';
       return;
@@ -2877,12 +2879,20 @@
     const metrics = performance.performance || performance;
     mount.innerHTML = `
       <div class="ui-card" style="padding:12px">
-        <div class="ui-section-title">Performance</div>
-        <div class="ui-muted" style="margin-top:6px">Return ${escapeHtml(formatSignedPct((metrics.total_return_pct || 0) / 100, 2))} · Win rate ${escapeHtml(formatSignedPct(metrics.win_rate, 1))} · Alpha vs ${escapeHtml(benchmark.benchmark || "SPY")} ${escapeHtml(formatSignedPct((benchmark.alpha_pct || benchmark.alpha || 0) / 100, 2))}</div>
+        <div class="table-toolbar">
+          <div>
+            <div class="ui-section-title">Performance</div>
+            <div class="ui-muted" style="margin-top:6px">Return ${escapeHtml(formatSignedPct((metrics.total_return_pct || 0) / 100, 2))} · Win rate ${escapeHtml(formatSignedPct(metrics.win_rate, 1))} · Alpha vs ${escapeHtml(benchmark.benchmark || "SPY")} ${escapeHtml(formatSignedPct((benchmark.alpha_pct || benchmark.alpha || 0) / 100, 2))}</div>
+          </div>
+          <button class="btn btn--secondary" type="button" id="regimePaperAttributionLoad">Performance Report</button>
+        </div>
         <div class="ui-muted" style="margin-top:6px">Realized ${escapeHtml(formatCurrency(metrics.realized_pnl, 2))} · Unrealized ${escapeHtml(formatCurrency(metrics.unrealized_pnl, 2))} · Market value ${escapeHtml(formatCurrency(metrics.total_market_value, 2))}</div>
         ${Array.isArray(metrics.snapshots) && metrics.snapshots.length ? '<div id="regimePaperEquityCurve" style="min-height:220px; margin-top:12px"></div>' : ""}
+        ${renderPerformanceAttribution(attribution, metrics)}
       </div>
     `;
+    const loadBtn = byId("regimePaperAttributionLoad");
+    if (loadBtn) loadBtn.addEventListener("click", loadPaperAttribution);
     if (Array.isArray(metrics.snapshots) && metrics.snapshots.length && window.Plotly) {
       const chartMount = byId("regimePaperEquityCurve");
       if (chartMount) {
@@ -2900,6 +2910,98 @@
         );
       }
     }
+  }
+
+  function renderAttributionTable(headers, rowsHtml, emptyText) {
+    return `
+      <div class="table-wrap" style="margin-top:10px">
+        <table>
+          <thead><tr>${headers.map((header) => `<th scope="col">${header}</th>`).join("")}</tr></thead>
+          <tbody>${rowsHtml || `<tr><td colspan="${headers.length}" class="ui-muted">${escapeHtml(emptyText)}</td></tr>`}</tbody>
+        </table>
+      </div>
+    `;
+  }
+
+  function calibrationGapClass(value) {
+    const gap = Math.abs(Number(value || 0));
+    if (gap <= 0.10) return "cell-ok";
+    if (gap <= 0.20) return "cell-warn";
+    return "cell-bad";
+  }
+
+  function renderPerformanceAttribution(attribution, metrics) {
+    if (!attribution) {
+      return '<div class="ui-muted" style="margin-top:12px">Click Performance Report to load theme, source, regime, and ML attribution.</div>';
+    }
+    const snapshots = Array.isArray(metrics.snapshots) ? metrics.snapshots : [];
+    const maxDrawdown = snapshots.length ? Math.min(...snapshots.map((row) => Number(row.drawdown_pct || 0))) : 0;
+    const themeRows = ((attribution.theme_attribution || {}).themes || []).map((row) => `
+      <tr>
+        <td>${escapeHtml(row.theme_name || "Unassigned")}</td>
+        <td class="num ui-tabular-nums ${Number(row.total_pnl || 0) >= 0 ? "cell-ok" : "cell-bad"}">${escapeHtml(formatCurrency(row.total_pnl, 2))}</td>
+        <td class="num ui-tabular-nums">${escapeHtml(row.position_count || 0)}</td>
+        <td class="num ui-tabular-nums">${row.win_rate == null ? "—" : escapeHtml(formatSignedPct(row.win_rate, 1))}</td>
+        <td>${row.best_trade ? `${escapeHtml(row.best_trade.ticker)} ${escapeHtml(formatCurrency(row.best_trade.pnl, 2))}` : "—"}</td>
+        <td>${row.worst_trade ? `${escapeHtml(row.worst_trade.ticker)} ${escapeHtml(formatCurrency(row.worst_trade.pnl, 2))}` : "—"}</td>
+      </tr>
+    `).join("");
+    const sourceRows = ((attribution.source_attribution || {}).sources || []).map((row) => `
+      <tr>
+        <td><span class="ui-badge ui-badge--neutral">${escapeHtml(row.source || "manual")}</span></td>
+        <td class="num ui-tabular-nums">${escapeHtml(row.plan_count || 0)}</td>
+        <td class="num ui-tabular-nums ${Number((row.total_realized_pnl || 0) + (row.total_unrealized_pnl || 0)) >= 0 ? "cell-ok" : "cell-bad"}">${escapeHtml(formatCurrency((row.total_realized_pnl || 0) + (row.total_unrealized_pnl || 0), 2))}</td>
+        <td class="num ui-tabular-nums">${row.win_rate == null ? "—" : escapeHtml(formatSignedPct(row.win_rate, 1))}</td>
+        <td class="num ui-tabular-nums">${row.avg_slippage_pct == null ? "—" : escapeHtml(formatSignedPct(row.avg_slippage_pct / 100, 2))}</td>
+      </tr>
+    `).join("");
+    const regimeRows = ((attribution.regime_attribution || {}).regimes || []).map((row) => `
+      <tr>
+        <td><span class="${badgeClass(row.regime)}">${escapeHtml(row.regime || "Unknown")}</span></td>
+        <td class="num ui-tabular-nums">${escapeHtml(row.position_count || 0)}</td>
+        <td class="num ui-tabular-nums ${Number(row.total_pnl || 0) >= 0 ? "cell-ok" : "cell-bad"}">${escapeHtml(formatCurrency(row.total_pnl, 2))}</td>
+        <td class="num ui-tabular-nums">${row.win_rate == null ? "—" : escapeHtml(formatSignedPct(row.win_rate, 1))}</td>
+        <td class="num ui-tabular-nums">${row.avg_return_pct == null ? "—" : escapeHtml(formatSignedPct(row.avg_return_pct / 100, 2))}</td>
+      </tr>
+    `).join("");
+    const ml = attribution.ml_accuracy || {};
+    const calibrationRows = (ml.calibration || []).map((row) => `
+      <tr>
+        <td>${escapeHtml(row.band || "")}</td>
+        <td class="num ui-tabular-nums">${escapeHtml(row.count || 0)}</td>
+        <td class="num ui-tabular-nums">${escapeHtml(formatSignedPct(row.predicted_avg, 1))}</td>
+        <td class="num ui-tabular-nums">${escapeHtml(formatSignedPct(row.actual_success_rate, 1))}</td>
+        <td class="num ui-tabular-nums ${calibrationGapClass(row.calibration_gap)}">${escapeHtml(formatSignedPct(row.calibration_gap, 1))}</td>
+      </tr>
+    `).join("");
+    const historyRows = (ml.model_history || []).map((row) => `
+      <tr>
+        <td class="num ui-tabular-nums">${escapeHtml(row.version || 0)}</td>
+        <td class="num ui-tabular-nums">${row.accuracy == null ? "—" : escapeHtml(formatSignedPct(row.accuracy, 1))}</td>
+        <td class="num ui-tabular-nums">${row.f1 == null ? "—" : escapeHtml(formatSignedPct(row.f1, 1))}</td>
+        <td>${escapeHtml(row.ticker || "")}</td>
+        <td>${escapeHtml(row.status || "")}</td>
+      </tr>
+    `).join("");
+    return `
+      <div style="margin-top:16px">
+        <div style="display:grid; grid-template-columns:repeat(4, minmax(0, 1fr)); gap:10px">
+          <div class="ui-card" style="padding:10px"><div class="ui-muted">Total Return</div><div style="font-weight:700">${escapeHtml(formatSignedPct((metrics.total_return_pct || 0) / 100, 2))}</div></div>
+          <div class="ui-card" style="padding:10px"><div class="ui-muted">Alpha vs SPY</div><div style="font-weight:700">${escapeHtml(formatSignedPct((((metrics.benchmark || {}).alpha_pct || 0) / 100), 2))}</div></div>
+          <div class="ui-card" style="padding:10px"><div class="ui-muted">Win Rate</div><div style="font-weight:700">${metrics.win_rate == null ? "—" : escapeHtml(formatSignedPct(metrics.win_rate, 1))}</div></div>
+          <div class="ui-card" style="padding:10px"><div class="ui-muted">Max Drawdown</div><div style="font-weight:700">${escapeHtml(formatSignedPct(maxDrawdown / 100, 2))}</div></div>
+        </div>
+        <details style="margin-top:12px" open><summary style="cursor:pointer; font-weight:600">Theme Attribution</summary>${renderAttributionTable(["Theme Name", "P&L", "Positions", "Win Rate", "Best Trade", "Worst Trade"], themeRows, "No theme attribution yet.")}</details>
+        <details style="margin-top:12px"><summary style="cursor:pointer; font-weight:600">Source Attribution</summary>${renderAttributionTable(["Source", "Plans Executed", "P&L", "Win Rate", "Avg Slippage"], sourceRows, "No executed source data yet.")}</details>
+        <details style="margin-top:12px"><summary style="cursor:pointer; font-weight:600">Regime Attribution</summary>${renderAttributionTable(["Regime", "Positions", "P&L", "Win Rate", "Avg Return %"], regimeRows, "No regime attribution yet.")}</details>
+        <details style="margin-top:12px"><summary style="cursor:pointer; font-weight:600">ML Accuracy</summary>
+          ${Number(ml.total_trades_with_ml || 0) > 0
+            ? `${renderAttributionTable(["Confidence Band", "Trade Count", "Predicted Success", "Actual Success", "Calibration Gap"], calibrationRows, "No ML calibration rows yet.")}
+               ${renderAttributionTable(["Version", "Accuracy", "F1", "Ticker", "Status"], historyRows, "No model history yet.")}`
+            : '<div class="ui-muted" style="margin-top:10px">ML accuracy tracking will appear after trades with ML confidence are closed.</div>'}
+        </details>
+      </div>
+    `;
   }
 
   function renderPaperPortfolioSection() {
@@ -3047,6 +3149,7 @@
       state.paperPlans = [];
       state.paperPositions = [];
       state.paperPerformance = null;
+      state.paperAttribution = null;
       state.paperAudit = [];
       state.paperAuditSummary = null;
       state.paperMonitoring = null;
@@ -3122,6 +3225,7 @@
       } else {
         warnPanel("Performance", performanceResponse, performance);
         state.paperPerformance = null;
+        state.paperAttribution = null;
       }
       if (auditResponse.ok) {
         state.paperAudit = Array.isArray(audit.audit) ? audit.audit : [];
@@ -3153,6 +3257,20 @@
       startMonitoringPolling();
     } catch (error) {
       showToast(`Unable to refresh paper trading data: ${error.message || error}`, "error");
+    }
+  }
+
+  async function loadPaperAttribution() {
+    const portfolioId = currentPaperPortfolioId();
+    if (!portfolioId) return;
+    try {
+      const response = await fetch(paperEndpoint("paper_attribution_summary", portfolioId), { headers: { Accept: "application/json" } });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.detail || payload.error || `Attribution failed (${response.status})`);
+      state.paperAttribution = payload;
+      renderPaperPerformance();
+    } catch (error) {
+      showToast(`Unable to load performance report: ${error.message || error}`, "error");
     }
   }
 

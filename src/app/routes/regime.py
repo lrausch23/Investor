@@ -167,6 +167,7 @@ def _load_hmm_runtime() -> tuple[dict[str, Any] | None, str | None]:
             get_calibration_data,
             get_daily_audit_summary,
             get_daily_snapshots,
+            get_performance_timeseries,
             get_paper_portfolio,
             get_paper_portfolio_summary,
             get_paper_position,
@@ -245,6 +246,13 @@ def _load_hmm_runtime() -> tuple[dict[str, Any] | None, str | None]:
             list_saved_versions,
             should_retrain,
             _version_path,
+        )
+        from src.regime.attribution import (
+            compute_attribution_summary,
+            compute_ml_accuracy,
+            compute_regime_attribution,
+            compute_source_attribution,
+            compute_theme_attribution,
         )
         from src.regime.alerts import format_alert_summary
         from src.regime.paper_trading import (
@@ -350,6 +358,7 @@ def _load_hmm_runtime() -> tuple[dict[str, Any] | None, str | None]:
         "delete_setting": delete_setting,
         "get_daily_audit_summary": get_daily_audit_summary,
         "get_daily_snapshots": get_daily_snapshots,
+        "get_performance_timeseries": get_performance_timeseries,
         "save_supply_chain_layers": save_supply_chain_layers,
         "get_supply_chain": get_supply_chain,
         "delete_supply_chain": delete_supply_chain,
@@ -405,6 +414,11 @@ def _load_hmm_runtime() -> tuple[dict[str, Any] | None, str | None]:
         "expire_stale_trade_plans": expire_stale_trade_plans,
         "compute_paper_performance": compute_paper_performance,
         "compute_benchmark_comparison": compute_benchmark_comparison,
+        "compute_theme_attribution": compute_theme_attribution,
+        "compute_source_attribution": compute_source_attribution,
+        "compute_regime_attribution": compute_regime_attribution,
+        "compute_ml_accuracy": compute_ml_accuracy,
+        "compute_attribution_summary": compute_attribution_summary,
         "compute_daily_snapshot": compute_daily_snapshot,
         "record_trade_outcome": record_trade_outcome,
         "save_daily_snapshot": save_daily_snapshot,
@@ -2815,6 +2829,7 @@ def _build_shell_context(
             "paper_cancel_order": "/regime/paper-portfolio/__PORTFOLIO_ID__/orders/__PLAN_ID__/cancel",
             "paper_kill_switch": "/regime/paper-portfolio/__PORTFOLIO_ID__/kill-switch",
             "paper_performance": "/regime/paper-portfolio/__PORTFOLIO_ID__/performance",
+            "paper_attribution_summary": "/regime/paper-portfolio/__PORTFOLIO_ID__/attribution/summary",
             "paper_audit": "/regime/paper-portfolio/__PORTFOLIO_ID__/audit",
             "paper_audit_summary": "/regime/paper-portfolio/__PORTFOLIO_ID__/audit/summary",
             "ibkr_settings": "/regime/ibkr/settings",
@@ -4501,6 +4516,86 @@ def regime_paper_performance(
     if not benchmark:
         benchmark = runtime["compute_benchmark_comparison"](portfolio_id)
     return JSONResponse(content={"performance": _json_ready(performance), "benchmark": _json_ready(benchmark)})
+
+
+def _require_paper_portfolio(runtime: dict[str, Any], portfolio_id: int) -> dict[str, Any]:
+    portfolio = runtime["get_paper_portfolio"](portfolio_id)
+    if portfolio is None:
+        raise HTTPException(status_code=404, detail="Paper portfolio not found.")
+    return portfolio
+
+
+@router.get("/paper-portfolio/{portfolio_id}/attribution/theme")
+def regime_paper_attribution_theme(
+    portfolio_id: int,
+    session: Session = Depends(db_session),
+    actor: str = Depends(require_actor),
+):
+    del session, actor
+    runtime, runtime_error = _load_hmm_runtime()
+    if runtime is None:
+        raise HTTPException(status_code=503, detail=runtime_error or "Regime analytics are unavailable.")
+    _require_paper_portfolio(runtime, portfolio_id)
+    return JSONResponse(content=_json_ready(runtime["compute_theme_attribution"](portfolio_id)))
+
+
+@router.get("/paper-portfolio/{portfolio_id}/attribution/source")
+def regime_paper_attribution_source(
+    portfolio_id: int,
+    session: Session = Depends(db_session),
+    actor: str = Depends(require_actor),
+):
+    del session, actor
+    runtime, runtime_error = _load_hmm_runtime()
+    if runtime is None:
+        raise HTTPException(status_code=503, detail=runtime_error or "Regime analytics are unavailable.")
+    _require_paper_portfolio(runtime, portfolio_id)
+    return JSONResponse(content=_json_ready(runtime["compute_source_attribution"](portfolio_id)))
+
+
+@router.get("/paper-portfolio/{portfolio_id}/attribution/regime")
+def regime_paper_attribution_regime(
+    portfolio_id: int,
+    session: Session = Depends(db_session),
+    actor: str = Depends(require_actor),
+):
+    del session, actor
+    runtime, runtime_error = _load_hmm_runtime()
+    if runtime is None:
+        raise HTTPException(status_code=503, detail=runtime_error or "Regime analytics are unavailable.")
+    _require_paper_portfolio(runtime, portfolio_id)
+    return JSONResponse(content=_json_ready(runtime["compute_regime_attribution"](portfolio_id)))
+
+
+@router.get("/paper-portfolio/{portfolio_id}/attribution/ml")
+def regime_paper_attribution_ml(
+    portfolio_id: int,
+    session: Session = Depends(db_session),
+    actor: str = Depends(require_actor),
+):
+    del session, actor
+    runtime, runtime_error = _load_hmm_runtime()
+    if runtime is None:
+        raise HTTPException(status_code=503, detail=runtime_error or "Regime analytics are unavailable.")
+    _require_paper_portfolio(runtime, portfolio_id)
+    return JSONResponse(content=_json_ready(runtime["compute_ml_accuracy"](portfolio_id)))
+
+
+@router.get("/paper-portfolio/{portfolio_id}/attribution/summary")
+def regime_paper_attribution_summary(
+    portfolio_id: int,
+    session: Session = Depends(db_session),
+    actor: str = Depends(require_actor),
+):
+    del session, actor
+    runtime, runtime_error = _load_hmm_runtime()
+    if runtime is None:
+        raise HTTPException(status_code=503, detail=runtime_error or "Regime analytics are unavailable.")
+    portfolio = _require_paper_portfolio(runtime, portfolio_id)
+    performance = runtime["compute_paper_performance"](portfolio_id)
+    payload = runtime["compute_attribution_summary"](portfolio_id, performance=performance)
+    payload["portfolio"] = portfolio
+    return JSONResponse(content=_json_ready(payload))
 
 
 @router.get("/paper-portfolio/{portfolio_id}/budget")
