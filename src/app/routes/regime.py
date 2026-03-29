@@ -3950,7 +3950,7 @@ async def _paper_portfolio_payload_async(runtime: dict[str, Any], portfolio_id: 
         adapter = await _get_broker_adapter_safe_async(runtime, portfolio_id)
         if adapter is not None:
             try:
-                health = adapter.health()
+                health = await asyncio.to_thread(adapter.health)
                 broker_status = {
                     "connection": "connected" if health.get("connected") else "disconnected",
                     "market_hours": health.get("market_hours", "closed"),
@@ -4096,11 +4096,17 @@ async def regime_paper_monitoring(
     if portfolio is None:
         raise HTTPException(status_code=404, detail="Paper portfolio not found.")
     adapter = await _get_broker_adapter_safe_async(runtime, portfolio_id)
-    connected = bool(adapter is not None and getattr(getattr(adapter, "_manager", None), "backend", None) and adapter._manager.backend.is_connected())
-    if connected:
+    connected = False
+    if adapter is not None:
         try:
-            summary, positions = await asyncio.to_thread(lambda: (adapter.get_account_summary(), adapter.get_positions()))
-            connection = adapter.health()
+            def _load_live_monitoring() -> tuple[bool, Any, Any, dict[str, Any] | None]:
+                backend = getattr(getattr(adapter, "_manager", None), "backend", None)
+                connected_local = bool(backend and backend.is_connected())
+                if not connected_local:
+                    return False, None, None, None
+                return True, adapter.get_account_summary(), adapter.get_positions(), adapter.health()
+
+            connected, summary, positions, connection = await asyncio.to_thread(_load_live_monitoring)
         except Exception as exc:
             logger.warning("Monitoring data fetch failed for portfolio %s: %s", portfolio_id, exc)
             connected = False

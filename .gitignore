@@ -12,3 +12,4 @@ investments.db-*
 data/
 !data/.gitkeep
 .env
+IBGW/
