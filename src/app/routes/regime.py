@@ -1362,6 +1362,8 @@ def _env_file_path() -> Path:
 
 def _update_env_file(ibkr_vars: dict[str, str]) -> None:
     """Update IBKR variables in .env while preserving all other lines."""
+    import os
+
     env_path = _env_file_path()
     existing_lines: list[str] = []
     existing_keys: set[str] = set()
@@ -1382,6 +1384,8 @@ def _update_env_file(ibkr_vars: dict[str, str]) -> None:
             existing_lines.append(f"{key}={value}")
 
     env_path.write_text("\n".join(existing_lines) + "\n", encoding="utf-8")
+    for key, value in ibkr_vars.items():
+        os.environ[key] = value
 
 
 def _identify_threshold_path(*, regime: str, transition_risk: float, technical_signal: str) -> str:
