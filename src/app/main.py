@@ -10,6 +10,7 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
+from src.app.security import SecurityHeadersMiddleware
 from src.app.routes.audit import router as audit_router
 from src.app.routes.cash_bills import api_router as cash_bills_api_router
 from src.app.routes.cash_bills import router as cash_bills_router
@@ -55,6 +56,10 @@ setup_regime_logging()
 
 def create_app() -> FastAPI:
     app = FastAPI(title="Investor MVP", version="0.1.0", docs_url=None, redoc_url=None)
+    try:
+        app.add_middleware(SecurityHeadersMiddleware)
+    except Exception as exc:
+        logger.warning("Security middleware not loaded: %s", exc)
 
     static_dir = BASE_DIR / "static"
     static_dir.mkdir(parents=True, exist_ok=True)

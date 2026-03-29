@@ -95,6 +95,27 @@ def check_ibkr_gateway() -> list[str]:
     return warnings
 
 
+def check_security_config() -> list[str]:
+    """Check security-critical configuration."""
+    warnings: list[str] = []
+    password = os.environ.get("APP_PASSWORD", "").strip()
+    if not password:
+        warnings.append(
+            "APP_PASSWORD is not set. Authentication is DISABLED. Set APP_PASSWORD in .env for production use."
+        )
+    elif password in ("changeme", "password", "admin", "investor"):
+        warnings.append(
+            "APP_PASSWORD is set to a weak default value. Use a strong, unique password for production."
+        )
+
+    secret_key = os.environ.get("APP_SECRET_KEY", "").strip()
+    if not secret_key:
+        warnings.append(
+            "APP_SECRET_KEY is not set. Credential encryption uses a fallback key. Set a strong random value in .env for production."
+        )
+    return warnings
+
+
 def run_all_checks() -> tuple[list[str], list[str]]:
     """Run all pre-flight checks. Returns (errors, warnings)."""
     errors: list[str] = []
@@ -104,6 +125,7 @@ def run_all_checks() -> tuple[list[str], list[str]]:
     errors.extend(check_python_dependencies())
     warnings.extend(check_database_paths())
     warnings.extend(check_ibkr_gateway())
+    warnings.extend(check_security_config())
     return errors, warnings
 
 

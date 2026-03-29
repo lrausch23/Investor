@@ -24,6 +24,7 @@ from sqlalchemy.orm import Session
 
 from src.app.auth import auth_banner_message, require_actor
 from src.app.db import db_session
+from src.app.rate_limit import check_rate_limit
 from src.core.external_holdings import get_available_portfolio_scopes, get_current_tickers_by_scope, get_lot_details_by_scope
 from src.app.routes.regime_cache import (
     archive_previous_payload,
@@ -3120,6 +3121,7 @@ async def regime_ibkr_settings_update(
     actor: str = Depends(require_actor),
 ):
     del actor
+    check_rate_limit(request, action="settings_save", max_requests=10, window_seconds=60)
     form = await _read_run_request(request)
     host = str(form.get("host") or "127.0.0.1").strip()
     port = int(form.get("port") or 7497)
@@ -3707,6 +3709,7 @@ async def regime_ibkr_live_unlock(
     actor: str = Depends(require_actor),
 ):
     del actor
+    check_rate_limit(request, action="live_unlock", max_requests=3, window_seconds=300)
     from src.regime.persistence import is_live_trading_unlocked, log_audit_event, set_live_trading_unlocked
 
     body = await request.json()
@@ -4756,10 +4759,13 @@ async def regime_paper_plan_update(
 @router.post("/paper-portfolio/{portfolio_id}/plans/execute")
 async def regime_paper_execute(
     portfolio_id: int,
+    request: Request = None,
     session: Session = Depends(db_session),
     actor: str = Depends(require_actor),
 ):
     del session, actor
+    if request is not None:
+        check_rate_limit(request, action="execute", max_requests=10, window_seconds=60)
     runtime, runtime_error = _load_hmm_runtime()
     if runtime is None:
         raise HTTPException(status_code=503, detail=runtime_error or "Regime analytics are unavailable.")
@@ -4811,6 +4817,7 @@ async def regime_paper_kill_switch(
     actor: str = Depends(require_actor),
 ):
     del session, actor
+    check_rate_limit(request, action="kill_switch", max_requests=3, window_seconds=60)
     runtime, runtime_error = _load_hmm_runtime()
     if runtime is None:
         raise HTTPException(status_code=503, detail=runtime_error or "Regime analytics are unavailable.")
@@ -4825,10 +4832,13 @@ async def regime_paper_kill_switch(
 @router.post("/paper-portfolio/{portfolio_id}/auto-approve")
 def regime_paper_auto_approve(
     portfolio_id: int,
+    request: Request = None,
     session: Session = Depends(db_session),
     actor: str = Depends(require_actor),
 ):
     del session, actor
+    if request is not None:
+        check_rate_limit(request, action="auto_approve", max_requests=5, window_seconds=60)
     runtime, runtime_error = _load_hmm_runtime()
     if runtime is None:
         raise HTTPException(status_code=503, detail=runtime_error or "Regime analytics are unavailable.")
