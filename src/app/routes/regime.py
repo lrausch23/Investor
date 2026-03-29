@@ -3638,6 +3638,12 @@ def regime_ibkr_test_connection(
             result["account_verified"] = str(summary.account_id) == str(config.account_id)
             result["net_liquidation"] = float(summary.net_liquidation)
             backend.disconnect()
+            try:
+                from src.regime.ib_connection import warm_shared_ib_backend
+
+                result["market_data_connected"] = bool(warm_shared_ib_backend(config=config))
+            except Exception:
+                result["market_data_connected"] = False
         else:
             result["ibkr_connected"] = False
             result["error"] = "TCP reachable but IBKR handshake failed. Check TWS API settings."

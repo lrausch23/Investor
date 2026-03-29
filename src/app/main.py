@@ -84,7 +84,7 @@ def create_app() -> FastAPI:
             logger.warning("Startup recovery failed: %s", exc)
         try:
             from src.regime.config import IBKRConfig
-            from src.regime.ib_connection import get_ib_backend
+            from src.regime.ib_connection import get_ib_backend, warm_shared_ib_backend
             from src.regime.watchdog import start_watchdog
 
             ibkr_config = IBKRConfig()
@@ -99,6 +99,11 @@ def create_app() -> FastAPI:
                     lambda: {"connected": bool(backend.is_connected())},
                     lambda: bool(backend.connect(str(ibkr_config.host), int(ibkr_config.port), int(ibkr_config.client_id))),
                 )
+                shared_ok = warm_shared_ib_backend(config=ibkr_config)
+                if shared_ok:
+                    logger.info("Shared IBKR backend connected for market data")
+                else:
+                    logger.warning("Shared IBKR backend warm-up failed - market data will use fallback providers")
         except Exception as exc:
             logger.warning("Watchdog startup skipped: %s", exc)
 

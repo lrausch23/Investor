@@ -411,3 +411,27 @@ def get_shared_ib_backend(
         if not connected:
             return backend
     return backend
+
+
+def warm_shared_ib_backend(*, config: IBKRConfig = DEFAULT_IBKR_CONFIG) -> bool:
+    """
+    Attempt to connect the shared IBKR backend singleton.
+
+    Safe to call from startup hooks or route handlers.
+    Returns True if connected, False otherwise.
+    Does NOT raise on failure.
+    """
+    try:
+        backend = get_shared_ib_backend(
+            account_id=str(config.account_id),
+            config=config,
+            connect_if_needed=True,
+        )
+        if backend is None:
+            return False
+        ib = getattr(backend, "_ib", None)
+        if ib is None:
+            return False
+        return bool(ib.isConnected())
+    except Exception:
+        return False
