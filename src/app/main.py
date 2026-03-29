@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -47,6 +48,7 @@ templates.env.filters["local_dt"] = format_local
 templates.env.filters["local_date"] = format_local_date
 templates.env.filters["usd"] = format_usd
 templates.env.globals["auth_status_label"] = auth_status_label
+logger = logging.getLogger(__name__)
 
 
 def create_app() -> FastAPI:
@@ -65,6 +67,38 @@ def create_app() -> FastAPI:
     def _startup() -> None:
         Path("data").mkdir(parents=True, exist_ok=True)
         init_db()
+        try:
+            from src.regime.recovery import run_startup_recovery
+
+            recovery = run_startup_recovery()
+            if recovery["stuck_orders_found"] > 0:
+                logger.warning(
+                    "Startup recovery: %d stuck orders found, %d reconciled, %d expired",
+                    recovery["stuck_orders_found"],
+                    recovery["reconciled"],
+                    recovery["expired"],
+                )
+        except Exception as exc:
+            logger.warning("Startup recovery failed: %s", exc)
+        try:
+            from src.regime.config import IBKRConfig
+            from src.regime.ib_connection import get_ib_backend
+            from src.regime.watchdog import start_watchdog
+
+            ibkr_config = IBKRConfig()
+            if ibkr_config.live_backend:
+                backend = get_ib_backend(
+                    0,
+                    live=True,
+                    account_id=str(ibkr_config.account_id),
+                    starting_cash=100000.0,
+                )
+                start_watchdog(
+                    lambda: {"connected": bool(backend.is_connected())},
+                    lambda: bool(backend.connect(str(ibkr_config.host), int(ibkr_config.port), int(ibkr_config.client_id))),
+                )
+        except Exception as exc:
+            logger.warning("Watchdog startup skipped: %s", exc)
 
     app.include_router(dashboard_router)
     app.include_router(docs_router)

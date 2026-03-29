@@ -12,6 +12,7 @@ from .alerts import (
 )
 from .notifications import dispatch_notification
 from .monitoring import sweep_monitoring_alerts
+from .data_validator import check_database_health, run_pre_trade_validation
 from .discovery import check_entry_signals, expire_stale_candidates, run_full_discovery
 from .investor_adapter import get_investor_db_path, get_portfolio_tickers_filtered, get_latest_prices
 from .attribution import compute_ml_accuracy, compute_theme_attribution
@@ -34,6 +35,14 @@ from .ib_connection import get_ib_backend, get_mock_ib_backend
 from .ibkr_adapter import IBKRBrokerAdapter, poll_pending_orders
 from src.app.routes.regime_cache import load_payload
 from .persistence import save_alert
+
+
+def run_daily_backup() -> dict[str, Any]:
+    from .backup import create_backup, cleanup_old_backups
+
+    backup = create_backup(label="daily")
+    cleanup = cleanup_old_backups()
+    return {"backup": backup, "cleanup": cleanup}
 
 
 def run_scheduled_regime_checks(tickers: list[str] | None = None) -> dict[str, Any]:
@@ -135,6 +144,16 @@ def run_scheduled_paper_plans() -> dict[str, Any]:
         for row in (cached_rows or [])
         if isinstance(row, dict) and str(row.get("ticker") or "").strip()
     }
+    active_tickers = sorted(cached_regime.keys())
+    validation = run_pre_trade_validation(active_tickers, vix=vix_status.get("vix"))
+    if not validation["valid"]:
+        save_alert(
+            "data_validation_failed",
+            f"Pre-trade data validation issues: {len(validation['issues'])}",
+            severity="warning",
+            message="; ".join(validation["issues"][:5]),
+            data=validation,
+        )
     results: list[dict[str, Any]] = []
     for portfolio in list_paper_portfolios(include_closed=False):
         if str(portfolio.get("status") or "") != "Active":
@@ -185,7 +204,7 @@ def run_scheduled_paper_plans() -> dict[str, Any]:
                 "auto_execution": exec_result,
             }
         )
-    return {"portfolios": results, "cached_regime_count": len(cached_regime), "vix_status": vix_status}
+    return {"portfolios": results, "cached_regime_count": len(cached_regime), "vix_status": vix_status, "validation": validation}
 
 
 def run_end_of_day_processing() -> dict[str, Any]:
@@ -234,11 +253,23 @@ def run_end_of_day_processing() -> dict[str, Any]:
     for snapshot in snapshots:
         daily_pnl = float(snapshot.get("unrealized_pnl") or 0.0) + float(snapshot.get("realized_pnl") or 0.0)
         check_loss_breach(int(snapshot["portfolio_id"]), daily_pnl, float(DEFAULT_RISK_GUARDRAILS.daily_loss_limit))
+    health = check_database_health()
+    if not health["healthy"]:
+        save_alert(
+            "data_validation_failed",
+            f"Database health issues: {len(health['issues'])}",
+            severity="critical",
+            message="; ".join(health["issues"][:5]),
+            data=health,
+        )
+    backup = run_daily_backup()
     return {
         "snapshots": snapshots,
         "snapshot_count": len(snapshots),
         "outcomes": outcomes,
         "performance": performance,
+        "backup": backup,
+        "health": health,
         "history_counts": {str(row["portfolio_id"]): len(get_daily_snapshots(int(row["portfolio_id"]))) for row in snapshots if row.get("portfolio_id") is not None},
     }
 

@@ -54,6 +54,7 @@ _JOBS_LOCK = threading.Lock()
 _DISCOVERY_JOBS: dict[str, "DiscoveryJob"] = {}
 _DISCOVERY_JOBS_LOCK = threading.Lock()
 _EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="regime-analysis")
+_APP_STARTED_AT = time.time()
 
 
 @dataclass
@@ -2933,6 +2934,12 @@ def _build_shell_context(
             "frontier_settings": "/regime/frontier/settings",
             "autonomy_settings": "/regime/autonomy/settings",
             "tax_settings": "/regime/tax-settings",
+            "health": "/regime/health",
+            "backup_status": "/regime/backup/status",
+            "backup_create": "/regime/backup/create",
+            "backup_list": "/regime/backup/list",
+            "recovery_run": "/regime/recovery/run",
+            "data_validation": "/regime/data-validation",
         },
         "initial_payload": payload,
         "portfolio_scopes": get_available_portfolio_scopes(session) if session is not None else [],
@@ -4976,6 +4983,113 @@ def regime_paper_audit_summary(
         raise HTTPException(status_code=503, detail=runtime_error or "Regime analytics are unavailable.")
     summary = runtime["get_daily_audit_summary"](portfolio_id)
     return JSONResponse(content=_json_ready(summary))
+
+
+@router.get("/backup/status")
+def regime_backup_status(
+    session: Session = Depends(db_session),
+    actor: str = Depends(require_actor),
+):
+    del session, actor
+    from src.regime.backup import get_backup_status
+
+    return JSONResponse(content=_json_ready(get_backup_status()))
+
+
+@router.post("/backup/create")
+async def regime_backup_create(
+    request: Request,
+    session: Session = Depends(db_session),
+    actor: str = Depends(require_actor),
+):
+    del session, actor
+    from src.regime.backup import create_backup
+
+    body = await request.json() if "application/json" in str(request.headers.get("content-type") or "") else {}
+    label = body.get("label", "manual") if isinstance(body, dict) else "manual"
+    return JSONResponse(content=_json_ready(create_backup(label=label)))
+
+
+@router.get("/backup/list")
+def regime_backup_list(
+    session: Session = Depends(db_session),
+    actor: str = Depends(require_actor),
+):
+    del session, actor
+    from src.regime.backup import list_backups
+
+    backups = list_backups()
+    return JSONResponse(content=_json_ready({"backups": backups, "count": len(backups)}))
+
+
+@router.post("/recovery/run")
+def regime_recovery_run(
+    session: Session = Depends(db_session),
+    actor: str = Depends(require_actor),
+):
+    del session, actor
+    from src.regime.recovery import run_startup_recovery
+
+    return JSONResponse(content=_json_ready(run_startup_recovery()))
+
+
+@router.get("/data-validation")
+def regime_data_validation(
+    session: Session = Depends(db_session),
+    actor: str = Depends(require_actor),
+):
+    del session, actor
+    from src.regime.data_validator import check_database_health
+
+    return JSONResponse(content=_json_ready(check_database_health()))
+
+
+@router.get("/health")
+def regime_health(
+    session: Session = Depends(db_session),
+    actor: str = Depends(require_actor),
+):
+    del session, actor
+    runtime, runtime_error = _load_hmm_runtime()
+    if runtime is None:
+        raise HTTPException(status_code=503, detail=runtime_error or "Regime analytics are unavailable.")
+    from src.regime.backup import get_backup_status
+    from src.regime.data_validator import check_database_health
+    from src.regime.recovery import detect_stuck_orders
+    from src.regime.watchdog import get_watchdog
+
+    db = check_database_health()
+    backup = get_backup_status()
+    watchdog = get_watchdog()
+    ibkr = None
+    if "validate_ibkr_readiness" in runtime:
+        try:
+            ibkr = runtime["validate_ibkr_readiness"]()
+        except Exception as exc:
+            ibkr = {"all_clear": False, "error": str(exc)}
+    active_alerts = len(runtime["get_alerts"](unacknowledged_only=True, limit=100))
+    stuck_orders = detect_stuck_orders()
+    status = "ok"
+    if not db.get("healthy", True) or stuck_orders:
+        status = "degraded"
+    if db.get("integrity") not in {None, "ok"}:
+        status = "error"
+    return JSONResponse(
+        content=_json_ready(
+            {
+                "status": status,
+                "uptime_seconds": max(0.0, time.time() - _APP_STARTED_AT),
+                "db": db,
+                "ibkr": ibkr,
+                "watchdog": watchdog.get_status() if watchdog else {"running": False},
+                "last_analysis": runtime["get_setting"]("last_analysis_at"),
+                "last_backup": backup.get("last_backup_at"),
+                "backup": backup,
+                "active_alerts": active_alerts,
+                "stuck_orders": len(stuck_orders),
+            }
+        )
+    )
 
 
 @router.get("/theses")

@@ -53,6 +53,8 @@
     paperAudit: [],
     paperAuditSummary: null,
     paperMonitoring: null,
+    systemHealth: null,
+    dataValidation: null,
     alertHistory: [],
     unacknowledgedAlerts: [],
     vixStatus: null,
@@ -2513,6 +2515,9 @@
     const guardrails = payload.guardrails || {};
     const connection = payload.connection || {};
     const readiness = payload.readiness || {};
+    const health = state.systemHealth || {};
+    const backup = health.backup || {};
+    const validation = state.dataValidation || {};
     const connectionText = connection.connected === true
       ? "Connected"
       : connection.connected === false
@@ -2536,6 +2541,27 @@
           ${connection.next_open ? `<div class="ui-muted" style="margin-top:6px">Next open ${escapeHtml(connection.next_open)}</div>` : ""}
           ${Object.keys(readiness).length ? `<div class="ui-muted" style="margin-top:6px">Readiness ${escapeHtml(readiness.all_clear ? "all clear" : "check config")}</div>` : ""}
         </div>
+      </div>
+      <div class="ui-card" style="margin-top:12px">
+        <div class="table-toolbar">
+          <div>
+            <div class="ui-section-title">System Health</div>
+            <div class="ui-muted" style="margin-top:6px">
+              <span class="${health.status === "ok" ? "ui-badge ui-badge--safe" : health.status === "degraded" ? "ui-badge ui-badge--warn" : "ui-badge ui-badge--bad"}">${escapeHtml(health.status || "unknown")}</span>
+              Uptime ${escapeHtml(formatFixed((Number(health.uptime_seconds || 0) / 60), 1))} min · Last backup ${escapeHtml(String(backup.last_backup_at || "never").slice(0, 19).replace("T", " "))}
+            </div>
+          </div>
+          <div style="display:flex; gap:8px; flex-wrap:wrap">
+            <button class="btn btn--secondary btn--sm" type="button" id="regimeBackupNow">Backup Now</button>
+            <button class="btn btn--secondary btn--sm" type="button" id="regimeRecoveryRun" ${Number(health.stuck_orders || 0) ? "" : "disabled"}>Run Recovery</button>
+          </div>
+        </div>
+        <div class="ui-muted" style="margin-top:8px">DB ${escapeHtml((health.db || {}).integrity || "unknown")} · Watchdog ${escapeHtml((health.watchdog || {}).running ? "running" : "stopped")} · Active alerts ${escapeHtml(health.active_alerts || 0)} · Stuck orders ${escapeHtml(health.stuck_orders || 0)}</div>
+        ${Array.isArray((validation || {}).issues) && validation.issues.length ? `<div class="ui-muted" style="margin-top:8px">${escapeHtml(validation.issues.join(" | "))}</div>` : ""}
+        <details style="margin-top:10px">
+          <summary style="cursor:pointer; font-weight:600">Backups (${escapeHtml((backup.backup_count || 0))})</summary>
+          <div class="ui-muted" style="margin-top:8px">Directory ${escapeHtml(backup.backup_dir || "")} · Total size ${escapeHtml(formatCurrency((Number(backup.total_size_bytes || 0) / 1024 / 1024), 2))} MB</div>
+        </details>
       </div>
       <div class="regime-monitor-grid" style="margin-top:12px">
         <div class="ui-card">
@@ -2596,6 +2622,39 @@
         cancelPaperOrder(currentPaperPortfolioId(), button.getAttribute("data-paper-cancel-plan"));
       });
     });
+    const backupBtn = byId("regimeBackupNow");
+    if (backupBtn && state.config?.endpoints?.backup_create) {
+      backupBtn.addEventListener("click", async () => {
+        try {
+          const response = await fetch(state.config.endpoints.backup_create, {
+            method: "POST",
+            headers: { Accept: "application/json", "Content-Type": "application/json" },
+            body: JSON.stringify({ label: "manual" }),
+          });
+          const payload = await response.json();
+          if (!response.ok) throw new Error(payload.detail || `Backup failed (${response.status})`);
+          showToast(`Backup created: ${payload.path || "ok"}`);
+          await refreshMonitoringDashboard();
+        } catch (error) {
+          showToast(`Unable to create backup: ${error.message || error}`, "error");
+        }
+      });
+    }
+    const recoveryBtn = byId("regimeRecoveryRun");
+    if (recoveryBtn && state.config?.endpoints?.recovery_run) {
+      recoveryBtn.addEventListener("click", async () => {
+        if (!window.confirm("Run startup-style recovery now?")) return;
+        try {
+          const response = await fetch(state.config.endpoints.recovery_run, { method: "POST", headers: { Accept: "application/json" } });
+          const payload = await response.json();
+          if (!response.ok) throw new Error(payload.detail || `Recovery failed (${response.status})`);
+          showToast(`Recovery complete: ${payload.reconciled || 0} reconciled, ${payload.expired || 0} expired.`);
+          await refreshMonitoringDashboard();
+        } catch (error) {
+          showToast(`Unable to run recovery: ${error.message || error}`, "error");
+        }
+      });
+    }
   }
 
   function updateStatusBar() {
@@ -2664,10 +2723,20 @@
       updateStatusBar();
       return;
     }
-    const response = await fetch(paperEndpoint("paper_monitoring", portfolioId), { headers: { Accept: "application/json" } });
-    const payload = await response.json();
-    if (!response.ok) throw new Error(payload.detail || `Monitoring failed (${response.status})`);
+    const [monitoringResponse, healthResponse, validationResponse] = await Promise.all([
+      fetch(paperEndpoint("paper_monitoring", portfolioId), { headers: { Accept: "application/json" } }),
+      fetch(state.config.endpoints.health, { headers: { Accept: "application/json" } }),
+      fetch(state.config.endpoints.data_validation, { headers: { Accept: "application/json" } }),
+    ]);
+    const [payload, health, validation] = await Promise.all([
+      monitoringResponse.json(),
+      healthResponse.json(),
+      validationResponse.json(),
+    ]);
+    if (!monitoringResponse.ok) throw new Error(payload.detail || `Monitoring failed (${monitoringResponse.status})`);
     state.paperMonitoring = payload;
+    if (healthResponse.ok) state.systemHealth = health;
+    if (validationResponse.ok) state.dataValidation = validation;
     renderMonitoringDashboard(payload);
     updateStatusBar();
   }
@@ -3619,7 +3688,7 @@
       return;
     }
     try {
-      const [detailResponse, autonomySettingsResponse, autonomyStatusResponse, budgetResponse, plansResponse, positionsResponse, taxLotsResponse, washSaleResponse, performanceResponse, auditResponse, precheckResponse, monitoringResponse, alertsResponse, alertHistoryResponse, vixResponse] = await Promise.all([
+      const [detailResponse, autonomySettingsResponse, autonomyStatusResponse, budgetResponse, plansResponse, positionsResponse, taxLotsResponse, washSaleResponse, performanceResponse, auditResponse, precheckResponse, monitoringResponse, healthResponse, validationResponse, alertsResponse, alertHistoryResponse, vixResponse] = await Promise.all([
         fetch(paperEndpoint("paper_portfolio", portfolioId), { headers: { Accept: "application/json" } }),
         fetch(state.config.endpoints.autonomy_settings, { headers: { Accept: "application/json" } }),
         fetch(paperEndpoint("paper_autonomy_status", portfolioId), { headers: { Accept: "application/json" } }),
@@ -3632,6 +3701,8 @@
         fetch(paperEndpoint("paper_audit", portfolioId), { headers: { Accept: "application/json" } }),
         fetch(paperEndpoint("paper_precheck", portfolioId), { method: "POST", headers: { Accept: "application/json" } }),
         fetch(paperEndpoint("paper_monitoring", portfolioId), { headers: { Accept: "application/json" } }),
+        fetch(state.config.endpoints.health, { headers: { Accept: "application/json" } }),
+        fetch(state.config.endpoints.data_validation, { headers: { Accept: "application/json" } }),
         fetch(`${state.config.endpoints.alerts}?unacknowledged=true&limit=5`, { headers: { Accept: "application/json" } }),
         fetch(`${state.config.endpoints.alerts}?limit=25`, { headers: { Accept: "application/json" } }),
         fetch(state.config.endpoints.vix_status, { headers: { Accept: "application/json" } }),
@@ -3643,7 +3714,7 @@
           return {};
         }
       };
-      const [detail, autonomySettings, autonomyStatus, budget, plans, positions, taxLots, washSale, performance, audit, precheck, monitoring, alerts, alertHistory, vixStatus] = await Promise.all([
+      const [detail, autonomySettings, autonomyStatus, budget, plans, positions, taxLots, washSale, performance, audit, precheck, monitoring, health, validation, alerts, alertHistory, vixStatus] = await Promise.all([
         parseJson(detailResponse),
         parseJson(autonomySettingsResponse),
         parseJson(autonomyStatusResponse),
@@ -3656,6 +3727,8 @@
         parseJson(auditResponse),
         parseJson(precheckResponse),
         parseJson(monitoringResponse),
+        parseJson(healthResponse),
+        parseJson(validationResponse),
         parseJson(alertsResponse),
         parseJson(alertHistoryResponse),
         parseJson(vixResponse),
@@ -3737,6 +3810,8 @@
         warnPanel("Monitoring", monitoringResponse, monitoring);
         state.paperMonitoring = null;
       }
+      state.systemHealth = healthResponse.ok ? health : null;
+      state.dataValidation = validationResponse.ok ? validation : null;
       if (precheckResponse.ok) {
         state.paperPrecheck = Object.fromEntries((Array.isArray(precheck.plans) ? precheck.plans : []).map((row) => [String(row.plan_id), row]));
       } else {

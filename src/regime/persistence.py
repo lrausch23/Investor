@@ -98,7 +98,7 @@ def _create_alert_log_table(conn: sqlite3.Connection) -> None:
                     'daily_loss_breach', 'meta_labeler_veto', 'vix_freeze', 'vix_resume',
                     'execution_error', 'connection_lost', 'connection_restored',
                     'drawdown_breach', 'concentration_breach', 'ml_accuracy_drift',
-                    'capital_ceiling_breach', 'wash_sale_block', 'test'
+                    'capital_ceiling_breach', 'wash_sale_block', 'data_validation_failed', 'test'
                 )
             ),
             severity TEXT NOT NULL DEFAULT 'info' CHECK (severity IN ('info', 'warning', 'critical')),
@@ -264,7 +264,7 @@ def _migrate_alert_log_type_check(conn: sqlite3.Connection) -> None:
         "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'alert_log'"
     ).fetchone()
     create_sql = str(row["sql"] or "") if row else ""
-    if "'wash_sale_block'" in create_sql:
+    if "'wash_sale_block'" in create_sql and "'data_validation_failed'" in create_sql:
         return
     if not _table_exists(conn, "alert_log"):
         return
