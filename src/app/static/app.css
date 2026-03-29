@@ -1045,6 +1045,45 @@ a:focus-visible, button:focus-visible, summary:focus-visible, input:focus-visibl
 .holdings-table[data-col-entered="0"] .col-entered { display: none; }
 .holdings-table[data-col-wash="0"] .col-wash { display: none; }
 
+.regime-stream-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.75rem;
+  font-weight: 500;
+  padding: 2px 8px;
+  border-radius: 9999px;
+  vertical-align: middle;
+}
+.regime-stream-badge::before {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+}
+.regime-stream-badge--connected {
+  background: #dcfce7;
+  color: #166534;
+}
+.regime-stream-badge--connected::before {
+  background: #16a34a;
+  animation: streamPulse 2s ease-in-out infinite;
+}
+.regime-stream-badge--reconnecting {
+  background: #fef3c7;
+  color: #92400e;
+}
+.regime-stream-badge--reconnecting::before {
+  background: #f59e0b;
+  animation: streamPulse 0.8s ease-in-out infinite;
+}
+
+@keyframes streamPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
 @media (max-width: 980px) {
   .container { max-width: 100%; }
   .holdings-grid { grid-template-columns: 1fr; }

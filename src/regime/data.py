@@ -117,6 +117,7 @@ def download_market_frame(ticker: str, period: str = "3y", interval: str = "1d")
     close_col = "Close" if "Close" in history.columns else history.columns[0]
     high_col = "High" if "High" in history.columns else None
     low_col = "Low" if "Low" in history.columns else None
+    open_col = "Open" if "Open" in history.columns else None
     volume_col = "Volume" if "Volume" in history.columns else None
     if volume_col is None:
         raise DataFetchError(f"Volume history is unavailable for {ticker}.")
@@ -126,17 +127,22 @@ def download_market_frame(ticker: str, period: str = "3y", interval: str = "1d")
         selected_cols.append(high_col)
     if low_col:
         selected_cols.append(low_col)
+    if open_col:
+        selected_cols.append(open_col)
     frame = history[selected_cols].dropna().copy()
     rename_map = {close_col: "price", volume_col: "volume"}
     if high_col:
         rename_map[high_col] = "high"
     if low_col:
         rename_map[low_col] = "low"
+    if open_col:
+        rename_map[open_col] = "open"
     frame = frame.rename(columns=rename_map)
     frame["price"] = frame["price"].astype(float)
     frame["volume"] = frame["volume"].astype(float)
     frame["high"] = frame["high"].astype(float) if "high" in frame.columns else frame["price"]
     frame["low"] = frame["low"].astype(float) if "low" in frame.columns else frame["price"]
+    frame["open"] = frame["open"].astype(float) if "open" in frame.columns else frame["price"]
     macro = _download_macro_inputs(frame.index, period=period, interval=interval)
     frame = frame.join(macro, how="left")
     frame = frame.ffill().dropna()

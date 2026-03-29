@@ -49,7 +49,7 @@ def test_download_market_frame_falls_back_when_tnx_missing(monkeypatch) -> None:
 
     series = download_market_frame("NVDA", period="3y", interval="1d")
 
-    assert list(series.frame.columns) == ["price", "volume", "high", "low", "vix", "yield_10y"]
+    assert list(series.frame.columns) == ["price", "volume", "high", "low", "open", "vix", "yield_10y"]
     assert series.frame["vix"].tolist() == [18.0, 19.0, 20.0]
     assert series.frame["yield_10y"].tolist() == [4.0, 4.0, 4.0]
 

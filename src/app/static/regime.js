@@ -65,6 +65,8 @@
     discoveryJob: null,
     currentJobId: null,
     pollTimer: null,
+    eventSource: null,
+    streamRetries: 0,
     lastPayload: null,
     detailChartsRendered: {},
     pickerFocusIndex: -1,
@@ -81,6 +83,15 @@
 
   function byId(id) {
     return document.getElementById(id);
+  }
+
+  function updateStreamBadge(status) {
+    const badge = byId("regimeStreamBadge");
+    if (!badge) return;
+    badge.className = `regime-stream-badge regime-stream-badge--${status}`;
+    const labels = { connected: "Live", reconnecting: "Reconnecting…", idle: "" };
+    badge.textContent = labels[status] || "";
+    badge.style.display = status === "idle" ? "none" : "";
   }
 
   function loadPrefs() {
@@ -1309,7 +1320,7 @@
         <div class="grid2" style="margin-top:12px">
           <div class="ui-card" style="padding:14px">
             <div class="ui-section-title">Interactive price chart</div>
-            <div id="regimePlotlyPrice_${escapeHtml(row.ticker)}" style="min-height:360px"></div>
+            <div id="regimePlotlyPrice_${escapeHtml(row.ticker)}" style="min-height:440px"></div>
           </div>
           <div class="ui-card" style="padding:14px">
             <div class="ui-section-title">Transition heatmap</div>
@@ -1998,6 +2009,7 @@
       wrap.style.display = "none";
       bar.style.width = "0%";
       text.textContent = "Waiting to start.";
+      updateStreamBadge("idle");
       return;
     }
     wrap.style.display = "";
@@ -2153,9 +2165,31 @@
     const byTicker = new Map(rows.map((row) => [String(row.ticker || "").toUpperCase(), row]));
     Object.entries(partialResults).forEach(([ticker, row]) => {
       if (!ticker || !row) return;
-      byTicker.set(String(ticker).toUpperCase(), row);
+        byTicker.set(String(ticker).toUpperCase(), row);
     });
-    renderPayload({ ...base, rows: Array.from(byTicker.values()) });
+    const merged = { ...base, rows: Array.from(byTicker.values()) };
+    state.lastPayload = merged;
+    renderKpis(merged);
+    renderHeroStrip(merged);
+    renderTable(merged);
+    renderHeatmap(merged);
+    renderDiffPanel(merged);
+    renderActionItemsBar(merged);
+    renderDetails(merged);
+    wireDetailCards();
+  }
+
+  function stopRunTracking() {
+    if (state.pollTimer) {
+      window.clearInterval(state.pollTimer);
+      state.pollTimer = null;
+    }
+    if (state.eventSource) {
+      state.eventSource.close();
+      state.eventSource = null;
+    }
+    state.streamRetries = 0;
+    updateStreamBadge("idle");
   }
 
   async function loadHoldings() {
@@ -4453,7 +4487,7 @@
     }
   }
 
-  async function pollStatus(jobId) {
+  async function pollStatusLegacy(jobId) {
     if (state.pollTimer) window.clearInterval(state.pollTimer);
     state.pollTimer = window.setInterval(async () => {
       try {
@@ -4464,30 +4498,92 @@
         setProgressFromPayload(payload);
         if (payload.partial_results) mergePartialResults(payload.partial_results);
         if (payload.status === "done") {
-          window.clearInterval(state.pollTimer);
-          state.pollTimer = null;
+          stopRunTracking();
           if (payload.payload) renderPayload(payload.payload);
           const btn = document.querySelector("[data-regime-run]");
           if (btn) {
             btn.disabled = false;
             btn.textContent = "Run";
           }
-      } else if (payload.status === "error") {
-        window.clearInterval(state.pollTimer);
-        state.pollTimer = null;
-        const btn = document.querySelector("[data-regime-run]");
-        if (btn) {
-          btn.disabled = false;
-          btn.textContent = "Run";
+        } else if (payload.status === "error") {
+          stopRunTracking();
+          const btn = document.querySelector("[data-regime-run]");
+          if (btn) {
+            btn.disabled = false;
+            btn.textContent = "Run";
+          }
+          setProgress("error", payload.progress || 0, payload.total || 0, "", payload.error || "Analysis failed.");
         }
-        setProgress("error", payload.progress || 0, payload.total || 0, "", payload.error || "Analysis failed.");
-      }
       } catch (error) {
-        window.clearInterval(state.pollTimer);
-        state.pollTimer = null;
+        stopRunTracking();
         setProgress("error", 0, 0, "", error.message || String(error));
       }
     }, 2000);
+  }
+
+  function connectStream(jobId) {
+    stopRunTracking();
+    if (typeof window.EventSource === "undefined") {
+      pollStatusLegacy(jobId);
+      return;
+    }
+    const url = state.config.endpoints.stream.replace("__JOB_ID__", jobId);
+    const source = new window.EventSource(url);
+    state.eventSource = source;
+    state.streamRetries = 0;
+    updateStreamBadge("connected");
+
+    source.addEventListener("progress", (event) => {
+      const data = JSON.parse(event.data);
+      setProgressFromPayload(data);
+      if (data.partial_result) mergePartialResults(data.partial_result);
+      updateStreamBadge("connected");
+      state.streamRetries = 0;
+    });
+
+    source.addEventListener("done", (event) => {
+      const data = JSON.parse(event.data);
+      stopRunTracking();
+      setProgressFromPayload(data);
+      if (data.payload) renderPayload(data.payload);
+      const btn = document.querySelector("[data-regime-run]");
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = "Run";
+      }
+    });
+
+    source.addEventListener("error", (event) => {
+      if (event && event.data) {
+        try {
+          const data = JSON.parse(event.data);
+          stopRunTracking();
+          const btn = document.querySelector("[data-regime-run]");
+          if (btn) {
+            btn.disabled = false;
+            btn.textContent = "Run";
+          }
+          setProgress("error", 0, 0, "", data.error || "Analysis failed.");
+          return;
+        } catch (_error) {
+        }
+      }
+      if (source.readyState === window.EventSource.CLOSED) {
+        stopRunTracking();
+        return;
+      }
+      state.streamRetries += 1;
+      updateStreamBadge("reconnecting");
+      if (state.streamRetries >= 3) {
+        source.close();
+        state.eventSource = null;
+        pollStatusLegacy(jobId);
+      }
+    });
+
+    source.addEventListener("heartbeat", () => {
+      updateStreamBadge("connected");
+    });
   }
 
   async function submitRun(event) {
@@ -4530,8 +4626,9 @@
       if (!response.ok) throw new Error(payload.detail || `Run request failed (${response.status})`);
       state.currentJobId = payload.job_id;
       if (btn) btn.textContent = "Running…";
-      pollStatus(payload.job_id);
+      connectStream(payload.job_id);
     } catch (error) {
+      stopRunTracking();
       if (btn) {
         btn.disabled = false;
         btn.textContent = "Run";

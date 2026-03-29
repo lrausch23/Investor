@@ -19,7 +19,7 @@ from typing import Any
 from urllib.parse import parse_qs
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy.orm import Session
 
 from src.app.auth import auth_banner_message, require_actor
@@ -1333,6 +1333,10 @@ def _serialize_job(job: RegimeJob) -> dict[str, Any]:
         "cache_misses": job.cache_misses,
         "partial_results": _json_ready(job.partial_results or {}),
     }
+
+
+def _sse_format(event: str, data: dict[str, Any]) -> str:
+    return f"event: {event}\ndata: {json.dumps(_json_ready(data), default=str)}\n\n"
 
 
 def _serialize_discovery_job(job: DiscoveryJob) -> dict[str, Any]:
@@ -2898,6 +2902,7 @@ def _build_shell_context(
             "portfolios": "/regime/portfolios",
             "run": "/regime/run",
             "status": "/regime/status/__JOB_ID__",
+            "stream": "/regime/stream/__JOB_ID__",
             "digest": "/regime/digest",
             "effectiveness": "/regime/effectiveness",
             "backtest": "/regime/backtest/__TICKER__",
@@ -5333,6 +5338,94 @@ def regime_status(
             raise HTTPException(status_code=404, detail="Unknown regime job.")
         payload = _serialize_job(job)
     return JSONResponse(content=payload)
+
+
+@router.get("/stream/{job_id}")
+async def regime_stream(
+    job_id: str,
+    request: Request,
+    session: Session = Depends(db_session),
+    actor: str = Depends(require_actor),
+):
+    del session, actor
+    _prune_jobs()
+
+    async def event_generator():
+        last_progress = -1
+        last_ticker: str | None = None
+        last_partial_key: str | None = None
+        heartbeat_counter = 0
+
+        while True:
+            if await request.is_disconnected():
+                break
+
+            with _JOBS_LOCK:
+                job = _JOBS.get(job_id)
+                payload = _serialize_job(job) if job is not None else None
+
+            if payload is None:
+                yield _sse_format("error", {"status": "error", "error": "Unknown job."})
+                break
+
+            status = str(payload.get("status") or "idle")
+            current_ticker = payload.get("current_ticker")
+            partial_results = payload.get("partial_results") or {}
+            latest_partial_key = next(reversed(partial_results), None) if partial_results else None
+            changed = (
+                payload.get("progress") != last_progress
+                or current_ticker != last_ticker
+                or latest_partial_key != last_partial_key
+            )
+
+            if changed and status in {"pending", "running"}:
+                event_data: dict[str, Any] = {
+                    "status": status,
+                    "progress": payload.get("progress"),
+                    "total": payload.get("total"),
+                    "current_ticker": current_ticker,
+                    "progress_text": payload.get("progress_text"),
+                    "eta_seconds": payload.get("eta_seconds"),
+                    "cache_hits": payload.get("cache_hits"),
+                    "cache_misses": payload.get("cache_misses"),
+                }
+                if latest_partial_key and latest_partial_key != last_partial_key:
+                    event_data["partial_result"] = {latest_partial_key: partial_results[latest_partial_key]}
+                yield _sse_format("progress", event_data)
+                last_progress = payload.get("progress")
+                last_ticker = current_ticker
+                last_partial_key = latest_partial_key
+            elif status == "done":
+                yield _sse_format(
+                    "done",
+                    {
+                        "status": "done",
+                        "progress": payload.get("total"),
+                        "total": payload.get("total"),
+                        "payload": payload.get("payload"),
+                    },
+                )
+                break
+            elif status == "error":
+                yield _sse_format("error", {"status": "error", "error": payload.get("error") or "Analysis failed."})
+                break
+
+            heartbeat_counter += 1
+            if heartbeat_counter >= 15:
+                yield _sse_format("heartbeat", {})
+                heartbeat_counter = 0
+
+            await asyncio.sleep(1)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @router.get("/effectiveness")
