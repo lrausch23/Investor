@@ -9,16 +9,23 @@ from typing import Any
 
 from .config import DEFAULT_RISK_GUARDRAILS, RiskGuardrails
 from .persistence import (
+    add_wash_sale_restriction,
     close_paper_position,
+    close_tax_lot,
     count_todays_trades,
+    create_tax_lot,
     get_paper_portfolio,
     get_paper_portfolio_summary,
     get_paper_position,
     get_paper_positions,
+    get_tax_lots,
+    is_wash_sale_restricted,
     log_audit_event,
     open_paper_position,
+    update_paper_position_quantity,
     update_paper_portfolio,
 )
+from .tax_lot_router import log_wash_sale_block, select_lots
 
 logger = logging.getLogger(__name__)
 
@@ -200,7 +207,7 @@ class PaperBrokerAdapter(BrokerAdapter):
                 )
                 self._completed_orders[order_id] = result
                 return result
-            open_paper_position(
+            position = open_paper_position(
                 self.portfolio_id,
                 ticker,
                 quantity,
@@ -209,6 +216,14 @@ class PaperBrokerAdapter(BrokerAdapter):
                 theme_id=order.theme_id,
                 role=order.role or "Critical-Path",
                 stop_price=order.stop_price,
+            )
+            create_tax_lot(
+                portfolio_id=self.portfolio_id,
+                position_id=int(position.get("id") or 0) if position.get("id") is not None else None,
+                ticker=ticker,
+                quantity=quantity,
+                cost_basis_per_share=fill_price,
+                acquisition_date=now_text,
             )
             update_paper_portfolio(self.portfolio_id, current_cash=current_cash - total_cost)
         else:
@@ -229,24 +244,49 @@ class PaperBrokerAdapter(BrokerAdapter):
                 return result
             remaining = quantity
             credited = 0.0
-            for position in sorted(open_positions, key=lambda row: str(row.get("entry_date") or "")):
-                if remaining <= 0:
-                    break
-                pos_qty = float(position.get("quantity") or 0.0)
-                if abs(pos_qty - remaining) > 1e-9 and remaining < pos_qty:
-                    result = OrderResult(
-                        order_id=order_id,
-                        status="rejected",
-                        ticker=ticker,
-                        action=order.action,
-                        quantity=quantity,
-                        message="Partial exits are not supported.",
+            lot_selections = select_lots(self.portfolio_id, ticker, quantity)
+            affected_position_ids: set[int] = set()
+            for selection in lot_selections:
+                position_id = int(selection.get("position_id") or 0)
+                affected_position_ids.add(position_id)
+                if selection.get("implicit"):
+                    position = get_paper_position(position_id)
+                    if position is None:
+                        continue
+                    pos_qty = float(position.get("quantity") or 0.0)
+                    if abs(pos_qty - float(selection.get("quantity") or 0.0)) > 1e-9:
+                        result = OrderResult(
+                            order_id=order_id,
+                            status="rejected",
+                            ticker=ticker,
+                            action=order.action,
+                            quantity=quantity,
+                            message="Partial exits are not supported for legacy positions without tax lots.",
+                        )
+                        self._completed_orders[order_id] = result
+                        return result
+                    closed_position = close_paper_position(position_id, fill_price, now_text, order.source or "broker_adapter")
+                    pnl = float(closed_position.get("realized_pnl") or 0.0) if closed_position else 0.0
+                    if pnl < 0:
+                        add_wash_sale_restriction(self.portfolio_id, ticker, now_text, pnl)
+                else:
+                    lot_result = close_tax_lot(
+                        lot_id=int(selection.get("lot_id") or 0),
+                        quantity_to_close=float(selection.get("quantity") or 0.0),
+                        exit_price=fill_price,
+                        exit_date=now_text,
                     )
-                    self._completed_orders[order_id] = result
-                    return result
-                close_paper_position(int(position["id"]), fill_price, now_text, order.source or "broker_adapter")
-                credited += pos_qty * fill_price
-                remaining -= pos_qty
+                    pnl = float(lot_result.get("realized_pnl") or 0.0) if lot_result else 0.0
+                    if pnl < 0:
+                        add_wash_sale_restriction(
+                            self.portfolio_id,
+                            ticker,
+                            now_text,
+                            pnl,
+                            lot_id=int(selection.get("lot_id") or 0),
+                        )
+                credited += float(selection.get("quantity") or 0.0) * fill_price
+                remaining -= float(selection.get("quantity") or 0.0)
             if remaining > 1e-9:
                 result = OrderResult(
                     order_id=order_id,
@@ -258,6 +298,20 @@ class PaperBrokerAdapter(BrokerAdapter):
                 )
                 self._completed_orders[order_id] = result
                 return result
+            for position_id in affected_position_ids:
+                remaining_lots = [
+                    row for row in get_tax_lots(self.portfolio_id, ticker=ticker, status="all")
+                    if int(row.get("position_id") or 0) == position_id and float(row.get("remaining_quantity") or 0.0) > 1e-9
+                ]
+                if not remaining_lots:
+                    position = get_paper_position(position_id)
+                    if position and str(position.get("status") or "") == "Open":
+                        close_paper_position(position_id, fill_price, now_text, order.source or "broker_adapter")
+                else:
+                    update_paper_position_quantity(
+                        position_id,
+                        sum(float(row.get("remaining_quantity") or 0.0) for row in remaining_lots),
+                    )
             update_paper_portfolio(self.portfolio_id, current_cash=current_cash + credited)
 
         result = OrderResult(
@@ -477,6 +531,32 @@ def validate_guardrails(
                 limit=guardrails.max_total_exposure_pct,
             )
         )
+
+    if str(order.action or "").lower() == "buy":
+        restricted = is_wash_sale_restricted(summary.portfolio_id, order.ticker)
+        checks.append(
+            GuardrailCheck(
+                name="wash_sale_restricted",
+                passed=not restricted,
+                message=(
+                    "No wash-sale restriction."
+                    if not restricted
+                    else f"{order.ticker} is on the wash-sale restricted list. Buy blocked for 31 days after loss sale."
+                ),
+            )
+        )
+        if restricted:
+            try:
+                log_wash_sale_block(
+                    summary.portfolio_id,
+                    order.ticker,
+                    None,
+                    None,
+                    None,
+                    estimated_price,
+                )
+            except Exception:
+                logger.debug("Unable to log wash-sale block for %s", order.ticker, exc_info=True)
 
     return GuardrailResult(
         allowed=all(check.passed for check in checks),

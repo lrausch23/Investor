@@ -155,7 +155,10 @@ def _load_hmm_runtime() -> tuple[dict[str, Any] | None, str | None]:
         from src.regime.portfolio import compute_return_correlations, portfolio_risk_summary_dict
         from src.regime.persistence import (
             close_paper_position,
+            close_tax_lot,
+            create_tax_lot,
             add_ticker_to_theme,
+            add_wash_sale_restriction,
             create_paper_portfolio,
             create_trade_plan,
             create_theme,
@@ -173,6 +176,8 @@ def _load_hmm_runtime() -> tuple[dict[str, Any] | None, str | None]:
             get_paper_portfolio_summary,
             get_paper_position,
             get_paper_positions,
+            get_tax_lot,
+            get_tax_lots,
             get_pending_outcomes,
             get_pending_transition_outcomes,
             get_signal_effectiveness,
@@ -181,6 +186,9 @@ def _load_hmm_runtime() -> tuple[dict[str, Any] | None, str | None]:
             get_training_run,
             get_trade_plan,
             get_trade_plans,
+            get_lot_selection_method,
+            get_ltcg_defer_window_days,
+            get_wash_sale_restrictions,
             count_todays_trades,
             delete_setting,
             get_auto_approve_threshold,
@@ -218,6 +226,8 @@ def _load_hmm_runtime() -> tuple[dict[str, Any] | None, str | None]:
             save_signal_snapshot,
             set_auto_approve_threshold,
             set_daily_capital_ceiling_pct,
+            set_lot_selection_method,
+            set_ltcg_defer_window_days,
             set_operating_mode,
             set_setting,
             update_paper_portfolio,
@@ -234,6 +244,7 @@ def _load_hmm_runtime() -> tuple[dict[str, Any] | None, str | None]:
             is_live_trading_unlocked,
             OPERATING_MODES,
             set_live_trading_unlocked,
+            is_wash_sale_restricted,
         )
         from src.regime.discovery import (
             check_entry_signals,
@@ -315,6 +326,12 @@ def _load_hmm_runtime() -> tuple[dict[str, Any] | None, str | None]:
             is_vix_frozen,
             manual_override_vix_freeze,
         )
+        from src.regime.tax_lot_router import (
+            compute_wash_sale_opportunity_cost,
+            estimate_tax_impact,
+            log_wash_sale_block,
+            select_lots,
+        )
     except ImportError:
         return None, (
             "Regime analytics are unavailable because hmm-market-regime-tool is not installed "
@@ -364,6 +381,7 @@ def _load_hmm_runtime() -> tuple[dict[str, Any] | None, str | None]:
         "create_theme": create_theme,
         "create_paper_portfolio": create_paper_portfolio,
         "create_trade_plan": create_trade_plan,
+        "create_tax_lot": create_tax_lot,
         "update_theme": update_theme,
         "update_paper_portfolio": update_paper_portfolio,
         "update_trade_plan_status": update_trade_plan_status,
@@ -376,6 +394,8 @@ def _load_hmm_runtime() -> tuple[dict[str, Any] | None, str | None]:
         "get_paper_portfolio_summary": get_paper_portfolio_summary,
         "get_paper_position": get_paper_position,
         "get_paper_positions": get_paper_positions,
+        "get_tax_lot": get_tax_lot,
+        "get_tax_lots": get_tax_lots,
         "get_trade_plans": get_trade_plans,
         "get_audit_trail": get_audit_trail,
         "count_todays_trades": count_todays_trades,
@@ -393,9 +413,15 @@ def _load_hmm_runtime() -> tuple[dict[str, Any] | None, str | None]:
         "set_auto_approve_threshold": set_auto_approve_threshold,
         "get_daily_capital_ceiling_pct": get_daily_capital_ceiling_pct,
         "set_daily_capital_ceiling_pct": set_daily_capital_ceiling_pct,
+        "get_lot_selection_method": get_lot_selection_method,
+        "set_lot_selection_method": set_lot_selection_method,
+        "get_ltcg_defer_window_days": get_ltcg_defer_window_days,
+        "set_ltcg_defer_window_days": set_ltcg_defer_window_days,
         "get_daily_capital_deployed": get_daily_capital_deployed,
         "is_live_trading_unlocked": is_live_trading_unlocked,
         "set_live_trading_unlocked": set_live_trading_unlocked,
+        "get_wash_sale_restrictions": get_wash_sale_restrictions,
+        "is_wash_sale_restricted": is_wash_sale_restricted,
         "OPERATING_MODES": OPERATING_MODES,
         "get_daily_audit_summary": get_daily_audit_summary,
         "get_daily_snapshots": get_daily_snapshots,
@@ -472,6 +498,10 @@ def _load_hmm_runtime() -> tuple[dict[str, Any] | None, str | None]:
         "is_vix_frozen": is_vix_frozen,
         "get_vix_freeze_threshold": get_vix_freeze_threshold,
         "get_vix_resume_threshold": get_vix_resume_threshold,
+        "select_lots": select_lots,
+        "estimate_tax_impact": estimate_tax_impact,
+        "log_wash_sale_block": log_wash_sale_block,
+        "compute_wash_sale_opportunity_cost": compute_wash_sale_opportunity_cost,
         "get_calibration_data": get_calibration_data,
         "get_historical_regime_durations": get_historical_regime_durations,
         "get_trade_plan": get_trade_plan,
@@ -485,6 +515,8 @@ def _load_hmm_runtime() -> tuple[dict[str, Any] | None, str | None]:
         "list_theses": list_theses,
         "open_paper_position": open_paper_position,
         "close_paper_position": close_paper_position,
+        "close_tax_lot": close_tax_lot,
+        "add_wash_sale_restriction": add_wash_sale_restriction,
         "log_audit_event": log_audit_event,
         "log_training_run": log_training_run,
         "get_portfolio_positions": get_portfolio_positions,
@@ -2874,6 +2906,10 @@ def _build_shell_context(
             "paper_portfolio": "/regime/paper-portfolio/__PORTFOLIO_ID__",
             "paper_budget": "/regime/paper-portfolio/__PORTFOLIO_ID__/budget",
             "paper_positions": "/regime/paper-portfolio/__PORTFOLIO_ID__/positions",
+            "paper_tax_lots": "/regime/paper-portfolio/__PORTFOLIO_ID__/tax-lots",
+            "paper_tax_lot": "/regime/paper-portfolio/__PORTFOLIO_ID__/tax-lots/__LOT_ID__",
+            "paper_tax_estimate": "/regime/paper-portfolio/__PORTFOLIO_ID__/tax-lots/estimate",
+            "paper_wash_sale": "/regime/paper-portfolio/__PORTFOLIO_ID__/wash-sale",
             "paper_plans": "/regime/paper-portfolio/__PORTFOLIO_ID__/plans",
             "paper_monitoring": "/regime/paper-portfolio/__PORTFOLIO_ID__/monitoring",
             "paper_generate": "/regime/paper-portfolio/__PORTFOLIO_ID__/plans/generate",
@@ -2896,6 +2932,7 @@ def _build_shell_context(
             "frontier_models": "/regime/frontier/models",
             "frontier_settings": "/regime/frontier/settings",
             "autonomy_settings": "/regime/autonomy/settings",
+            "tax_settings": "/regime/tax-settings",
         },
         "initial_payload": payload,
         "portfolio_scopes": get_available_portfolio_scopes(session) if session is not None else [],
@@ -3946,6 +3983,8 @@ def regime_autonomy_settings(
             "operating_mode": runtime["get_operating_mode"](),
             "auto_approve_threshold": runtime["get_auto_approve_threshold"](),
             "daily_capital_ceiling_pct": runtime["get_daily_capital_ceiling_pct"](),
+            "lot_selection_method": runtime["get_lot_selection_method"](),
+            "ltcg_defer_window_days": runtime["get_ltcg_defer_window_days"](),
             "operating_modes": list(runtime["OPERATING_MODES"]),
         }
     )
@@ -3982,6 +4021,8 @@ async def regime_autonomy_settings_update(
             "operating_mode": runtime["get_operating_mode"](),
             "auto_approve_threshold": runtime["get_auto_approve_threshold"](),
             "daily_capital_ceiling_pct": runtime["get_daily_capital_ceiling_pct"](),
+            "lot_selection_method": runtime["get_lot_selection_method"](),
+            "ltcg_defer_window_days": runtime["get_ltcg_defer_window_days"](),
             "operating_modes": list(runtime["OPERATING_MODES"]),
         }
     )
@@ -4270,6 +4311,54 @@ def regime_paper_positions(
     return JSONResponse(content={"positions": _json_ready(positions), "summary": _json_ready(runtime["get_paper_portfolio_summary"](portfolio_id))})
 
 
+@router.get("/paper-portfolio/{portfolio_id}/tax-lots")
+def regime_tax_lots(
+    portfolio_id: int,
+    ticker: str | None = None,
+    status: str = "open",
+    session: Session = Depends(db_session),
+    actor: str = Depends(require_actor),
+):
+    del session, actor
+    runtime, runtime_error = _load_hmm_runtime()
+    if runtime is None:
+        raise HTTPException(status_code=503, detail=runtime_error or "Regime analytics are unavailable.")
+    lots = runtime["get_tax_lots"](portfolio_id, ticker=ticker, status=status)
+    return JSONResponse(content=_json_ready({"lots": lots, "count": len(lots)}))
+
+
+@router.get("/paper-portfolio/{portfolio_id}/tax-lots/{lot_id}")
+def regime_tax_lot_detail(
+    portfolio_id: int,
+    lot_id: int,
+    session: Session = Depends(db_session),
+    actor: str = Depends(require_actor),
+):
+    del session, actor
+    runtime, runtime_error = _load_hmm_runtime()
+    if runtime is None:
+        raise HTTPException(status_code=503, detail=runtime_error or "Regime analytics are unavailable.")
+    lot = runtime["get_tax_lot"](lot_id)
+    if lot is None or int(lot.get("portfolio_id") or 0) != int(portfolio_id):
+        raise HTTPException(status_code=404, detail="Tax lot not found.")
+    return JSONResponse(content=_json_ready(lot))
+
+
+@router.get("/paper-portfolio/{portfolio_id}/wash-sale")
+def regime_wash_sale_restrictions(
+    portfolio_id: int,
+    session: Session = Depends(db_session),
+    actor: str = Depends(require_actor),
+):
+    del session, actor
+    runtime, runtime_error = _load_hmm_runtime()
+    if runtime is None:
+        raise HTTPException(status_code=503, detail=runtime_error or "Regime analytics are unavailable.")
+    restrictions = runtime["get_wash_sale_restrictions"](portfolio_id, active_only=True)
+    opportunity_cost = runtime["compute_wash_sale_opportunity_cost"](portfolio_id)
+    return JSONResponse(content=_json_ready({"restrictions": restrictions, "count": len(restrictions), "opportunity_cost": opportunity_cost}))
+
+
 @router.get("/paper-portfolio/{portfolio_id}/monitoring")
 async def regime_paper_monitoring(
     portfolio_id: int,
@@ -4532,6 +4621,31 @@ async def regime_paper_plan_precheck(
     return JSONResponse(content={"plans": checked})
 
 
+@router.post("/paper-portfolio/{portfolio_id}/tax-lots/estimate")
+async def regime_tax_lot_estimate(
+    portfolio_id: int,
+    request: Request,
+    session: Session = Depends(db_session),
+    actor: str = Depends(require_actor),
+):
+    del session, actor
+    runtime, runtime_error = _load_hmm_runtime()
+    if runtime is None:
+        raise HTTPException(status_code=503, detail=runtime_error or "Regime analytics are unavailable.")
+    body = await request.json()
+    ticker = str(body.get("ticker") or "").upper()
+    quantity = float(body.get("quantity") or 0.0)
+    if not ticker or quantity <= 0:
+        raise HTTPException(status_code=422, detail="Ticker and quantity are required.")
+    exit_price = float(body.get("exit_price") or body.get("proposed_price") or 0.0)
+    lot_selections = runtime["select_lots"](portfolio_id, ticker, quantity)
+    impact = runtime["estimate_tax_impact"](lot_selections, exit_price)
+    return JSONResponse(content=_json_ready({
+        "lot_selections": [{"lot_id": s["lot_id"], "quantity": s["quantity"], "term": s.get("term")} for s in lot_selections],
+        "tax_impact": impact,
+    }))
+
+
 @router.put("/paper-portfolio/{portfolio_id}/plans/{plan_id}")
 async def regime_paper_plan_update(
     portfolio_id: int,
@@ -4686,6 +4800,29 @@ def regime_paper_autonomy_status(
                 "guardrail_blocks_today": int(daily_summary.get("guardrail_blocks") or 0),
             }
         )
+    )
+
+
+@router.put("/tax-settings")
+async def regime_tax_settings(
+    request: Request,
+    session: Session = Depends(db_session),
+    actor: str = Depends(require_actor),
+):
+    del session, actor
+    runtime, runtime_error = _load_hmm_runtime()
+    if runtime is None:
+        raise HTTPException(status_code=503, detail=runtime_error or "Regime analytics are unavailable.")
+    body = await request.json()
+    if "lot_selection_method" in body:
+        runtime["set_lot_selection_method"](str(body["lot_selection_method"]))
+    if "ltcg_defer_window_days" in body:
+        runtime["set_ltcg_defer_window_days"](max(0, int(body["ltcg_defer_window_days"])))
+    return JSONResponse(
+        content={
+            "lot_selection_method": runtime["get_lot_selection_method"](),
+            "ltcg_defer_window_days": runtime["get_ltcg_defer_window_days"](),
+        }
     )
 
 

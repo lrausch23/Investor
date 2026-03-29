@@ -42,10 +42,14 @@
     paperBudget: null,
     paperPlans: [],
     paperPositions: [],
+    paperTaxLots: [],
+    paperWashSale: [],
+    paperTaxEstimates: {},
     paperPerformance: null,
     paperAttribution: null,
     autonomySettings: null,
     autonomyStatus: null,
+    taxSettings: null,
     paperAudit: [],
     paperAuditSummary: null,
     paperMonitoring: null,
@@ -2391,6 +2395,17 @@
     return `<span class="ui-badge ui-badge--bad" title="${escapeHtml(failed.join(" | "))}">⚠ Blocked</span>`;
   }
 
+  function renderTaxImpactBadge(plan) {
+    if (String(plan.action || "") !== "Sell") return "";
+    const preview = (state.paperTaxEstimates || {})[String(plan.id)];
+    if (!preview || !preview.tax_impact) return '<span class="ui-badge ui-badge--neutral">Tax preview pending</span>';
+    const impact = preview.tax_impact;
+    const pnl = Number(impact.estimated_pnl || 0);
+    const term = Math.abs(Number(impact.long_term_gain || 0)) + Math.abs(Number(impact.long_term_loss || 0)) > 0 ? "LT" : "ST";
+    const klass = pnl >= 0 ? "ui-badge ui-badge--safe" : "ui-badge ui-badge--bad";
+    return `<span class="${klass}" title="${escapeHtml(`ST gain ${formatCurrency(impact.short_term_gain, 2)} · ST loss ${formatCurrency(impact.short_term_loss, 2)} · LT gain ${formatCurrency(impact.long_term_gain, 2)} · LT loss ${formatCurrency(impact.long_term_loss, 2)}`)}">${escapeHtml(formatCurrency(pnl, 2))} ${term}${impact.wash_sale_warning ? " ⚠" : ""}</span>`;
+  }
+
   function renderAuditTrail() {
     const mount = byId("regimeAuditTrailMount");
     if (!mount) return;
@@ -2998,6 +3013,7 @@
                 ${renderGuardrailBadge(plan)}
                 ${plan.regime_label ? `<span class="${badgeClass(plan.regime_label)}">${escapeHtml(plan.regime_label)} ${plan.regime_probability != null ? `· ${(Number(plan.regime_probability) * 100).toFixed(0)}%` : ""}</span>` : ""}
                 ${plan.meta_labeler_score == null ? `<span class="ui-badge ui-badge--neutral">ML N/A</span>` : `<span class="${Number(plan.meta_labeler_score) >= 0.65 ? "ui-badge ui-badge--safe" : Number(plan.meta_labeler_score) >= 0.30 ? "ui-badge ui-badge--warn" : "ui-badge ui-badge--bad"}">ML ${(Number(plan.meta_labeler_score) * 100).toFixed(0)}%</span>`}
+                ${renderTaxImpactBadge(plan)}
               </div>
               <div class="ui-muted" style="margin-top:6px">${escapeHtml(plan.rationale || "")}</div>
               ${plan.execution_result ? `<div class="ui-muted" style="margin-top:6px">${escapeHtml(plan.execution_result)}</div>` : ""}
@@ -3096,6 +3112,80 @@
             </tbody>
           </table>
         </div>
+        <details style="margin-top:12px" open>
+          <summary style="cursor:pointer; font-weight:600">Tax Lots</summary>
+          ${renderTaxLotsTable()}
+        </details>
+        <details style="margin-top:12px">
+          <summary style="cursor:pointer; font-weight:600">Wash-Sale Restrictions</summary>
+          ${renderWashSaleTable()}
+        </details>
+      </div>
+    `;
+  }
+
+  function renderTaxLotsTable() {
+    const rows = Array.isArray(state.paperTaxLots) ? state.paperTaxLots : [];
+    const deferWindow = Number((state.taxSettings || {}).ltcg_defer_window_days || 30);
+    return `
+      <div class="table-wrap" style="margin-top:10px">
+        <table>
+          <thead>
+            <tr>
+              <th scope="col">Ticker</th>
+              <th scope="col">Lot #</th>
+              <th scope="col" class="num">Qty</th>
+              <th scope="col" class="num">Cost Basis</th>
+              <th scope="col">Acquired</th>
+              <th scope="col" class="num">Days Held</th>
+              <th scope="col">Term</th>
+              <th scope="col" class="num">Days to LTCG</th>
+              <th scope="col">Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rows.length ? rows.map((row) => {
+              const highlight = String(row.term || "") === "ST" && Number(row.days_to_ltcg || 0) <= deferWindow;
+              return `<tr${highlight ? ' style="background:#fef3c7"' : ""}>
+                <td>${escapeHtml(row.ticker || "")}</td>
+                <td>${escapeHtml(row.id || "")}</td>
+                <td class="num ui-tabular-nums">${escapeHtml(row.remaining_quantity || 0)}</td>
+                <td class="num ui-tabular-nums">${escapeHtml(formatCurrency(row.cost_basis_per_share, 2))}</td>
+                <td>${escapeHtml(String(row.acquisition_date || "").slice(0, 10))}</td>
+                <td class="num ui-tabular-nums">${escapeHtml(row.days_held || 0)}</td>
+                <td>${String(row.term || "") === "LT" ? '<span class="ui-badge ui-badge--safe">LT</span>' : '<span class="ui-badge ui-badge--warn">ST</span>'}</td>
+                <td class="num ui-tabular-nums">${String(row.term || "") === "LT" ? "—" : escapeHtml(row.days_to_ltcg || 0)}</td>
+                <td>${escapeHtml(row.status || "")}</td>
+              </tr>`;
+            }).join("") : '<tr><td colspan="9" class="ui-muted">No tax lots available.</td></tr>'}
+          </tbody>
+        </table>
+      </div>
+    `;
+  }
+
+  function renderWashSaleTable() {
+    const rows = Array.isArray(state.paperWashSale) ? state.paperWashSale : [];
+    return `
+      <div class="table-wrap" style="margin-top:10px">
+        <table>
+          <thead>
+            <tr>
+              <th scope="col">Ticker</th>
+              <th scope="col">Loss Date</th>
+              <th scope="col" class="num">Loss Amount</th>
+              <th scope="col">Expires</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rows.length ? rows.map((row) => `<tr>
+              <td>${escapeHtml(row.ticker || "")}</td>
+              <td>${escapeHtml(String(row.loss_sale_date || "").slice(0, 10))}</td>
+              <td class="num ui-tabular-nums cell-bad">${escapeHtml(formatCurrency(row.loss_amount, 2))}</td>
+              <td>${escapeHtml(String(row.restriction_expires || "").slice(0, 10))} ${row.days_remaining != null ? `· ${escapeHtml(row.days_remaining)} days` : ""}</td>
+            </tr>`).join("") : '<tr><td colspan="4" class="ui-muted">No wash-sale restrictions active.</td></tr>'}
+          </tbody>
+        </table>
       </div>
     `;
   }
@@ -3252,6 +3342,7 @@
     const brokerStatus = state.paperPortfolioDetail && state.paperPortfolioDetail.broker_status ? state.paperPortfolioDetail.broker_status : null;
     const autonomy = state.autonomySettings || { operating_mode: "manual", auto_approve_threshold: 0.65, daily_capital_ceiling_pct: 0.25 };
     const autonomyStatus = state.autonomyStatus || null;
+    const taxSettings = state.taxSettings || { lot_selection_method: "HIFO_LTCG", ltcg_defer_window_days: 30 };
     const mode = String(autonomy.operating_mode || "manual");
     const modeBadge = mode === "autonomous" ? "ui-badge ui-badge--safe" : mode === "semi_auto" ? "ui-badge ui-badge--warn" : "ui-badge ui-badge--neutral";
     mount.innerHTML = `
@@ -3319,6 +3410,16 @@
                   <label>
                     VIX resume threshold
                     <input id="regimeVixResumeThreshold" type="number" min="5" max="100" step="1" value="${escapeHtml(Number((state.vixStatus || {}).resume_threshold || 30).toFixed(0))}" />
+                  </label>
+                  <label>
+                    Lot selection method
+                    <select id="regimeLotSelectionMethod">
+                      ${["HIFO_LTCG", "HIFO", "FIFO", "LIFO"].map((method) => `<option value="${method}" ${method === String(taxSettings.lot_selection_method || "HIFO_LTCG") ? "selected" : ""}>${method}</option>`).join("")}
+                    </select>
+                  </label>
+                  <label>
+                    LTCG deferral window
+                    <input id="regimeLtcgDeferWindow" type="number" min="0" max="365" step="1" value="${escapeHtml(Number(taxSettings.ltcg_defer_window_days || 30).toFixed(0))}" />
                   </label>
                   <button class="btn btn--secondary" type="button" id="regimeAutonomySave" style="align-self:end">Save</button>
                 </div>
@@ -3419,6 +3520,8 @@
         const ceilingInput = byId("regimeAutonomyCeiling");
         const vixFreezeInput = byId("regimeVixFreezeThreshold");
         const vixResumeInput = byId("regimeVixResumeThreshold");
+        const lotMethodInput = byId("regimeLotSelectionMethod");
+        const ltcgWindowInput = byId("regimeLtcgDeferWindow");
         await saveAutonomySettings({
           auto_approve_threshold: thresholdInput ? Number(thresholdInput.value || autonomy.auto_approve_threshold || 0.65) : autonomy.auto_approve_threshold,
           daily_capital_ceiling_pct: ceilingInput ? Number(ceilingInput.value || 25) / 100 : autonomy.daily_capital_ceiling_pct,
@@ -3439,6 +3542,23 @@
             renderVixStatus();
           } catch (error) {
             showToast(`Unable to save VIX settings: ${error.message || error}`, "error");
+          }
+        }
+        if (state.config?.endpoints?.tax_settings) {
+          try {
+            const response = await fetch(state.config.endpoints.tax_settings, {
+              method: "PUT",
+              headers: { Accept: "application/json", "Content-Type": "application/json" },
+              body: JSON.stringify({
+                lot_selection_method: lotMethodInput ? String(lotMethodInput.value || "HIFO_LTCG") : "HIFO_LTCG",
+                ltcg_defer_window_days: ltcgWindowInput ? Number(ltcgWindowInput.value || 30) : 30,
+              }),
+            });
+            const payload = await response.json();
+            if (!response.ok) throw new Error(payload.detail || `Tax settings failed (${response.status})`);
+            state.taxSettings = payload;
+          } catch (error) {
+            showToast(`Unable to save tax settings: ${error.message || error}`, "error");
           }
         }
       });
@@ -3474,6 +3594,9 @@
       state.paperBudget = null;
       state.paperPlans = [];
       state.paperPositions = [];
+      state.paperTaxLots = [];
+      state.paperWashSale = [];
+      state.paperTaxEstimates = {};
       state.paperPerformance = null;
       state.paperAttribution = null;
       state.paperAudit = [];
@@ -3496,13 +3619,15 @@
       return;
     }
     try {
-      const [detailResponse, autonomySettingsResponse, autonomyStatusResponse, budgetResponse, plansResponse, positionsResponse, performanceResponse, auditResponse, precheckResponse, monitoringResponse, alertsResponse, alertHistoryResponse, vixResponse] = await Promise.all([
+      const [detailResponse, autonomySettingsResponse, autonomyStatusResponse, budgetResponse, plansResponse, positionsResponse, taxLotsResponse, washSaleResponse, performanceResponse, auditResponse, precheckResponse, monitoringResponse, alertsResponse, alertHistoryResponse, vixResponse] = await Promise.all([
         fetch(paperEndpoint("paper_portfolio", portfolioId), { headers: { Accept: "application/json" } }),
         fetch(state.config.endpoints.autonomy_settings, { headers: { Accept: "application/json" } }),
         fetch(paperEndpoint("paper_autonomy_status", portfolioId), { headers: { Accept: "application/json" } }),
         fetch(paperEndpoint("paper_budget", portfolioId), { headers: { Accept: "application/json" } }),
         fetch(`${paperEndpoint("paper_plans", portfolioId)}?status=all`, { headers: { Accept: "application/json" } }),
         fetch(`${paperEndpoint("paper_positions", portfolioId)}?status=Open`, { headers: { Accept: "application/json" } }),
+        fetch(`${paperEndpoint("paper_tax_lots", portfolioId)}?status=all`, { headers: { Accept: "application/json" } }),
+        fetch(paperEndpoint("paper_wash_sale", portfolioId), { headers: { Accept: "application/json" } }),
         fetch(paperEndpoint("paper_performance", portfolioId), { headers: { Accept: "application/json" } }),
         fetch(paperEndpoint("paper_audit", portfolioId), { headers: { Accept: "application/json" } }),
         fetch(paperEndpoint("paper_precheck", portfolioId), { method: "POST", headers: { Accept: "application/json" } }),
@@ -3518,13 +3643,15 @@
           return {};
         }
       };
-      const [detail, autonomySettings, autonomyStatus, budget, plans, positions, performance, audit, precheck, monitoring, alerts, alertHistory, vixStatus] = await Promise.all([
+      const [detail, autonomySettings, autonomyStatus, budget, plans, positions, taxLots, washSale, performance, audit, precheck, monitoring, alerts, alertHistory, vixStatus] = await Promise.all([
         parseJson(detailResponse),
         parseJson(autonomySettingsResponse),
         parseJson(autonomyStatusResponse),
         parseJson(budgetResponse),
         parseJson(plansResponse),
         parseJson(positionsResponse),
+        parseJson(taxLotsResponse),
+        parseJson(washSaleResponse),
         parseJson(performanceResponse),
         parseJson(auditResponse),
         parseJson(precheckResponse),
@@ -3541,6 +3668,10 @@
       state.paperPortfolioDetail = detail;
       if (autonomySettingsResponse.ok) {
         state.autonomySettings = autonomySettings;
+        state.taxSettings = {
+          lot_selection_method: autonomySettings.lot_selection_method || "HIFO_LTCG",
+          ltcg_defer_window_days: autonomySettings.ltcg_defer_window_days || 30,
+        };
       } else {
         warnPanel("Autonomy settings", autonomySettingsResponse, autonomySettings);
       }
@@ -3572,6 +3703,18 @@
       } else {
         warnPanel("Positions", positionsResponse, positions);
         state.paperPositions = [];
+      }
+      if (taxLotsResponse.ok) {
+        state.paperTaxLots = Array.isArray(taxLots.lots) ? taxLots.lots : [];
+      } else {
+        warnPanel("Tax lots", taxLotsResponse, taxLots);
+        state.paperTaxLots = [];
+      }
+      if (washSaleResponse.ok) {
+        state.paperWashSale = Array.isArray(washSale.restrictions) ? washSale.restrictions : [];
+      } else {
+        warnPanel("Wash sale", washSaleResponse, washSale);
+        state.paperWashSale = [];
       }
       if (performanceResponse.ok) {
         state.paperPerformance = performance;
@@ -3618,6 +3761,25 @@
         warnPanel("VIX", vixResponse, vixStatus);
         state.vixStatus = null;
       }
+      const sellPlans = state.paperPlans.filter((plan) => String(plan.action || "") === "Sell" && Number(plan.quantity || 0) > 0);
+      const estimateEntries = await Promise.all(sellPlans.map(async (plan) => {
+        try {
+          const response = await fetch(paperEndpoint("paper_tax_estimate", portfolioId), {
+            method: "POST",
+            headers: { Accept: "application/json", "Content-Type": "application/json" },
+            body: JSON.stringify({
+              ticker: plan.ticker,
+              quantity: Number(plan.quantity || 0),
+              exit_price: Number(plan.proposed_price || 0),
+            }),
+          });
+          const payload = await parseJson(response);
+          return [String(plan.id), response.ok ? payload : null];
+        } catch (_error) {
+          return [String(plan.id), null];
+        }
+      }));
+      state.paperTaxEstimates = Object.fromEntries(estimateEntries);
       renderPaperPortfolioSection();
       renderPaperBudget();
       renderPaperPlans();

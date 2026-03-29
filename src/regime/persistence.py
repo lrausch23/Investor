@@ -44,6 +44,10 @@ _PAPER_TRADE_PLAN_COLUMNS: dict[str, str] = {
     "meta_labeler_score": "REAL",
 }
 
+LOT_SELECTION_METHODS = ("HIFO", "HIFO_LTCG", "FIFO", "LIFO")
+DEFAULT_LOT_SELECTION_METHOD = "HIFO_LTCG"
+DEFAULT_LTCG_DEFER_WINDOW_DAYS = 30
+
 _SECTOR_CACHE_TTL_DAYS = 30
 _EARNINGS_CACHE_TTL_HOURS = 24
 
@@ -94,7 +98,7 @@ def _create_alert_log_table(conn: sqlite3.Connection) -> None:
                     'daily_loss_breach', 'meta_labeler_veto', 'vix_freeze', 'vix_resume',
                     'execution_error', 'connection_lost', 'connection_restored',
                     'drawdown_breach', 'concentration_breach', 'ml_accuracy_drift',
-                    'capital_ceiling_breach', 'test'
+                    'capital_ceiling_breach', 'wash_sale_block', 'test'
                 )
             ),
             severity TEXT NOT NULL DEFAULT 'info' CHECK (severity IN ('info', 'warning', 'critical')),
@@ -145,6 +149,68 @@ def _create_paper_trade_plan_table(conn: sqlite3.Connection) -> None:
     )
 
 
+def _create_paper_tax_lot_table(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS paper_tax_lot (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            portfolio_id INTEGER NOT NULL REFERENCES paper_portfolio(id) ON DELETE CASCADE,
+            position_id INTEGER REFERENCES paper_position(id) ON DELETE SET NULL,
+            ticker TEXT NOT NULL,
+            quantity REAL NOT NULL,
+            remaining_quantity REAL NOT NULL,
+            cost_basis_per_share REAL NOT NULL,
+            acquisition_date TEXT NOT NULL,
+            closed_date TEXT,
+            exit_price REAL,
+            realized_pnl REAL,
+            gain_loss_term TEXT CHECK (gain_loss_term IN ('ST_GAIN', 'ST_LOSS', 'LT_GAIN', 'LT_LOSS')),
+            status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'partial', 'closed')),
+            notes TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS ix_paper_tax_lot_portfolio_ticker
+        ON paper_tax_lot(portfolio_id, ticker)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS ix_paper_tax_lot_position
+        ON paper_tax_lot(position_id)
+        """
+    )
+
+
+def _create_wash_sale_restricted_table(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS wash_sale_restricted (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            portfolio_id INTEGER NOT NULL REFERENCES paper_portfolio(id) ON DELETE CASCADE,
+            ticker TEXT NOT NULL,
+            loss_sale_date TEXT NOT NULL,
+            restriction_expires TEXT NOT NULL,
+            loss_amount REAL NOT NULL DEFAULT 0,
+            source_lot_id INTEGER REFERENCES paper_tax_lot(id) ON DELETE SET NULL,
+            active INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS ix_wash_sale_restricted_active
+        ON wash_sale_restricted(portfolio_id, ticker, active, restriction_expires)
+        """
+    )
+
+
 def _create_order_audit_trail_table(conn: sqlite3.Connection) -> None:
     conn.execute(
         """
@@ -191,6 +257,28 @@ def _migrate_audit_event_type_check(conn: sqlite3.Connection) -> None:
         f"INSERT INTO order_audit_trail ({columns_sql}) SELECT {columns_sql} FROM _order_audit_trail_old"
     )
     conn.execute("DROP TABLE _order_audit_trail_old")
+
+
+def _migrate_alert_log_type_check(conn: sqlite3.Connection) -> None:
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'alert_log'"
+    ).fetchone()
+    create_sql = str(row["sql"] or "") if row else ""
+    if "'wash_sale_block'" in create_sql:
+        return
+    if not _table_exists(conn, "alert_log"):
+        return
+    logger.info("Migrating alert_log alert_type CHECK to include 'wash_sale_block'")
+    conn.execute("ALTER TABLE alert_log RENAME TO _alert_log_old")
+    _create_alert_log_table(conn)
+    old_columns = [str(col["name"]) for col in conn.execute("PRAGMA table_info(_alert_log_old)").fetchall()]
+    new_columns = [str(col["name"]) for col in conn.execute("PRAGMA table_info(alert_log)").fetchall()]
+    common_columns = [column for column in new_columns if column in old_columns]
+    columns_sql = ", ".join(common_columns)
+    conn.execute(
+        f"INSERT INTO alert_log ({columns_sql}) SELECT {columns_sql} FROM _alert_log_old"
+    )
+    conn.execute("DROP TABLE _alert_log_old")
 
 
 def _migrate_trade_plan_source_check(conn: sqlite3.Connection) -> None:
@@ -448,6 +536,8 @@ def _connect() -> sqlite3.Connection:
         """
     )
     _create_alert_log_table(conn)
+    _create_paper_tax_lot_table(conn)
+    _create_wash_sale_restricted_table(conn)
     conn.execute(
         """
         CREATE INDEX IF NOT EXISTS ix_alert_log_created
@@ -600,6 +690,7 @@ def _connect() -> sqlite3.Connection:
     _ensure_paper_schema(conn)
     _migrate_trade_plan_source_check(conn)
     _migrate_audit_event_type_check(conn)
+    _migrate_alert_log_type_check(conn)
     _migrate_legacy_theses(conn)
     conn.execute(
         """
@@ -724,6 +815,35 @@ def set_daily_capital_ceiling_pct(pct: float) -> None:
     set_setting("daily_capital_ceiling_pct", str(max(0.0, min(1.0, float(pct)))))
 
 
+def get_lot_selection_method() -> str:
+    method = str(get_setting("lot_selection_method") or DEFAULT_LOT_SELECTION_METHOD).strip().upper()
+    return method if method in LOT_SELECTION_METHODS else DEFAULT_LOT_SELECTION_METHOD
+
+
+def set_lot_selection_method(method: str) -> str:
+    normalized = str(method or "").strip().upper()
+    if normalized not in LOT_SELECTION_METHODS:
+        raise ValueError(f"Invalid lot selection method: {method}")
+    set_setting("lot_selection_method", normalized)
+    return normalized
+
+
+def get_ltcg_defer_window_days() -> int:
+    raw = get_setting("ltcg_defer_window_days")
+    if raw is None:
+        return DEFAULT_LTCG_DEFER_WINDOW_DAYS
+    try:
+        return max(0, int(raw))
+    except (ValueError, TypeError):
+        return DEFAULT_LTCG_DEFER_WINDOW_DAYS
+
+
+def set_ltcg_defer_window_days(days: int) -> int:
+    normalized = max(0, int(days))
+    set_setting("ltcg_defer_window_days", str(normalized))
+    return normalized
+
+
 def is_live_trading_unlocked() -> bool:
     return get_setting("live_trading_unlocked") == "true"
 
@@ -820,6 +940,7 @@ def save_alert(
 
 def get_alerts(
     *,
+    portfolio_id: int | None = None,
     unacknowledged_only: bool = False,
     alert_type: str | None = None,
     limit: int = 50,
@@ -827,6 +948,9 @@ def get_alerts(
 ) -> list[dict[str, Any]]:
     clauses: list[str] = ["1 = 1"]
     params: list[Any] = []
+    if portfolio_id is not None:
+        clauses.append("portfolio_id = ?")
+        params.append(int(portfolio_id))
     if unacknowledged_only:
         clauses.append("acknowledged = 0")
     if alert_type:
@@ -1512,6 +1636,216 @@ def delete_paper_portfolio(portfolio_id: int) -> bool:
         return bool(cursor.rowcount)
 
 
+def create_tax_lot(
+    portfolio_id: int,
+    position_id: int | None,
+    ticker: str,
+    quantity: float,
+    cost_basis_per_share: float,
+    acquisition_date: str,
+    notes: str = "",
+) -> dict[str, Any]:
+    now = datetime.now(timezone.utc).isoformat()
+    with _connect() as conn:
+        cursor = conn.execute(
+            """
+            INSERT INTO paper_tax_lot (
+                portfolio_id, position_id, ticker, quantity, remaining_quantity,
+                cost_basis_per_share, acquisition_date, notes, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                int(portfolio_id),
+                int(position_id) if position_id is not None else None,
+                str(ticker or "").upper(),
+                float(quantity),
+                float(quantity),
+                float(cost_basis_per_share),
+                acquisition_date,
+                notes,
+                now,
+                now,
+            ),
+        )
+        lot_id = int(cursor.lastrowid)
+    return get_tax_lot(lot_id) or {}
+
+
+def _compute_lot_holding_fields(row: dict[str, Any]) -> dict[str, Any]:
+    acquisition_text = str(row.get("acquisition_date") or "")
+    now = datetime.now(timezone.utc)
+    acquisition_dt: datetime | None = None
+    try:
+        acquisition_dt = datetime.fromisoformat(acquisition_text.replace("Z", "+00:00"))
+    except Exception:
+        acquisition_dt = None
+    if acquisition_dt is None:
+        days_held = 0
+    else:
+        if acquisition_dt.tzinfo is None:
+            acquisition_dt = acquisition_dt.replace(tzinfo=timezone.utc)
+        days_held = max(0, (now - acquisition_dt.astimezone(timezone.utc)).days)
+    term = "LT" if days_held >= 366 else "ST"
+    days_to_ltcg = 0 if term == "LT" else max(0, 366 - days_held)
+    return {
+        **row,
+        "cost_basis_total": float(row.get("quantity") or 0.0) * float(row.get("cost_basis_per_share") or 0.0),
+        "days_held": days_held,
+        "term": term,
+        "days_to_ltcg": 0 if term == "LT" else days_to_ltcg,
+    }
+
+
+def get_tax_lot(lot_id: int) -> dict[str, Any] | None:
+    with _connect() as conn:
+        row = conn.execute("SELECT * FROM paper_tax_lot WHERE id = ?", (int(lot_id),)).fetchone()
+    return _compute_lot_holding_fields(dict(row)) if row else None
+
+
+def get_tax_lots(portfolio_id: int, ticker: str | None = None, status: str = "open") -> list[dict[str, Any]]:
+    query = "SELECT * FROM paper_tax_lot WHERE portfolio_id = ?"
+    params: list[Any] = [int(portfolio_id)]
+    if ticker:
+        query += " AND ticker = ?"
+        params.append(str(ticker).upper())
+    if status and status.lower() != "all":
+        query += " AND status = ?"
+        params.append(status.lower())
+    query += " ORDER BY ticker ASC, acquisition_date ASC, id ASC"
+    with _connect() as conn:
+        rows = conn.execute(query, params).fetchall()
+    return [_compute_lot_holding_fields(dict(row)) for row in rows]
+
+
+def close_tax_lot(
+    lot_id: int,
+    quantity_to_close: float,
+    exit_price: float,
+    exit_date: str,
+) -> dict[str, Any] | None:
+    lot = get_tax_lot(lot_id)
+    if lot is None:
+        return None
+    remaining_quantity = float(lot.get("remaining_quantity") or 0.0)
+    close_qty = float(quantity_to_close or 0.0)
+    if close_qty <= 0 or close_qty > remaining_quantity + 1e-9:
+        raise ValueError("Invalid quantity_to_close for tax lot.")
+    cost_basis = float(lot.get("cost_basis_per_share") or 0.0)
+    realized_pnl = (float(exit_price) - cost_basis) * close_qty
+    new_remaining = max(0.0, remaining_quantity - close_qty)
+    status = "closed" if new_remaining <= 1e-9 else "partial"
+    days_held = int(lot.get("days_held") or 0)
+    is_long_term = days_held >= 366
+    gain_loss_term = ("LT" if is_long_term else "ST") + ("_GAIN" if realized_pnl >= 0 else "_LOSS")
+    with _connect() as conn:
+        conn.execute(
+            """
+            UPDATE paper_tax_lot
+            SET remaining_quantity = ?, closed_date = ?, exit_price = ?, realized_pnl = ?,
+                gain_loss_term = ?, status = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                new_remaining,
+                exit_date if status == "closed" else None,
+                float(exit_price),
+                realized_pnl,
+                gain_loss_term,
+                status,
+                datetime.now(timezone.utc).isoformat(),
+                int(lot_id),
+            ),
+        )
+    updated = get_tax_lot(lot_id) or {}
+    updated["closed_quantity"] = close_qty
+    updated["realized_pnl"] = realized_pnl
+    updated["gain_loss_term"] = gain_loss_term
+    return updated
+
+
+def add_wash_sale_restriction(
+    portfolio_id: int,
+    ticker: str,
+    loss_sale_date: str,
+    loss_amount: float,
+    lot_id: int | None = None,
+) -> dict[str, Any]:
+    now = datetime.now(timezone.utc)
+    try:
+        loss_dt = datetime.fromisoformat(str(loss_sale_date).replace("Z", "+00:00"))
+    except Exception:
+        loss_dt = now
+    if loss_dt.tzinfo is None:
+        loss_dt = loss_dt.replace(tzinfo=timezone.utc)
+    expires = (loss_dt + timedelta(days=31)).isoformat()
+    with _connect() as conn:
+        cursor = conn.execute(
+            """
+            INSERT INTO wash_sale_restricted (
+                portfolio_id, ticker, loss_sale_date, restriction_expires, loss_amount,
+                source_lot_id, active, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)
+            """,
+            (
+                int(portfolio_id),
+                str(ticker or "").upper(),
+                loss_dt.isoformat(),
+                expires,
+                float(loss_amount),
+                int(lot_id) if lot_id is not None else None,
+                now.isoformat(),
+                now.isoformat(),
+            ),
+        )
+        restriction_id = int(cursor.lastrowid)
+    return get_wash_sale_restriction(restriction_id) or {}
+
+
+def get_wash_sale_restriction(restriction_id: int) -> dict[str, Any] | None:
+    with _connect() as conn:
+        row = conn.execute("SELECT * FROM wash_sale_restricted WHERE id = ?", (int(restriction_id),)).fetchone()
+    return dict(row) if row else None
+
+
+def get_wash_sale_restrictions(
+    portfolio_id: int,
+    ticker: str | None = None,
+    active_only: bool = False,
+) -> list[dict[str, Any]]:
+    query = "SELECT * FROM wash_sale_restricted WHERE portfolio_id = ?"
+    params: list[Any] = [int(portfolio_id)]
+    if ticker:
+        query += " AND ticker = ?"
+        params.append(str(ticker).upper())
+    if active_only:
+        now = datetime.now(timezone.utc).isoformat()
+        query += " AND active = 1 AND restriction_expires > ?"
+        params.append(now)
+    query += " ORDER BY restriction_expires ASC, id ASC"
+    with _connect() as conn:
+        rows = conn.execute(query, params).fetchall()
+    payload: list[dict[str, Any]] = []
+    current = datetime.now(timezone.utc)
+    for row in rows:
+        item = dict(row)
+        try:
+            expires = datetime.fromisoformat(str(item.get("restriction_expires") or "").replace("Z", "+00:00"))
+            if expires.tzinfo is None:
+                expires = expires.replace(tzinfo=timezone.utc)
+            item["days_remaining"] = max(0, (expires - current).days)
+        except Exception:
+            item["days_remaining"] = 0
+        payload.append(item)
+    return payload
+
+
+def is_wash_sale_restricted(portfolio_id: int, ticker: str) -> bool:
+    restrictions = get_wash_sale_restrictions(portfolio_id, ticker=ticker, active_only=True)
+    return bool(restrictions)
+
+
 def open_paper_position(
     portfolio_id: int,
     ticker: str,
@@ -1569,6 +1903,17 @@ def get_paper_positions(portfolio_id: int, status: str = "Open") -> list[dict[st
     with _connect() as conn:
         rows = conn.execute(query, params).fetchall()
     return [dict(row) for row in rows]
+
+
+def update_paper_position_quantity(position_id: int, quantity: float) -> dict[str, Any] | None:
+    with _connect() as conn:
+        cursor = conn.execute(
+            "UPDATE paper_position SET quantity = ?, updated_at = ? WHERE id = ?",
+            (float(quantity), datetime.now(timezone.utc).isoformat(), int(position_id)),
+        )
+        if not cursor.rowcount:
+            return None
+    return get_paper_position(position_id)
 
 
 def close_paper_position(position_id: int, exit_price: float, exit_date: str, exit_reason: str = "manual") -> dict[str, Any] | None:
