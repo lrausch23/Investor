@@ -1361,8 +1361,21 @@ def _env_file_path() -> Path:
 
 
 def _update_env_file(ibkr_vars: dict[str, str]) -> None:
-    """Update IBKR variables in .env while preserving all other lines."""
+    """Update IBKR variables in .env while preserving all other lines.
+
+    Empty values do NOT overwrite non-empty existing values (BUG-004 guard).
+    """
     import os
+
+    guarded_vars: dict[str, str] = {}
+    for key, value in ibkr_vars.items():
+        normalized = str(value)
+        if normalized.strip() == "":
+            existing = os.environ.get(key, "").strip()
+            if existing:
+                guarded_vars[key] = existing
+                continue
+        guarded_vars[key] = normalized
 
     env_path = _env_file_path()
     existing_lines: list[str] = []
@@ -1373,18 +1386,18 @@ def _update_env_file(ibkr_vars: dict[str, str]) -> None:
             stripped = line.strip()
             if stripped and not stripped.startswith("#") and "=" in stripped:
                 key = stripped.split("=", 1)[0].strip()
-                if key in ibkr_vars:
+                if key in guarded_vars:
                     existing_keys.add(key)
-                    existing_lines.append(f"{key}={ibkr_vars[key]}")
+                    existing_lines.append(f"{key}={guarded_vars[key]}")
                     continue
             existing_lines.append(line)
 
-    for key, value in ibkr_vars.items():
+    for key, value in guarded_vars.items():
         if key not in existing_keys:
             existing_lines.append(f"{key}={value}")
 
     env_path.write_text("\n".join(existing_lines) + "\n", encoding="utf-8")
-    for key, value in ibkr_vars.items():
+    for key, value in guarded_vars.items():
         os.environ[key] = value
 
 

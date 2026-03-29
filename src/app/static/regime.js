@@ -2881,7 +2881,7 @@
           <label>Host<input type="text" name="host" value="${escapeHtml(config.host || "127.0.0.1")}" readonly /></label>
           <label>Port<select name="port"><option value="7497" ${Number(config.port || 7497) === 7497 ? "selected" : ""}>7497 (TWS paper)</option><option value="4002" ${Number(config.port || 7497) === 4002 ? "selected" : ""}>4002 (Gateway paper)</option><option value="7496" ${Number(config.port || 7497) === 7496 ? "selected" : ""}>7496 (TWS live)</option><option value="4001" ${Number(config.port || 7497) === 4001 ? "selected" : ""}>4001 (Gateway live)</option></select></label>
           <label>Client ID<input type="number" min="1" max="32" name="client_id" value="${escapeHtml(config.client_id ?? 1)}" /></label>
-          <label>Account ID<input type="text" name="account_id" value="${escapeHtml(config.account_id || "")}" /></label>
+          <label>Account ID *<input type="text" name="account_id" value="${escapeHtml(config.account_id || "")}" required /></label>
           <label>Live Account ID<input type="text" name="live_account_id" value="${escapeHtml(config.live_account_id || "")}" /></label>
           <label>Timeout<input type="number" min="5" max="60" name="timeout" value="${escapeHtml(config.timeout ?? 10)}" /></label>
           <label style="display:flex; align-items:center; gap:8px; margin-top:24px"><input type="checkbox" name="live_backend" ${config.live_backend ? "checked" : ""} /> Live Backend</label>

@@ -70,6 +70,18 @@ def create_app() -> FastAPI:
         Path("data").mkdir(parents=True, exist_ok=True)
         init_db()
         try:
+            from src.app.startup_checks import run_all_checks
+
+            errors, warnings = run_all_checks()
+            for warning in warnings:
+                logger.warning("Startup check warning: %s", warning)
+            if errors:
+                for error in errors:
+                    logger.error("Startup check FAILED: %s", error)
+                logger.error("Pre-flight checks found %d error(s). Some features may not work.", len(errors))
+        except Exception as exc:
+            logger.warning("Startup checks unavailable: %s", exc)
+        try:
             from src.regime.recovery import run_startup_recovery
 
             recovery = run_startup_recovery()

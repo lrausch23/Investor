@@ -1,0 +1,17 @@
+[Unit]
+Description=Investor Portfolio Management Server
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+WorkingDirectory=/opt/investor
+ExecStart=/opt/investor/scripts/launch.sh --port 8000
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+Environment=PYTHONPATH=/opt/investor
+
+[Install]
+WantedBy=multi-user.target
