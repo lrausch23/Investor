@@ -350,6 +350,8 @@ class IBConnectionManager:
 _MOCK_BACKENDS: dict[int, MockIBBackend] = {}
 _LIVE_BACKENDS: dict[int, IBConnectionBackend] = {}
 _LIVE_BACKENDS_LOCK = threading.Lock()
+_SHARED_LIVE_BACKEND: IBConnectionBackend | None = None
+_SHARED_LIVE_BACKEND_LOCK = threading.Lock()
 
 
 def get_mock_ib_backend(portfolio_id: int, *, starting_cash: float = 100000.0) -> MockIBBackend:
@@ -385,3 +387,27 @@ def get_ib_backend(
                 _LIVE_BACKENDS[int(portfolio_id)] = backend
             return backend
     return get_mock_ib_backend(portfolio_id, starting_cash=starting_cash)
+
+
+def get_shared_ib_backend(
+    *,
+    account_id: str = DEFAULT_IBKR_CONFIG.account_id,
+    config: IBKRConfig = DEFAULT_IBKR_CONFIG,
+    connect_if_needed: bool = True,
+) -> IBConnectionBackend | None:
+    from .ib_live_backend import LiveIBBackend
+
+    global _SHARED_LIVE_BACKEND
+    with _SHARED_LIVE_BACKEND_LOCK:
+        if _SHARED_LIVE_BACKEND is None:
+            backend = LiveIBBackend(account_id=account_id)
+            setattr(backend, "_client_id", int(config.client_id))
+            _SHARED_LIVE_BACKEND = backend
+        backend = _SHARED_LIVE_BACKEND
+    if backend is None:
+        return None
+    if connect_if_needed and not backend.is_connected():
+        connected = backend.connect(config.host, config.port, int(getattr(backend, "_client_id", config.client_id)))
+        if not connected:
+            return backend
+    return backend

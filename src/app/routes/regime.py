@@ -2930,6 +2930,7 @@ def _build_shell_context(
             "ibkr_test_connection": "/regime/ibkr/test-connection",
             "ibkr_status": "/regime/ibkr/status",
             "ibkr_live_unlock": "/regime/ibkr/live-unlock",
+            "market_data_settings": "/regime/market-data/settings",
             "frontier_models": "/regime/frontier/models",
             "frontier_settings": "/regime/frontier/settings",
             "autonomy_settings": "/regime/autonomy/settings",
@@ -3138,6 +3139,44 @@ async def regime_ibkr_settings_update(
             "message": "Settings saved to .env. Restart the server to apply changes.",
         }
     )
+
+
+@router.get("/market-data/settings")
+def regime_market_data_settings(
+    actor: str = Depends(require_actor),
+):
+    del actor
+    from src.regime.ibkr_market_data import IBKRMarketDataProvider, get_market_data_provider_config
+
+    settings = get_market_data_provider_config()
+    connected = bool(IBKRMarketDataProvider().is_available())
+    return JSONResponse(
+        content={
+            "settings": settings,
+            "ibkr_connected": connected,
+        }
+    )
+
+
+@router.put("/market-data/settings")
+async def regime_market_data_settings_update(
+    request: Request,
+    actor: str = Depends(require_actor),
+):
+    del actor
+    from src.regime.ibkr_market_data import save_market_data_provider_config
+
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=422, detail="Request body must be a JSON object.")
+    try:
+        settings = save_market_data_provider_config(body)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    return JSONResponse(content={"settings": settings, "saved": True})
 
 
 @router.get("/frontier/models")

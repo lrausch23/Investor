@@ -76,6 +76,7 @@
     ibkrRestartRequired: false,
     expandedDiagnosticsTicker: null,
     frontierSettings: null,
+    marketDataSettings: null,
   };
 
   function byId(id) {
@@ -3424,8 +3425,25 @@
     const autonomy = state.autonomySettings || { operating_mode: "manual", auto_approve_threshold: 0.65, daily_capital_ceiling_pct: 0.25 };
     const autonomyStatus = state.autonomyStatus || null;
     const taxSettings = state.taxSettings || { lot_selection_method: "HIFO_LTCG", ltcg_defer_window_days: 30 };
+    const marketData = state.marketDataSettings || {
+      settings: {
+        benchmark_provider_order: ["cache", "ibkr", "stooq", "yahoo"],
+        benchmark_enabled: { cache: true, ibkr: true, stooq: true, yahoo: false },
+        momentum_provider_order: ["ibkr", "stooq", "finnhub"],
+        momentum_enabled: { ibkr: true, stooq: true, finnhub: true },
+      },
+      ibkr_connected: false,
+    };
     const mode = String(autonomy.operating_mode || "manual");
     const modeBadge = mode === "autonomous" ? "ui-badge ui-badge--safe" : mode === "semi_auto" ? "ui-badge ui-badge--warn" : "ui-badge ui-badge--neutral";
+    const renderProviderRows = (prefix, order, enabled) => order.map((provider, index) => `
+      <div style="display:grid; grid-template-columns:auto 1fr auto auto; gap:8px; align-items:center">
+        <input type="checkbox" data-provider-toggle="${prefix}:${provider}" ${enabled[provider] !== false ? "checked" : ""} ${provider === "cache" ? "disabled" : ""} />
+        <span>${escapeHtml(provider.toUpperCase())}</span>
+        <button class="btn btn--secondary btn--sm" type="button" data-provider-move="${prefix}:${provider}:up" ${index === 0 ? "disabled" : ""}>↑</button>
+        <button class="btn btn--secondary btn--sm" type="button" data-provider-move="${prefix}:${provider}:down" ${index === order.length - 1 ? "disabled" : ""}>↓</button>
+      </div>
+    `).join("");
     mount.innerHTML = `
       <div class="ui-card" style="padding:12px">
         <div class="table-toolbar">
@@ -3506,6 +3524,27 @@
                 </div>
               </details>
               ${autonomyStatus ? `<div class="ui-muted" style="margin-top:10px">Capital deployed today ${escapeHtml(formatCurrency(autonomyStatus.capital_deployed_today, 0))} / ${escapeHtml(formatCurrency(autonomyStatus.max_daily_capital, 0))} · Trades ${escapeHtml(autonomyStatus.trades_today || 0)} · Auto-approved ${escapeHtml(autonomyStatus.auto_approved_today || 0)} · Guardrail blocks ${escapeHtml(autonomyStatus.guardrail_blocks_today || 0)}</div>` : ""}
+            </div>
+            <div style="border:1px solid ${COLORS.border}; border-radius:10px; padding:10px; margin-top:10px">
+              <div class="table-toolbar">
+                <div>
+                  <div style="font-weight:600">Market Data Providers</div>
+                  <div class="ui-muted">Configure benchmark and momentum fallback order.</div>
+                </div>
+                <span class="${marketData.ibkr_connected ? "ui-badge ui-badge--safe" : "ui-badge ui-badge--neutral"}">IBKR ${marketData.ibkr_connected ? "connected" : "offline"}</span>
+              </div>
+              <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-top:10px">
+                <div>
+                  <div style="font-weight:600; margin-bottom:8px">Benchmarks</div>
+                  ${renderProviderRows("benchmark", marketData.settings.benchmark_provider_order || ["cache", "ibkr", "stooq", "yahoo"], marketData.settings.benchmark_enabled || {})}
+                </div>
+                <div>
+                  <div style="font-weight:600; margin-bottom:8px">Momentum</div>
+                  ${renderProviderRows("momentum", marketData.settings.momentum_provider_order || ["ibkr", "stooq", "finnhub"], marketData.settings.momentum_enabled || {})}
+                </div>
+              </div>
+              <div class="ui-muted" style="margin-top:8px">Benchmark order must keep CACHE first.</div>
+              <button class="btn btn--secondary" type="button" id="regimeMarketDataSave" style="margin-top:10px">Save Market Data Settings</button>
             </div>
           ` : ""}
         </div>
@@ -3644,6 +3683,51 @@
         }
       });
     }
+    mount.querySelectorAll("[data-provider-move]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const [scope, provider, direction] = String(button.getAttribute("data-provider-move") || "").split(":");
+        const settings = JSON.parse(JSON.stringify((state.marketDataSettings && state.marketDataSettings.settings) || marketData.settings));
+        const key = scope === "benchmark" ? "benchmark_provider_order" : "momentum_provider_order";
+        const order = Array.isArray(settings[key]) ? settings[key].slice() : [];
+        const index = order.indexOf(provider);
+        if (index < 0) return;
+        const next = direction === "up" ? index - 1 : index + 1;
+        if (next < 0 || next >= order.length) return;
+        [order[index], order[next]] = [order[next], order[index]];
+        settings[key] = order;
+        state.marketDataSettings = { ...(state.marketDataSettings || marketData), settings };
+        renderPaperPortfolioSection();
+      });
+    });
+    mount.querySelectorAll("[data-provider-toggle]").forEach((checkbox) => {
+      checkbox.addEventListener("change", () => {
+        const [scope, provider] = String(checkbox.getAttribute("data-provider-toggle") || "").split(":");
+        const settings = JSON.parse(JSON.stringify((state.marketDataSettings && state.marketDataSettings.settings) || marketData.settings));
+        const key = scope === "benchmark" ? "benchmark_enabled" : "momentum_enabled";
+        settings[key] = { ...(settings[key] || {}), [provider]: checkbox.checked };
+        if (provider === "cache") settings[key][provider] = true;
+        state.marketDataSettings = { ...(state.marketDataSettings || marketData), settings };
+      });
+    });
+    const marketDataSave = byId("regimeMarketDataSave");
+    if (marketDataSave && state.config?.endpoints?.market_data_settings) {
+      marketDataSave.addEventListener("click", async () => {
+        try {
+          const response = await fetch(state.config.endpoints.market_data_settings, {
+            method: "PUT",
+            headers: { Accept: "application/json", "Content-Type": "application/json" },
+            body: JSON.stringify((state.marketDataSettings && state.marketDataSettings.settings) || marketData.settings),
+          });
+          const payload = await response.json();
+          if (!response.ok) throw new Error(payload.detail || `Market data settings failed (${response.status})`);
+          state.marketDataSettings = { ...(state.marketDataSettings || {}), settings: payload.settings };
+          showToast("Saved market data settings.");
+          renderPaperPortfolioSection();
+        } catch (error) {
+          showToast(`Unable to save market data settings: ${error.message || error}`, "error");
+        }
+      });
+    }
   }
 
   async function loadPaperPortfolios(preferredId = null) {
@@ -3700,10 +3784,11 @@
       return;
     }
     try {
-      const [detailResponse, autonomySettingsResponse, autonomyStatusResponse, budgetResponse, plansResponse, positionsResponse, taxLotsResponse, washSaleResponse, performanceResponse, auditResponse, precheckResponse, monitoringResponse, healthResponse, validationResponse, alertsResponse, alertHistoryResponse, vixResponse] = await Promise.all([
+      const [detailResponse, autonomySettingsResponse, autonomyStatusResponse, marketDataSettingsResponse, budgetResponse, plansResponse, positionsResponse, taxLotsResponse, washSaleResponse, performanceResponse, auditResponse, precheckResponse, monitoringResponse, healthResponse, validationResponse, alertsResponse, alertHistoryResponse, vixResponse] = await Promise.all([
         fetch(paperEndpoint("paper_portfolio", portfolioId), { headers: { Accept: "application/json" } }),
         fetch(state.config.endpoints.autonomy_settings, { headers: { Accept: "application/json" } }),
         fetch(paperEndpoint("paper_autonomy_status", portfolioId), { headers: { Accept: "application/json" } }),
+        fetch(state.config.endpoints.market_data_settings, { headers: { Accept: "application/json" } }),
         fetch(paperEndpoint("paper_budget", portfolioId), { headers: { Accept: "application/json" } }),
         fetch(`${paperEndpoint("paper_plans", portfolioId)}?status=all`, { headers: { Accept: "application/json" } }),
         fetch(`${paperEndpoint("paper_positions", portfolioId)}?status=Open`, { headers: { Accept: "application/json" } }),
@@ -3726,10 +3811,11 @@
           return {};
         }
       };
-      const [detail, autonomySettings, autonomyStatus, budget, plans, positions, taxLots, washSale, performance, audit, precheck, monitoring, health, validation, alerts, alertHistory, vixStatus] = await Promise.all([
+      const [detail, autonomySettings, autonomyStatus, marketDataSettings, budget, plans, positions, taxLots, washSale, performance, audit, precheck, monitoring, health, validation, alerts, alertHistory, vixStatus] = await Promise.all([
         parseJson(detailResponse),
         parseJson(autonomySettingsResponse),
         parseJson(autonomyStatusResponse),
+        parseJson(marketDataSettingsResponse),
         parseJson(budgetResponse),
         parseJson(plansResponse),
         parseJson(positionsResponse),
@@ -3765,6 +3851,11 @@
       } else {
         warnPanel("Autonomy status", autonomyStatusResponse, autonomyStatus);
         state.autonomyStatus = null;
+      }
+      if (marketDataSettingsResponse.ok) {
+        state.marketDataSettings = marketDataSettings;
+      } else {
+        warnPanel("Market data settings", marketDataSettingsResponse, marketDataSettings);
       }
       if (budgetResponse.ok) {
         state.paperBudget = budget;

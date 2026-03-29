@@ -14,6 +14,7 @@ from src.core.benchmarks import download_yahoo_price_history_csv
 from src.core.net import http_request
 from src.importers.adapters import ProviderError
 from src.investor.marketdata.config import BenchmarksConfig, load_marketdata_config
+from src.regime.ibkr_market_data import IBKRMarketDataProvider, apply_benchmark_provider_settings
 
 try:
     import pandas as pd
@@ -440,6 +441,7 @@ class BenchmarkDataClient:
         if (config.cache.type or "").strip().lower() != "sqlite":
             raise ProviderError(f"Unsupported benchmarks cache type: {config.cache.type}")
         self.cache = SQLiteCacheProvider(path=Path(config.cache.path))
+        self.ibkr = IBKRMarketDataProvider()
         self.stooq = StooqProvider()
         self.yahoo = YahooProvider(
             max_rps=config.yahoo.max_rps,
@@ -448,18 +450,25 @@ class BenchmarkDataClient:
         )
 
     def _providers_for_order(self) -> list[CandlesProvider]:
-        order = [str(x or "").strip().lower() for x in (self.config.provider_order or []) if str(x or "").strip()]
+        configured_order, enabled = apply_benchmark_provider_settings(self.config.provider_order)
+        order = [str(x or "").strip().lower() for x in configured_order if str(x or "").strip()]
         if not order:
-            order = ["cache", "stooq", "yahoo"]
+            order = ["cache", "ibkr", "stooq", "yahoo"]
         providers: list[CandlesProvider] = []
         for name in order:
             if name == "cache":
                 providers.append(self.cache)  # type: ignore[arg-type]
+            elif name == "ibkr":
+                saved_enabled = enabled.get("ibkr")
+                if saved_enabled is not False and self.ibkr.is_available():
+                    providers.append(self.ibkr)
             elif name == "stooq":
-                if self.config.stooq.enabled:
+                saved_enabled = enabled.get("stooq")
+                if self.config.stooq.enabled and saved_enabled is not False:
                     providers.append(self.stooq)
             elif name == "yahoo":
-                if self.config.yahoo.enabled:
+                saved_enabled = enabled.get("yahoo")
+                if (self.config.yahoo.enabled or saved_enabled is True) and saved_enabled is not False:
                     providers.append(self.yahoo)
         # Always keep cache first (authoritative).
         if providers and getattr(providers[0], "name", "") != "cache":

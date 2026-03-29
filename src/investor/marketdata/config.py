@@ -27,7 +27,7 @@ class BenchmarksStooqConfig(BaseModel):
 
 class BenchmarksConfig(BaseModel):
     # Cache-first: offline-first. Stooq is the default network provider.
-    provider_order: list[str] = Field(default_factory=lambda: ["cache", "stooq"])
+    provider_order: list[str] = Field(default_factory=lambda: ["cache", "ibkr", "stooq"])
     cache: BenchmarksCacheConfig = Field(default_factory=BenchmarksCacheConfig)
     yahoo: BenchmarksYahooConfig = Field(default_factory=BenchmarksYahooConfig)
     stooq: BenchmarksStooqConfig = Field(default_factory=BenchmarksStooqConfig)

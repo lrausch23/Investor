@@ -15,6 +15,7 @@ from src.db.models import PriceDaily
 from src.investor.marketdata.benchmarks import CANON_COLS, StooqProvider, _ranges_from_cached_dates  # type: ignore
 from src.investor.momentum.finnhub_prices import FinnhubDailyProvider
 from src.investor.momentum.utils import normalize_ticker
+from src.regime.ibkr_market_data import IBKRMarketDataProvider, apply_momentum_provider_settings
 
 
 def _today() -> dt.date:
@@ -163,6 +164,7 @@ class MarketDataService:
 
     def __init__(self, *, provider: str = "stooq"):
         self.store = PriceDailyStore()
+        self.ibkr = IBKRMarketDataProvider()
         self.stooq = StooqProvider()
         self.finnhub = FinnhubDailyProvider()
         self.provider = (provider or "stooq").strip().lower()
@@ -180,10 +182,16 @@ class MarketDataService:
         p = self.provider
         if p in {"cache", "local", "off", "none"}:
             return []
+        configured_order, enabled = apply_momentum_provider_settings()
+        filtered_configured = [name for name in configured_order if enabled.get(name, True)]
+        if p == "ibkr":
+            return ["ibkr", "stooq", "finnhub"]
         if p == "finnhub":
             return ["finnhub", "stooq"]
-        if p == "auto":
+        if p == "stooq":
             return ["stooq", "finnhub"]
+        if p == "auto":
+            return filtered_configured or ["ibkr", "stooq", "finnhub"]
         # default: stooq first, finnhub fallback
         return ["stooq", "finnhub"]
 
@@ -221,13 +229,16 @@ class MarketDataService:
         fetched_total = 0
         warning: str | None = None
         providers = self._provider_order()
-        if missing and network_enabled() and providers:
+        local_provider_requested = "ibkr" in providers
+        if missing and (network_enabled() or local_provider_requested) and providers:
             for r in missing:
                 seg_ok = False
                 seg_errs: list[str] = []
                 for name in providers:
                     try:
-                        if name == "stooq":
+                        if name == "ibkr":
+                            df = self.ibkr.fetch(symbol=t, start=r.start, end=r.end)
+                        elif name == "stooq":
                             df = self.stooq.fetch(symbol=t, start=r.start, end=r.end)
                         elif name == "finnhub":
                             df = self.finnhub.fetch(symbol=t, start=r.start, end=r.end)
@@ -244,7 +255,7 @@ class MarketDataService:
                 if not seg_ok and seg_errs:
                     warning = f"Price fetch failed for {t}: " + " | ".join(seg_errs[:2])
                     break
-        elif missing and not network_enabled():
+        elif missing and not network_enabled() and not local_provider_requested:
             warning = "Network disabled; using cached prices only."
         elif missing and not providers:
             warning = "Using cached prices only (provider=cache)."
@@ -285,7 +296,9 @@ class MarketDataService:
         if not ts:
             return {"total": 0, "fetched": 0, "skipped": 0, "warnings": []}
         if not network_enabled():
-            return {"total": n_total, "fetched": 0, "skipped": n_total, "warnings": ["Network disabled."]}
+            providers = self._provider_order()
+            if "ibkr" not in providers:
+                return {"total": n_total, "fetched": 0, "skipped": n_total, "warnings": ["Network disabled."]}
         providers = self._provider_order()
         if not providers:
             return {"total": n_total, "fetched": 0, "skipped": n_total, "warnings": ["Using cached prices only (provider=cache)."]}
@@ -305,7 +318,9 @@ class MarketDataService:
                 used_provider: str | None = None
                 for name in providers:
                     try:
-                        if name == "stooq":
+                        if name == "ibkr":
+                            df = self.ibkr.fetch(symbol=t, start=start, end=end)
+                        elif name == "stooq":
                             df = self.stooq.fetch(symbol=t, start=start, end=end)
                         elif name == "finnhub":
                             df = self.finnhub.fetch(symbol=t, start=start, end=end)
