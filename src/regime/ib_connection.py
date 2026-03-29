@@ -31,6 +31,9 @@ class IBConnectionBackend(Protocol):
     def get_order_status(self, order_id: int) -> IBOrderState: ...
     def get_positions(self) -> list[IBPosition]: ...
     def get_account_summary(self) -> IBAccountSummary: ...
+    def cancel_all_orders(self) -> list[dict[str, object]]: ...
+    def flatten_position(self, ticker: str, quantity: float, side: str = "long") -> dict[str, object]: ...
+    def flatten_all_positions(self) -> list[dict[str, object]]: ...
     def register_order_callback(self, callback: Callable[[IBOrderState], None]) -> None: ...
 
 
@@ -195,6 +198,49 @@ class MockIBBackend:
             available_funds=self._cash,
             unrealized_pnl=sum(float(position.unrealized_pnl) for position in self._positions.values()),
         )
+
+    def cancel_all_orders(self) -> list[dict[str, object]]:
+        cancelled: list[dict[str, object]] = []
+        for order_id, entry in list(self._orders.items()):
+            state = entry.get("state")
+            status = getattr(state, "status", None)
+            if status in {IBOrderStatus.FILLED, IBOrderStatus.CANCELLED, IBOrderStatus.API_CANCELLED, IBOrderStatus.INACTIVE}:
+                continue
+            self.cancel_order(int(order_id))
+            cancelled.append({"order_id": int(order_id), "status": "cancel_requested"})
+        return cancelled
+
+    def flatten_position(self, ticker: str, quantity: float, side: str = "long") -> dict[str, object]:
+        action = IBOrderAction.SELL if str(side).lower() == "long" else IBOrderAction.BUY
+        order = IBOrder(
+            order_id=self.next_order_id(),
+            contract_symbol=str(ticker).upper(),
+            action=action,
+            order_type=IBOrderType.MARKET,
+            quantity=abs(float(quantity)),
+        )
+        state = self.place_order(order)
+        return {
+            "ticker": str(ticker).upper(),
+            "action": action.value,
+            "quantity": abs(float(quantity)),
+            "order_id": int(state.order_id),
+            "status": str(state.status.value),
+        }
+
+    def flatten_all_positions(self) -> list[dict[str, object]]:
+        results: list[dict[str, object]] = []
+        for pos in self.get_positions():
+            if abs(float(pos.quantity)) < 0.01:
+                continue
+            results.append(
+                self.flatten_position(
+                    pos.contract_symbol,
+                    abs(float(pos.quantity)),
+                    "long" if float(pos.quantity) > 0 else "short",
+                )
+            )
+        return results
 
     def _fill_order(self, order: IBOrder, fill_qty: float, *, prior_filled: float = 0.0) -> IBOrderState:
         symbol = order.contract_symbol.upper()

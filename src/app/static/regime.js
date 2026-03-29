@@ -2518,6 +2518,13 @@
     const health = state.systemHealth || {};
     const backup = health.backup || {};
     const validation = state.dataValidation || {};
+    const model = health.model || {};
+    const heartbeatAge = Number(health.heartbeat_age_seconds || 0);
+    const heartbeatBadge = heartbeatAge <= 60
+      ? "ui-badge ui-badge--safe"
+      : heartbeatAge <= 300
+        ? "ui-badge ui-badge--warn"
+        : "ui-badge ui-badge--bad";
     const connectionText = connection.connected === true
       ? "Connected"
       : connection.connected === false
@@ -2528,6 +2535,7 @@
       badge.className = `ui-badge ${connection.connected === true || String(connection.market_hours || "").toLowerCase() === "regular" ? "ui-badge--safe" : "ui-badge--neutral"}`;
     }
     mount.innerHTML = `
+      ${health.status === "error" ? `<div class="ui-card" style="margin-bottom:12px; border-color:${COLORS.bear}; background:rgba(170,54,54,0.08)"><strong>System Error</strong><div class="ui-muted" style="margin-top:6px">Check system health. Out-of-band watchdog may trigger emergency liquidation.</div></div>` : ""}
       <div class="regime-monitor-grid">
         <div class="ui-card">
           <div class="ui-section-title">Account Overview</div>
@@ -2540,6 +2548,7 @@
           <div class="ui-muted" style="margin-top:6px">Pending orders ${escapeHtml(pendingOrders.length)} · Positions ${escapeHtml(positions.length)}</div>
           ${connection.next_open ? `<div class="ui-muted" style="margin-top:6px">Next open ${escapeHtml(connection.next_open)}</div>` : ""}
           ${Object.keys(readiness).length ? `<div class="ui-muted" style="margin-top:6px">Readiness ${escapeHtml(readiness.all_clear ? "all clear" : "check config")}</div>` : ""}
+          <div class="ui-muted" style="margin-top:6px">Emergency liquidation ${escapeHtml(connection.connected === true ? "available" : "offline")}</div>
         </div>
       </div>
       <div class="ui-card" style="margin-top:12px">
@@ -2557,6 +2566,9 @@
           </div>
         </div>
         <div class="ui-muted" style="margin-top:8px">DB ${escapeHtml((health.db || {}).integrity || "unknown")} · Watchdog ${escapeHtml((health.watchdog || {}).running ? "running" : "stopped")} · Active alerts ${escapeHtml(health.active_alerts || 0)} · Stuck orders ${escapeHtml(health.stuck_orders || 0)}</div>
+        <div class="ui-muted" style="margin-top:6px">Database size ${escapeHtml(formatFixed(Number(health.db_size_bytes || 0) / 1024 / 1024, 2))} MB · Model ${escapeHtml(model.active_version ? `ML Active v${model.active_version}` : "No model")}${model.last_trained_at ? ` · Trained ${escapeHtml(relativeTime(model.last_trained_at))}` : ""}</div>
+        <div class="ui-muted" style="margin-top:6px">Last regime check ${escapeHtml(relativeTime(health.last_regime_check) || "never")} · Last plan generation ${escapeHtml(relativeTime(health.last_paper_plans) || "never")} · Heartbeat <span class="${heartbeatBadge}">${escapeHtml(health.heartbeat ? relativeTime(health.heartbeat) : "missing")}</span></div>
+        <div class="ui-muted" style="margin-top:6px">Out-of-band watchdog: configure manually</div>
         ${Array.isArray((validation || {}).issues) && validation.issues.length ? `<div class="ui-muted" style="margin-top:8px">${escapeHtml(validation.issues.join(" | "))}</div>` : ""}
         <details style="margin-top:10px">
           <summary style="cursor:pointer; font-weight:600">Backups (${escapeHtml((backup.backup_count || 0))})</summary>

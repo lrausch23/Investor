@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime as dt
 from typing import Any
 
 from .alerts import (
@@ -24,6 +25,7 @@ from .persistence import (
     get_pending_transition_outcomes,
     get_paper_positions,
     list_paper_portfolios,
+    set_setting,
     save_daily_snapshot,
     update_transition_outcome,
 )
@@ -114,6 +116,7 @@ def run_scheduled_regime_checks(tickers: list[str] | None = None) -> dict[str, A
             )
         if payload and payload.get("severity") in {"warning", "critical"}:
             dispatch_notification(str(payload.get("alert_type")), str(payload.get("title")), str(payload.get("message") or ""), str(payload.get("severity") or "info"))
+    set_setting("last_regime_check_at", dt.datetime.now(dt.timezone.utc).isoformat())
     return {"alerts": all_alerts, "summary": format_alert_summary(all_alerts)}
 
 
@@ -136,6 +139,9 @@ def run_scheduled_discovery(
 
 
 def run_scheduled_paper_plans() -> dict[str, Any]:
+    now = dt.datetime.now(dt.timezone.utc)
+    set_setting("watchdog_heartbeat", now.isoformat())
+    set_setting("heartbeat_epoch", str(now.timestamp()))
     vix_status = check_vix_freeze()
     cached_payload = load_payload() or {}
     cached_rows = cached_payload.get("rows") if isinstance(cached_payload, dict) else []
@@ -204,10 +210,14 @@ def run_scheduled_paper_plans() -> dict[str, Any]:
                 "auto_execution": exec_result,
             }
         )
+    set_setting("last_paper_plans_at", dt.datetime.now(dt.timezone.utc).isoformat())
     return {"portfolios": results, "cached_regime_count": len(cached_regime), "vix_status": vix_status, "validation": validation}
 
 
 def run_end_of_day_processing() -> dict[str, Any]:
+    now = dt.datetime.now(dt.timezone.utc)
+    set_setting("watchdog_heartbeat", now.isoformat())
+    set_setting("heartbeat_epoch", str(now.timestamp()))
     snapshots: list[dict[str, Any]] = []
     outcomes: list[dict[str, Any]] = []
     for portfolio in list_paper_portfolios(include_closed=False):

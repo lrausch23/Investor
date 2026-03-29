@@ -5055,6 +5055,8 @@ def regime_health(
         raise HTTPException(status_code=503, detail=runtime_error or "Regime analytics are unavailable.")
     from src.regime.backup import get_backup_status
     from src.regime.data_validator import check_database_health
+    from src.regime.meta_labeler import list_saved_versions
+    from src.regime.persistence import DB_PATH
     from src.regime.recovery import detect_stuck_orders
     from src.regime.watchdog import get_watchdog
 
@@ -5069,6 +5071,44 @@ def regime_health(
             ibkr = {"all_clear": False, "error": str(exc)}
     active_alerts = len(runtime["get_alerts"](unacknowledged_only=True, limit=100))
     stuck_orders = detect_stuck_orders()
+    db_size_bytes = os.path.getsize(str(DB_PATH)) if os.path.exists(str(DB_PATH)) else 0
+    heartbeat = runtime["get_setting"]("watchdog_heartbeat")
+    heartbeat_epoch_raw = runtime["get_setting"]("heartbeat_epoch")
+    heartbeat_epoch = None
+    heartbeat_age_seconds = None
+    try:
+        if heartbeat_epoch_raw not in (None, ""):
+            heartbeat_epoch = float(heartbeat_epoch_raw)
+            heartbeat_age_seconds = max(0.0, time.time() - heartbeat_epoch)
+    except Exception:
+        heartbeat_epoch = None
+    if heartbeat_age_seconds is None and heartbeat:
+        try:
+            heartbeat_dt = dt.datetime.fromisoformat(str(heartbeat).replace("Z", "+00:00"))
+            heartbeat_epoch = heartbeat_dt.timestamp()
+            heartbeat_age_seconds = max(0.0, (dt.datetime.now(dt.timezone.utc) - heartbeat_dt).total_seconds())
+        except Exception:
+            heartbeat_age_seconds = None
+
+    active_version = runtime["get_setting"]("meta_labeler_active_version")
+    last_trained_at = runtime["get_setting"]("meta_labeler_last_trained_at")
+    model_age_seconds = None
+    try:
+        active_version_int = int(active_version) if active_version not in (None, "") else None
+    except Exception:
+        active_version_int = None
+    if active_version_int is not None:
+        version_rows = list_saved_versions()
+        active_row = next((row for row in version_rows if int(row.get("version") or 0) == active_version_int), None)
+        if active_row and active_row.get("modified_at"):
+            try:
+                modified_dt = dt.datetime.fromisoformat(str(active_row["modified_at"]).replace("Z", "+00:00"))
+                model_age_seconds = max(0.0, (dt.datetime.now(dt.timezone.utc) - modified_dt).total_seconds())
+                if not last_trained_at:
+                    last_trained_at = active_row["modified_at"]
+            except Exception:
+                model_age_seconds = None
+
     status = "ok"
     if not db.get("healthy", True) or stuck_orders:
         status = "degraded"
@@ -5084,6 +5124,17 @@ def regime_health(
                 "watchdog": watchdog.get_status() if watchdog else {"running": False},
                 "last_analysis": runtime["get_setting"]("last_analysis_at"),
                 "last_backup": backup.get("last_backup_at"),
+                "db_size_bytes": db_size_bytes,
+                "model": {
+                    "active_version": active_version,
+                    "last_trained_at": last_trained_at,
+                    "age_seconds": model_age_seconds,
+                },
+                "last_regime_check": runtime["get_setting"]("last_regime_check_at"),
+                "last_paper_plans": runtime["get_setting"]("last_paper_plans_at"),
+                "heartbeat": heartbeat,
+                "heartbeat_epoch": heartbeat_epoch,
+                "heartbeat_age_seconds": heartbeat_age_seconds,
                 "backup": backup,
                 "active_alerts": active_alerts,
                 "stuck_orders": len(stuck_orders),

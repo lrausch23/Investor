@@ -39,6 +39,7 @@ from src.app.routes.api_rj import router as api_rj_router
 from src.app.routes.api_native import router as api_native_router
 from src.app.auth import auth_status_label
 from src.db.init_db import init_db
+from src.regime.logging_config import setup_regime_logging
 from src.utils.money import format_usd
 from src.utils.time import format_local, format_local_date
 
@@ -49,6 +50,7 @@ templates.env.filters["local_date"] = format_local_date
 templates.env.filters["usd"] = format_usd
 templates.env.globals["auth_status_label"] = auth_status_label
 logger = logging.getLogger(__name__)
+setup_regime_logging()
 
 
 def create_app() -> FastAPI:

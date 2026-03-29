@@ -171,6 +171,60 @@ class LiveIBBackend(IBConnectionBackend):
 
         return get_ib_thread().run(_summary)
 
+    def cancel_all_orders(self) -> list[dict[str, Any]]:
+        if self._ib is None:
+            raise RuntimeError("IBKR backend is not connected.")
+
+        def _cancel_all() -> list[dict[str, Any]]:
+            cancelled: list[dict[str, Any]] = []
+            for order in list(self._ib.openOrders() or []):
+                self._ib.cancelOrder(order)
+                cancelled.append({"order_id": int(getattr(order, "orderId", 0) or 0), "status": "cancel_requested"})
+            return cancelled
+
+        return get_ib_thread().run(_cancel_all, timeout=15)
+
+    def flatten_position(self, ticker: str, quantity: float, side: str = "long") -> dict[str, Any]:
+        if self._ib is None:
+            raise RuntimeError("IBKR backend is not connected.")
+
+        def _flatten() -> dict[str, Any]:
+            from ib_insync import Contract, MarketOrder
+
+            action = "SELL" if str(side).lower() == "long" else "BUY"
+            contract = Contract(symbol=str(ticker).upper(), secType="STK", exchange="SMART", currency="USD")
+            order = MarketOrder(action, abs(float(quantity)))
+            trade = self._ib.placeOrder(contract, order)
+            order_id = int(getattr(trade.order, "orderId", 0) or 0)
+            self._order_map[order_id] = trade
+            return {
+                "ticker": str(ticker).upper(),
+                "action": action,
+                "quantity": abs(float(quantity)),
+                "order_id": order_id,
+                "status": "submitted",
+            }
+
+        return get_ib_thread().run(_flatten, timeout=15)
+
+    def flatten_all_positions(self) -> list[dict[str, Any]]:
+        results: list[dict[str, Any]] = []
+        for pos in self.get_positions():
+            if abs(float(pos.quantity)) < 0.01:
+                continue
+            ticker = getattr(pos, "ticker", None) or getattr(pos, "contract_symbol", "")
+            try:
+                results.append(
+                    self.flatten_position(
+                        str(ticker),
+                        abs(float(pos.quantity)),
+                        "long" if float(pos.quantity) > 0 else "short",
+                    )
+                )
+            except Exception as exc:
+                results.append({"ticker": str(ticker), "status": "failed", "error": str(exc)})
+        return results
+
     def register_order_callback(self, callback: Callable[[IBOrderState], None]) -> None:
         self._callbacks.append(callback)
 
