@@ -44,6 +44,8 @@
     paperPositions: [],
     paperPerformance: null,
     paperAttribution: null,
+    autonomySettings: null,
+    autonomyStatus: null,
     paperAudit: [],
     paperAuditSummary: null,
     paperMonitoring: null,
@@ -2727,6 +2729,7 @@
     if (!mount) return;
     const plans = Array.isArray(state.paperPlans) ? state.paperPlans : [];
     const approvedCount = plans.filter((plan) => String(plan.status || "") === "Approved").length;
+    const autonomyMode = String((state.autonomySettings || {}).operating_mode || "manual");
     const portfolio = currentPaperPortfolio();
     const portfolioStatus = String((portfolio && portfolio.status) || "Active");
     const paused = portfolioStatus === "Paused";
@@ -2744,6 +2747,7 @@
           </div>
           <div style="display:flex; gap:8px; flex-wrap:wrap">
             <button class="btn btn--secondary" type="button" id="regimePaperGenerate" ${paused || closed ? "disabled" : ""}>Generate Plans</button>
+            ${autonomyMode !== "manual" ? `<button class="btn btn--secondary" type="button" id="regimePaperAutoApprove" ${paused || closed ? "disabled" : ""}>Run Auto-Approve</button>` : ""}
             <button class="btn btn--secondary" type="button" id="regimePaperApproveAll" ${paused || closed ? "disabled" : ""}>Approve All</button>
             <button class="btn btn--secondary" type="button" id="regimePaperRejectAll">Reject All</button>
             <button class="btn btn--primary" type="button" id="regimePaperExecute" ${approvedCount && !paused && !closed ? "" : "disabled"}>Execute Approved (${approvedCount})</button>
@@ -2755,13 +2759,14 @@
               <div class="table-toolbar">
                 <div>
                   <div style="font-weight:600">${escapeHtml(plan.ticker || "")} <span class="${plan.action === "Buy" ? "cell-ok" : "cell-bad"}" style="margin-left:6px">${escapeHtml(String(plan.action || "").toUpperCase())}</span></div>
-                  <div class="ui-muted">${escapeHtml(plan.status || "Pending")} · ${escapeHtml(plan.source || "manual")} · Qty ${escapeHtml(plan.quantity || 0)} @ ${escapeHtml(formatCurrency(plan.proposed_price, 2))}${plan.broker_status ? ` · Broker ${escapeHtml(plan.broker_status)}` : ""}</div>
+                  <div class="ui-muted">${escapeHtml(plan.status || "Pending")}${String(plan.notes || "").includes("Auto-approved") ? ' · <span class="ui-badge ui-badge--neutral">Auto</span>' : ""} · ${escapeHtml(plan.source || "manual")} · Qty ${escapeHtml(plan.quantity || 0)} @ ${escapeHtml(formatCurrency(plan.proposed_price, 2))}${plan.broker_status ? ` · Broker ${escapeHtml(plan.broker_status)}` : ""}</div>
                 </div>
                 <div style="min-width:110px">${plan.crowd_score != null ? renderCrowdScore(plan.crowd_score) : ""}</div>
               </div>
               <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:6px">
                 ${renderGuardrailBadge(plan)}
                 ${plan.regime_label ? `<span class="${badgeClass(plan.regime_label)}">${escapeHtml(plan.regime_label)} ${plan.regime_probability != null ? `· ${(Number(plan.regime_probability) * 100).toFixed(0)}%` : ""}</span>` : ""}
+                ${plan.meta_labeler_score == null ? `<span class="ui-badge ui-badge--neutral">ML N/A</span>` : `<span class="${Number(plan.meta_labeler_score) >= 0.65 ? "ui-badge ui-badge--safe" : Number(plan.meta_labeler_score) >= 0.30 ? "ui-badge ui-badge--warn" : "ui-badge ui-badge--bad"}">ML ${(Number(plan.meta_labeler_score) * 100).toFixed(0)}%</span>`}
               </div>
               <div class="ui-muted" style="margin-top:6px">${escapeHtml(plan.rationale || "")}</div>
               ${plan.execution_result ? `<div class="ui-muted" style="margin-top:6px">${escapeHtml(plan.execution_result)}</div>` : ""}
@@ -2777,6 +2782,8 @@
     `;
     const generateBtn = byId("regimePaperGenerate");
     if (generateBtn) generateBtn.addEventListener("click", generatePaperPlans);
+    const autoApproveBtn = byId("regimePaperAutoApprove");
+    if (autoApproveBtn) autoApproveBtn.addEventListener("click", runAutoApprove);
     const approveAllBtn = byId("regimePaperApproveAll");
     if (approveAllBtn) approveAllBtn.addEventListener("click", async () => {
       for (const plan of plans) {
@@ -3012,6 +3019,10 @@
     const currentStatus = String((current && current.status) || "Active");
     const brokerType = String((current && current.broker_type) || "paper").toLowerCase();
     const brokerStatus = state.paperPortfolioDetail && state.paperPortfolioDetail.broker_status ? state.paperPortfolioDetail.broker_status : null;
+    const autonomy = state.autonomySettings || { operating_mode: "manual", auto_approve_threshold: 0.65, daily_capital_ceiling_pct: 0.25 };
+    const autonomyStatus = state.autonomyStatus || null;
+    const mode = String(autonomy.operating_mode || "manual");
+    const modeBadge = mode === "autonomous" ? "ui-badge ui-badge--safe" : mode === "semi_auto" ? "ui-badge ui-badge--warn" : "ui-badge ui-badge--neutral";
     mount.innerHTML = `
       <div class="ui-card" style="padding:12px">
         <div class="table-toolbar">
@@ -3045,6 +3056,37 @@
             </select>
             <button class="btn btn--secondary" type="submit">Create</button>
           </form>
+          ${current ? `
+            <div style="border:1px solid ${COLORS.border}; border-radius:10px; padding:10px">
+              <div class="table-toolbar">
+                <div>
+                  <div style="font-weight:600">Autonomy</div>
+                  <div class="ui-muted">Manual, semi-auto, and autonomous approval gates.</div>
+                </div>
+                <span class="${modeBadge}">${escapeHtml(mode)}</span>
+              </div>
+              <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:10px">
+                <button class="btn btn--secondary" type="button" data-autonomy-mode="manual">Manual</button>
+                <button class="btn btn--secondary" type="button" data-autonomy-mode="semi_auto">Semi-Auto</button>
+                <button class="btn btn--secondary" type="button" data-autonomy-mode="autonomous">Autonomous</button>
+              </div>
+              <details style="margin-top:10px">
+                <summary style="cursor:pointer; font-weight:600">Autonomy Settings</summary>
+                <div style="display:grid; grid-template-columns:1fr 1fr auto; gap:8px; margin-top:10px">
+                  <label>
+                    Auto-approve when ML confidence ≥
+                    <input id="regimeAutonomyThreshold" type="number" min="0" max="1" step="0.05" value="${escapeHtml(autonomy.auto_approve_threshold ?? 0.65)}" ${mode !== "semi_auto" ? "disabled" : ""} />
+                  </label>
+                  <label>
+                    Max daily deployment
+                    <input id="regimeAutonomyCeiling" type="number" min="0" max="100" step="5" value="${escapeHtml((Number(autonomy.daily_capital_ceiling_pct ?? 0.25) * 100).toFixed(0))}" />
+                  </label>
+                  <button class="btn btn--secondary" type="button" id="regimeAutonomySave" style="align-self:end">Save</button>
+                </div>
+              </details>
+              ${autonomyStatus ? `<div class="ui-muted" style="margin-top:10px">Capital deployed today ${escapeHtml(formatCurrency(autonomyStatus.capital_deployed_today, 0))} / ${escapeHtml(formatCurrency(autonomyStatus.max_daily_capital, 0))} · Trades ${escapeHtml(autonomyStatus.trades_today || 0)} · Auto-approved ${escapeHtml(autonomyStatus.auto_approved_today || 0)} · Guardrail blocks ${escapeHtml(autonomyStatus.guardrail_blocks_today || 0)}</div>` : ""}
+            </div>
+          ` : ""}
         </div>
       </div>
     `;
@@ -3118,6 +3160,30 @@
         }
       });
     }
+    mount.querySelectorAll("[data-autonomy-mode]").forEach((button) => {
+      button.addEventListener("click", async () => {
+        const nextMode = String(button.getAttribute("data-autonomy-mode") || "manual");
+        if (nextMode === mode) return;
+        const detail = nextMode === "autonomous"
+          ? "auto-approved and executed"
+          : nextMode === "semi_auto"
+            ? "auto-approved"
+            : "left for manual review";
+        if (!window.confirm(`Are you sure? In ${nextMode} mode, trades meeting criteria will be ${detail} without manual review.`)) return;
+        await saveAutonomySettings({ operating_mode: nextMode });
+      });
+    });
+    const autonomySave = byId("regimeAutonomySave");
+    if (autonomySave) {
+      autonomySave.addEventListener("click", async () => {
+        const thresholdInput = byId("regimeAutonomyThreshold");
+        const ceilingInput = byId("regimeAutonomyCeiling");
+        await saveAutonomySettings({
+          auto_approve_threshold: thresholdInput ? Number(thresholdInput.value || autonomy.auto_approve_threshold || 0.65) : autonomy.auto_approve_threshold,
+          daily_capital_ceiling_pct: ceilingInput ? Number(ceilingInput.value || 25) / 100 : autonomy.daily_capital_ceiling_pct,
+        });
+      });
+    }
   }
 
   async function loadPaperPortfolios(preferredId = null) {
@@ -3145,6 +3211,7 @@
     }
     if (!portfolioId) {
       state.paperPortfolioDetail = null;
+      state.autonomyStatus = null;
       state.paperBudget = null;
       state.paperPlans = [];
       state.paperPositions = [];
@@ -3164,8 +3231,10 @@
       return;
     }
     try {
-      const [detailResponse, budgetResponse, plansResponse, positionsResponse, performanceResponse, auditResponse, precheckResponse, monitoringResponse] = await Promise.all([
+      const [detailResponse, autonomySettingsResponse, autonomyStatusResponse, budgetResponse, plansResponse, positionsResponse, performanceResponse, auditResponse, precheckResponse, monitoringResponse] = await Promise.all([
         fetch(paperEndpoint("paper_portfolio", portfolioId), { headers: { Accept: "application/json" } }),
+        fetch(state.config.endpoints.autonomy_settings, { headers: { Accept: "application/json" } }),
+        fetch(paperEndpoint("paper_autonomy_status", portfolioId), { headers: { Accept: "application/json" } }),
         fetch(paperEndpoint("paper_budget", portfolioId), { headers: { Accept: "application/json" } }),
         fetch(`${paperEndpoint("paper_plans", portfolioId)}?status=all`, { headers: { Accept: "application/json" } }),
         fetch(`${paperEndpoint("paper_positions", portfolioId)}?status=Open`, { headers: { Accept: "application/json" } }),
@@ -3181,8 +3250,10 @@
           return {};
         }
       };
-      const [detail, budget, plans, positions, performance, audit, precheck, monitoring] = await Promise.all([
+      const [detail, autonomySettings, autonomyStatus, budget, plans, positions, performance, audit, precheck, monitoring] = await Promise.all([
         parseJson(detailResponse),
+        parseJson(autonomySettingsResponse),
+        parseJson(autonomyStatusResponse),
         parseJson(budgetResponse),
         parseJson(plansResponse),
         parseJson(positionsResponse),
@@ -3197,6 +3268,17 @@
       };
       if (!detailResponse.ok) throw new Error(detail.detail || `Portfolio failed (${detailResponse.status})`);
       state.paperPortfolioDetail = detail;
+      if (autonomySettingsResponse.ok) {
+        state.autonomySettings = autonomySettings;
+      } else {
+        warnPanel("Autonomy settings", autonomySettingsResponse, autonomySettings);
+      }
+      if (autonomyStatusResponse.ok) {
+        state.autonomyStatus = autonomyStatus;
+      } else {
+        warnPanel("Autonomy status", autonomyStatusResponse, autonomyStatus);
+        state.autonomyStatus = null;
+      }
       if (budgetResponse.ok) {
         state.paperBudget = budget;
       } else {
@@ -3247,6 +3329,7 @@
         warnPanel("Precheck", precheckResponse, precheck);
         state.paperPrecheck = {};
       }
+      renderPaperPortfolioSection();
       renderPaperBudget();
       renderPaperPlans();
       renderPaperPositions();
@@ -3314,6 +3397,42 @@
       await refreshPaperPortfolio();
     } catch (error) {
       showToast(`Unable to generate plans: ${error.message || error}`, "error");
+    }
+  }
+
+  async function saveAutonomySettings(payload) {
+    if (!state.config || !state.config.endpoints || !state.config.endpoints.autonomy_settings) return;
+    try {
+      const response = await fetch(state.config.endpoints.autonomy_settings, {
+        method: "PUT",
+        headers: { Accept: "application/json", "Content-Type": "application/json" },
+        body: JSON.stringify(payload || {}),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail || data.error || `Autonomy settings failed (${response.status})`);
+      state.autonomySettings = data;
+      showToast("Autonomy settings saved.", "success");
+      renderPaperPortfolioSection();
+      await refreshPaperPortfolio();
+    } catch (error) {
+      showToast(`Unable to save autonomy settings: ${error.message || error}`, "error");
+    }
+  }
+
+  async function runAutoApprove() {
+    const portfolioId = currentPaperPortfolioId();
+    if (!portfolioId) return;
+    try {
+      const response = await fetch(paperEndpoint("paper_auto_approve", portfolioId), {
+        method: "POST",
+        headers: { Accept: "application/json" },
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.detail || payload.error || `Auto-approve failed (${response.status})`);
+      showToast(`Auto-approved ${Number(payload.approved || 0)} plan(s).`);
+      await refreshPaperPortfolio();
+    } catch (error) {
+      showToast(`Unable to run auto-approve: ${error.message || error}`, "error");
     }
   }
 

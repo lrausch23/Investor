@@ -182,6 +182,9 @@ def _load_hmm_runtime() -> tuple[dict[str, Any] | None, str | None]:
             get_trade_plans,
             count_todays_trades,
             delete_setting,
+            get_auto_approve_threshold,
+            get_daily_capital_ceiling_pct,
+            get_daily_capital_deployed,
             get_supply_chain,
             get_theme,
             get_theme_tickers,
@@ -208,6 +211,9 @@ def _load_hmm_runtime() -> tuple[dict[str, Any] | None, str | None]:
             save_regime_event,
             save_sentiment,
             save_signal_snapshot,
+            set_auto_approve_threshold,
+            set_daily_capital_ceiling_pct,
+            set_operating_mode,
             set_setting,
             update_paper_portfolio,
             update_theme,
@@ -219,6 +225,8 @@ def _load_hmm_runtime() -> tuple[dict[str, Any] | None, str | None]:
             update_signal_outcome,
             upsert_watchlist_candidate,
             upsert_thesis,
+            get_operating_mode,
+            OPERATING_MODES,
         )
         from src.regime.discovery import (
             check_entry_signals,
@@ -257,6 +265,8 @@ def _load_hmm_runtime() -> tuple[dict[str, Any] | None, str | None]:
         from src.regime.alerts import format_alert_summary
         from src.regime.paper_trading import (
             allocate_budget,
+            auto_approve_plans,
+            auto_execute_approved,
             compute_benchmark_comparison,
             compute_daily_snapshot,
             compute_paper_performance,
@@ -356,6 +366,14 @@ def _load_hmm_runtime() -> tuple[dict[str, Any] | None, str | None]:
         "set_setting": set_setting,
         "get_all_settings": get_all_settings,
         "delete_setting": delete_setting,
+        "get_operating_mode": get_operating_mode,
+        "set_operating_mode": set_operating_mode,
+        "get_auto_approve_threshold": get_auto_approve_threshold,
+        "set_auto_approve_threshold": set_auto_approve_threshold,
+        "get_daily_capital_ceiling_pct": get_daily_capital_ceiling_pct,
+        "set_daily_capital_ceiling_pct": set_daily_capital_ceiling_pct,
+        "get_daily_capital_deployed": get_daily_capital_deployed,
+        "OPERATING_MODES": OPERATING_MODES,
         "get_daily_audit_summary": get_daily_audit_summary,
         "get_daily_snapshots": get_daily_snapshots,
         "get_performance_timeseries": get_performance_timeseries,
@@ -404,6 +422,8 @@ def _load_hmm_runtime() -> tuple[dict[str, Any] | None, str | None]:
         "get_investor_db_path": get_investor_db_path,
         "get_latest_prices": get_latest_prices,
         "allocate_budget": allocate_budget,
+        "auto_approve_plans": auto_approve_plans,
+        "auto_execute_approved": auto_execute_approved,
         "generate_buy_plans": generate_buy_plans,
         "generate_exit_plans": generate_exit_plans,
         "generate_holdings_plans": generate_holdings_plans,
@@ -2827,6 +2847,8 @@ def _build_shell_context(
             "paper_execute": "/regime/paper-portfolio/__PORTFOLIO_ID__/plans/execute",
             "paper_pending_orders": "/regime/paper-portfolio/__PORTFOLIO_ID__/orders/pending",
             "paper_cancel_order": "/regime/paper-portfolio/__PORTFOLIO_ID__/orders/__PLAN_ID__/cancel",
+            "paper_auto_approve": "/regime/paper-portfolio/__PORTFOLIO_ID__/auto-approve",
+            "paper_autonomy_status": "/regime/paper-portfolio/__PORTFOLIO_ID__/autonomy/status",
             "paper_kill_switch": "/regime/paper-portfolio/__PORTFOLIO_ID__/kill-switch",
             "paper_performance": "/regime/paper-portfolio/__PORTFOLIO_ID__/performance",
             "paper_attribution_summary": "/regime/paper-portfolio/__PORTFOLIO_ID__/attribution/summary",
@@ -2836,6 +2858,7 @@ def _build_shell_context(
             "ibkr_test_connection": "/regime/ibkr/test-connection",
             "frontier_models": "/regime/frontier/models",
             "frontier_settings": "/regime/frontier/settings",
+            "autonomy_settings": "/regime/autonomy/settings",
         },
         "initial_payload": payload,
         "portfolio_scopes": get_available_portfolio_scopes(session) if session is not None else [],
@@ -3814,6 +3837,61 @@ def regime_discovery_status(
     return JSONResponse(content=payload)
 
 
+@router.get("/autonomy/settings")
+def regime_autonomy_settings(
+    session: Session = Depends(db_session),
+    actor: str = Depends(require_actor),
+):
+    del session, actor
+    runtime, runtime_error = _load_hmm_runtime()
+    if runtime is None:
+        raise HTTPException(status_code=503, detail=runtime_error or "Regime analytics are unavailable.")
+    return JSONResponse(
+        content={
+            "operating_mode": runtime["get_operating_mode"](),
+            "auto_approve_threshold": runtime["get_auto_approve_threshold"](),
+            "daily_capital_ceiling_pct": runtime["get_daily_capital_ceiling_pct"](),
+            "operating_modes": list(runtime["OPERATING_MODES"]),
+        }
+    )
+
+
+@router.put("/autonomy/settings")
+async def regime_autonomy_settings_update(
+    request: Request,
+    session: Session = Depends(db_session),
+    actor: str = Depends(require_actor),
+):
+    del session, actor
+    runtime, runtime_error = _load_hmm_runtime()
+    if runtime is None:
+        raise HTTPException(status_code=503, detail=runtime_error or "Regime analytics are unavailable.")
+    body = await request.json()
+    if "operating_mode" in body:
+        mode = str(body["operating_mode"] or "").strip().lower()
+        if mode not in runtime["OPERATING_MODES"]:
+            raise HTTPException(status_code=422, detail=f"Invalid mode. Must be one of: {', '.join(runtime['OPERATING_MODES'])}")
+        runtime["set_operating_mode"](mode)
+    if "auto_approve_threshold" in body:
+        try:
+            runtime["set_auto_approve_threshold"](float(body["auto_approve_threshold"]))
+        except (ValueError, TypeError) as exc:
+            raise HTTPException(status_code=422, detail="Threshold must be a number between 0 and 1.") from exc
+    if "daily_capital_ceiling_pct" in body:
+        try:
+            runtime["set_daily_capital_ceiling_pct"](float(body["daily_capital_ceiling_pct"]))
+        except (ValueError, TypeError) as exc:
+            raise HTTPException(status_code=422, detail="Ceiling must be a number between 0 and 1.") from exc
+    return JSONResponse(
+        content={
+            "operating_mode": runtime["get_operating_mode"](),
+            "auto_approve_threshold": runtime["get_auto_approve_threshold"](),
+            "daily_capital_ceiling_pct": runtime["get_daily_capital_ceiling_pct"](),
+            "operating_modes": list(runtime["OPERATING_MODES"]),
+        }
+    )
+
+
 @router.get("/watchlist")
 def regime_watchlist(
     theme_id: str = "",
@@ -4499,6 +4577,59 @@ async def regime_paper_kill_switch(
     if payload is None:
         raise HTTPException(status_code=404, detail="Paper portfolio not found.")
     return JSONResponse(content=_json_ready(payload))
+
+
+@router.post("/paper-portfolio/{portfolio_id}/auto-approve")
+def regime_paper_auto_approve(
+    portfolio_id: int,
+    session: Session = Depends(db_session),
+    actor: str = Depends(require_actor),
+):
+    del session, actor
+    runtime, runtime_error = _load_hmm_runtime()
+    if runtime is None:
+        raise HTTPException(status_code=503, detail=runtime_error or "Regime analytics are unavailable.")
+    _require_paper_portfolio(runtime, portfolio_id)
+    result = runtime["auto_approve_plans"](portfolio_id)
+    return JSONResponse(content=_json_ready(result))
+
+
+@router.get("/paper-portfolio/{portfolio_id}/autonomy/status")
+def regime_paper_autonomy_status(
+    portfolio_id: int,
+    session: Session = Depends(db_session),
+    actor: str = Depends(require_actor),
+):
+    del session, actor
+    runtime, runtime_error = _load_hmm_runtime()
+    if runtime is None:
+        raise HTTPException(status_code=503, detail=runtime_error or "Regime analytics are unavailable.")
+    portfolio = _require_paper_portfolio(runtime, portfolio_id)
+    summary = runtime["get_paper_portfolio_summary"](portfolio_id)
+    daily_summary = runtime["get_daily_audit_summary"](portfolio_id)
+    capital_deployed = runtime["get_daily_capital_deployed"](portfolio_id)
+    ceiling_pct = runtime["get_daily_capital_ceiling_pct"]()
+    equity = float(summary.get("total_equity") or 0.0)
+    if equity <= 0:
+        equity = float(summary.get("current_cash") or 0.0) + float(summary.get("total_market_value") or 0.0)
+    if equity <= 0:
+        equity = float(summary.get("current_value") or portfolio.get("starting_budget") or 0.0)
+    max_daily_capital = equity * ceiling_pct
+    return JSONResponse(
+        content=_json_ready(
+            {
+                "operating_mode": runtime["get_operating_mode"](),
+                "auto_approve_threshold": runtime["get_auto_approve_threshold"](),
+                "daily_capital_ceiling_pct": ceiling_pct,
+                "max_daily_capital": max_daily_capital,
+                "capital_deployed_today": capital_deployed,
+                "capital_remaining": max(0.0, max_daily_capital - capital_deployed),
+                "trades_today": int(daily_summary.get("trades_today") or 0),
+                "auto_approved_today": int((daily_summary.get("counts") or {}).get("auto_approved", 0)),
+                "guardrail_blocks_today": int(daily_summary.get("guardrail_blocks") or 0),
+            }
+        )
+    )
 
 
 @router.get("/paper-portfolio/{portfolio_id}/performance")

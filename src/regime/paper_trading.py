@@ -4,13 +4,14 @@ import datetime as dt
 import json
 import logging
 import math
+import uuid
 from dataclasses import asdict
 from typing import Any
 
 import pandas as pd
 import yfinance as yf
 
-from .broker_adapter import BrokerAdapter, OrderRequest, PaperBrokerAdapter, submit_guarded_order
+from .broker_adapter import BrokerAdapter, OrderRequest, PaperBrokerAdapter, submit_guarded_order, validate_guardrails
 from .config import (
     DEFAULT_PAPER_TRADING_CONFIG,
     DEFAULT_RISK_GUARDRAILS,
@@ -22,7 +23,11 @@ from .persistence import (
     close_paper_position,
     count_todays_trades,
     create_trade_plan,
+    get_auto_approve_threshold,
+    get_daily_capital_ceiling_pct,
+    get_daily_capital_deployed,
     get_daily_snapshots,
+    get_operating_mode,
     get_performance_timeseries,
     get_paper_portfolio,
     get_paper_portfolio_summary,
@@ -35,6 +40,9 @@ from .persistence import (
     list_themes,
     open_paper_position,
     save_daily_snapshot,
+    set_auto_approve_threshold,
+    set_daily_capital_ceiling_pct,
+    set_operating_mode,
     update_paper_portfolio,
     update_trade_plan_status,
 )
@@ -294,6 +302,7 @@ def generate_buy_plans(
                 regime_probability=float(item.get("regime_probability") or 0.0) if item.get("regime_probability") is not None else None,
                 crowd_score=int(item.get("crowd_score")) if item.get("crowd_score") is not None else None,
                 source="discovery",
+                meta_labeler_score=float(item.get("meta_labeler_probability")) if item.get("meta_labeler_probability") is not None else None,
             )
         )
     return created
@@ -385,6 +394,7 @@ def generate_holdings_plans(
                 regime_label=str(row.get("regime") or ""),
                 regime_probability=float(row.get("probability") or 0.0) if row.get("probability") is not None else None,
                 source="holdings",
+                meta_labeler_score=float(ml_prob) if ml_prob is not None else None,
             )
         )
         pending_buy_keys.add(key)
@@ -483,6 +493,141 @@ def generate_daily_plans(
 def execute_approved_plans(portfolio_id: int) -> dict[str, Any]:
     adapter = PaperBrokerAdapter(portfolio_id)
     return execute_approved_plans_via_adapter(portfolio_id, adapter)
+
+
+def auto_approve_plans(portfolio_id: int) -> dict[str, Any]:
+    mode = get_operating_mode()
+    if mode == "manual":
+        return {
+            "mode": mode,
+            "threshold": get_auto_approve_threshold(),
+            "ceiling_pct": get_daily_capital_ceiling_pct(),
+            "max_daily_capital": 0.0,
+            "capital_deployed_before": 0.0,
+            "capital_deployed_after": 0.0,
+            "approved": 0,
+            "skipped": 0,
+            "blocked": 0,
+            "details": [],
+        }
+    portfolio = get_paper_portfolio(portfolio_id)
+    if portfolio is None:
+        return {
+            "mode": mode,
+            "threshold": get_auto_approve_threshold(),
+            "ceiling_pct": get_daily_capital_ceiling_pct(),
+            "max_daily_capital": 0.0,
+            "capital_deployed_before": 0.0,
+            "capital_deployed_after": 0.0,
+            "approved": 0,
+            "skipped": 0,
+            "blocked": 0,
+            "details": [],
+        }
+    pending = get_trade_plans(portfolio_id, status="Pending")
+    threshold = get_auto_approve_threshold()
+    ceiling_pct = get_daily_capital_ceiling_pct()
+    summary = get_paper_portfolio_summary(portfolio_id)
+    equity = float(summary.get("total_equity") or 0.0)
+    if equity <= 0:
+        equity = float(summary.get("current_cash") or 0.0) + float(summary.get("total_market_value") or 0.0)
+    if equity <= 0:
+        equity = float(summary.get("current_value") or portfolio.get("starting_budget") or 0.0)
+    max_daily_capital = equity * ceiling_pct
+    deployed_before = get_daily_capital_deployed(portfolio_id)
+    deployed = deployed_before
+    adapter = PaperBrokerAdapter(portfolio_id)
+    approved = 0
+    skipped = 0
+    blocked = 0
+    details: list[dict[str, Any]] = []
+    now_text = _now().isoformat()
+
+    for plan in pending:
+        plan_id = int(plan["id"])
+        action = str(plan.get("action") or "")
+        ticker = str(plan.get("ticker") or "").upper()
+        quantity = float(plan.get("quantity") or 0.0)
+        proposed_price = float(plan.get("proposed_price") or 0.0) or None
+        score = float(plan.get("meta_labeler_score")) if plan.get("meta_labeler_score") is not None else None
+        order_value = (quantity * proposed_price) if proposed_price and quantity > 0 else None
+        if action == "Buy":
+            if max_daily_capital > 0 and order_value is not None and deployed + order_value > max_daily_capital:
+                blocked += 1
+                details.append({"plan_id": plan_id, "ticker": ticker, "action": action, "result": "blocked_ceiling", "meta_labeler_score": score, "order_value": order_value})
+                continue
+            if mode == "semi_auto":
+                if score is None:
+                    skipped += 1
+                    details.append({"plan_id": plan_id, "ticker": ticker, "action": action, "result": "skipped_no_score", "meta_labeler_score": score, "order_value": order_value})
+                    continue
+                if score < threshold:
+                    skipped += 1
+                    details.append({"plan_id": plan_id, "ticker": ticker, "action": action, "result": "skipped_ml", "meta_labeler_score": score, "order_value": order_value})
+                    continue
+        order = OrderRequest(
+            portfolio_id=portfolio_id,
+            ticker=ticker,
+            action=action,
+            quantity=quantity,
+            limit_price=proposed_price,
+            theme_id=int(plan["theme_id"]) if plan.get("theme_id") is not None else None,
+            source=str(plan.get("source") or "manual"),
+            notes=str(plan.get("rationale") or ""),
+        )
+        guardrail = validate_guardrails(order, adapter, guardrails=DEFAULT_RISK_GUARDRAILS)
+        if not guardrail.allowed:
+            blocked += 1
+            details.append({"plan_id": plan_id, "ticker": ticker, "action": action, "result": "blocked_guardrail", "meta_labeler_score": score, "order_value": order_value})
+            continue
+        note = f"Auto-approved ({mode})"
+        if action == "Sell":
+            note = f"Auto-approved exit (mode={mode})"
+        elif score is not None:
+            note = f"Auto-approved (mode={mode}, ML={score:.0%})"
+        update_trade_plan_status(plan_id, "Approved", reviewed_at=now_text, notes=note)
+        log_audit_event(
+            order_id=str(uuid.uuid4()),
+            portfolio_id=portfolio_id,
+            event_type="auto_approved",
+            ticker=ticker,
+            action=action,
+            quantity=quantity,
+            price=proposed_price,
+            actor="system",
+            details=f"Auto-approved in {mode} mode. ML: {score}, Ceiling: {deployed}/{max_daily_capital}",
+        )
+        approved += 1
+        details.append({"plan_id": plan_id, "ticker": ticker, "action": action, "result": "approved", "meta_labeler_score": score, "order_value": order_value})
+        if action == "Buy" and order_value is not None:
+            deployed += order_value
+    return {
+        "mode": mode,
+        "threshold": threshold,
+        "ceiling_pct": ceiling_pct,
+        "max_daily_capital": max_daily_capital,
+        "capital_deployed_before": deployed_before,
+        "capital_deployed_after": deployed,
+        "approved": approved,
+        "skipped": skipped,
+        "blocked": blocked,
+        "details": details,
+    }
+
+
+def auto_execute_approved(
+    portfolio_id: int,
+    adapter: BrokerAdapter,
+    guardrails: RiskGuardrails = DEFAULT_RISK_GUARDRAILS,
+    *,
+    actor: str = "system",
+) -> dict[str, Any]:
+    return execute_approved_plans_via_adapter(
+        portfolio_id,
+        adapter,
+        guardrails=guardrails,
+        actor=actor,
+    )
 
 
 def execute_approved_plans_via_adapter(

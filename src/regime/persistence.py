@@ -41,10 +41,16 @@ _PAPER_TRADE_PLAN_COLUMNS: dict[str, str] = {
     "broker_order_id": "TEXT",
     "broker_status": "TEXT",
     "filled_quantity": "REAL NOT NULL DEFAULT 0",
+    "meta_labeler_score": "REAL",
 }
 
 _SECTOR_CACHE_TTL_DAYS = 30
 _EARNINGS_CACHE_TTL_HOURS = 24
+
+OPERATING_MODES = ("manual", "semi_auto", "autonomous")
+DEFAULT_OPERATING_MODE = "manual"
+DEFAULT_AUTO_APPROVE_THRESHOLD = 0.65
+DEFAULT_DAILY_CAPITAL_CEILING_PCT = 0.25
 
 
 def _ensure_column(conn: sqlite3.Connection, table: str, column: str, ddl: str) -> None:
@@ -102,12 +108,61 @@ def _create_paper_trade_plan_table(conn: sqlite3.Connection) -> None:
             broker_order_id TEXT,
             broker_status TEXT,
             filled_quantity REAL NOT NULL DEFAULT 0,
+            meta_labeler_score REAL,
             notes TEXT NOT NULL DEFAULT '',
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         )
         """
     )
+
+
+def _create_order_audit_trail_table(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS order_audit_trail (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            order_id TEXT NOT NULL,
+            portfolio_id INTEGER NOT NULL,
+            event_type TEXT NOT NULL CHECK (
+                event_type IN (
+                    'created', 'guardrail_check', 'guardrail_blocked', 'submitted', 'filled',
+                    'partially_filled', 'rejected', 'cancelled', 'expired', 'error', 'auto_approved'
+                )
+            ),
+            ticker TEXT NOT NULL,
+            action TEXT,
+            quantity REAL,
+            price REAL,
+            actor TEXT NOT NULL DEFAULT 'user' CHECK (actor IN ('user', 'system', 'scheduler')),
+            details TEXT NOT NULL DEFAULT '',
+            guardrail_result TEXT,
+            created_at TEXT NOT NULL
+        )
+        """
+    )
+
+
+def _migrate_audit_event_type_check(conn: sqlite3.Connection) -> None:
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'order_audit_trail'"
+    ).fetchone()
+    create_sql = str(row["sql"] or "") if row else ""
+    if "'auto_approved'" in create_sql:
+        return
+    if not _table_exists(conn, "order_audit_trail"):
+        return
+    logger.info("Migrating order_audit_trail event_type CHECK to include 'auto_approved'")
+    conn.execute("ALTER TABLE order_audit_trail RENAME TO _order_audit_trail_old")
+    _create_order_audit_trail_table(conn)
+    old_columns = [str(col["name"]) for col in conn.execute("PRAGMA table_info(_order_audit_trail_old)").fetchall()]
+    new_columns = [str(col["name"]) for col in conn.execute("PRAGMA table_info(order_audit_trail)").fetchall()]
+    common_columns = [column for column in new_columns if column in old_columns]
+    columns_sql = ", ".join(common_columns)
+    conn.execute(
+        f"INSERT INTO order_audit_trail ({columns_sql}) SELECT {columns_sql} FROM _order_audit_trail_old"
+    )
+    conn.execute("DROP TABLE _order_audit_trail_old")
 
 
 def _migrate_trade_plan_source_check(conn: sqlite3.Connection) -> None:
@@ -312,29 +367,7 @@ def _connect() -> sqlite3.Connection:
         )
         """
     )
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS order_audit_trail (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            order_id TEXT NOT NULL,
-            portfolio_id INTEGER NOT NULL,
-            event_type TEXT NOT NULL CHECK (
-                event_type IN (
-                    'created', 'guardrail_check', 'guardrail_blocked', 'submitted', 'filled',
-                    'partially_filled', 'rejected', 'cancelled', 'expired', 'error'
-                )
-            ),
-            ticker TEXT NOT NULL,
-            action TEXT,
-            quantity REAL,
-            price REAL,
-            actor TEXT NOT NULL DEFAULT 'user' CHECK (actor IN ('user', 'system', 'scheduler')),
-            details TEXT NOT NULL DEFAULT '',
-            guardrail_result TEXT,
-            created_at TEXT NOT NULL
-        )
-        """
-    )
+    _create_order_audit_trail_table(conn)
     conn.execute(
         """
         CREATE INDEX IF NOT EXISTS ix_audit_trail_order_id
@@ -525,6 +558,7 @@ def _connect() -> sqlite3.Connection:
     )
     _ensure_paper_schema(conn)
     _migrate_trade_plan_source_check(conn)
+    _migrate_audit_event_type_check(conn)
     _migrate_legacy_theses(conn)
     conn.execute(
         """
@@ -607,6 +641,46 @@ def get_setting(key: str) -> str | None:
         if row is None:
             return None
         return str(row["value"])
+
+
+def get_operating_mode() -> str:
+    mode = get_setting("operating_mode")
+    return mode if mode in OPERATING_MODES else DEFAULT_OPERATING_MODE
+
+
+def set_operating_mode(mode: str) -> None:
+    normalized = str(mode or "").strip().lower()
+    if normalized not in OPERATING_MODES:
+        raise ValueError(f"Invalid mode: {mode}. Must be one of {OPERATING_MODES}")
+    set_setting("operating_mode", normalized)
+
+
+def get_auto_approve_threshold() -> float:
+    raw = get_setting("auto_approve_threshold")
+    if raw is None:
+        return DEFAULT_AUTO_APPROVE_THRESHOLD
+    try:
+        return max(0.0, min(1.0, float(raw)))
+    except (ValueError, TypeError):
+        return DEFAULT_AUTO_APPROVE_THRESHOLD
+
+
+def set_auto_approve_threshold(threshold: float) -> None:
+    set_setting("auto_approve_threshold", str(max(0.0, min(1.0, float(threshold)))))
+
+
+def get_daily_capital_ceiling_pct() -> float:
+    raw = get_setting("daily_capital_ceiling_pct")
+    if raw is None:
+        return DEFAULT_DAILY_CAPITAL_CEILING_PCT
+    try:
+        return max(0.0, min(1.0, float(raw)))
+    except (ValueError, TypeError):
+        return DEFAULT_DAILY_CAPITAL_CEILING_PCT
+
+
+def set_daily_capital_ceiling_pct(pct: float) -> None:
+    set_setting("daily_capital_ceiling_pct", str(max(0.0, min(1.0, float(pct)))))
 
 
 def set_setting(key: str, value: str) -> None:
@@ -1355,6 +1429,7 @@ def create_trade_plan(
     regime_probability: float | None = None,
     crowd_score: int | None = None,
     source: str = "discovery",
+    meta_labeler_score: float | None = None,
 ) -> dict[str, Any]:
     now = datetime.now(timezone.utc).isoformat()
     with _connect() as conn:
@@ -1362,9 +1437,9 @@ def create_trade_plan(
             """
             INSERT INTO paper_trade_plan (
                 portfolio_id, theme_id, ticker, action, quantity, proposed_price, rationale,
-                regime_label, regime_probability, crowd_score, source, status, created_at, updated_at
+                regime_label, regime_probability, crowd_score, source, status, meta_labeler_score, created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Pending', ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Pending', ?, ?, ?)
             """,
             (
                 int(portfolio_id),
@@ -1378,6 +1453,7 @@ def create_trade_plan(
                 float(regime_probability) if regime_probability is not None else None,
                 int(crowd_score) if crowd_score is not None else None,
                 source,
+                float(meta_labeler_score) if meta_labeler_score is not None else None,
                 now,
                 now,
             ),
@@ -1709,6 +1785,23 @@ def count_todays_trades(portfolio_id: int) -> int:
             (int(portfolio_id), start),
         ).fetchone()
     return int(row[0] or 0) if row else 0
+
+
+def get_daily_capital_deployed(portfolio_id: int) -> float:
+    start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+    with _connect() as conn:
+        row = conn.execute(
+            """
+            SELECT COALESCE(SUM(quantity * price), 0.0) AS deployed
+            FROM order_audit_trail
+            WHERE portfolio_id = ?
+              AND event_type IN ('filled', 'partially_filled')
+              AND action = 'Buy'
+              AND created_at >= ?
+            """,
+            (int(portfolio_id), start),
+        ).fetchone()
+    return float(row["deployed"] or 0.0) if row else 0.0
 
 
 def get_daily_audit_summary(portfolio_id: int) -> dict[str, Any]:

@@ -12,8 +12,9 @@ from .alerts import (
 from .discovery import check_entry_signals, expire_stale_candidates, run_full_discovery
 from .investor_adapter import get_investor_db_path, get_portfolio_tickers_filtered, get_latest_prices
 from .attribution import compute_ml_accuracy, compute_theme_attribution
-from .paper_trading import compute_daily_snapshot, expire_stale_plans, generate_daily_plans, record_trade_outcome
+from .paper_trading import auto_approve_plans, auto_execute_approved, compute_daily_snapshot, expire_stale_plans, generate_daily_plans, record_trade_outcome
 from .persistence import (
+    get_operating_mode,
     get_daily_snapshots,
     get_pending_transition_outcomes,
     get_paper_positions,
@@ -22,6 +23,8 @@ from .persistence import (
     update_transition_outcome,
 )
 from .config import DEFAULT_IBKR_CONFIG
+from .broker_adapter import PaperBrokerAdapter
+from .config import DEFAULT_RISK_GUARDRAILS
 from .ib_connection import get_ib_backend, get_mock_ib_backend
 from .ibkr_adapter import IBKRBrokerAdapter, poll_pending_orders
 from src.app.routes.regime_cache import load_payload
@@ -91,6 +94,8 @@ def run_scheduled_paper_plans() -> dict[str, Any]:
         portfolio_id = int(portfolio["id"])
         expired = expire_stale_plans(portfolio_id)
         generated = generate_daily_plans(portfolio_id, cached_regime=cached_regime, cached_payload=cached_payload)
+        auto_result = auto_approve_plans(portfolio_id)
+        exec_result = None
         polled = 0
         if str(portfolio.get("broker_type") or "paper").lower() == "ibkr":
             backend = get_ib_backend(
@@ -110,6 +115,9 @@ def run_scheduled_paper_plans() -> dict[str, Any]:
                 polled = len(poll_pending_orders(adapter, portfolio_id))
             except Exception:
                 polled = 0
+        if auto_result.get("approved", 0) > 0 and get_operating_mode() == "autonomous":
+            exec_adapter = PaperBrokerAdapter(portfolio_id)
+            exec_result = auto_execute_approved(portfolio_id, exec_adapter, DEFAULT_RISK_GUARDRAILS, actor="scheduler")
         results.append(
             {
                 "portfolio_id": portfolio_id,
@@ -119,6 +127,8 @@ def run_scheduled_paper_plans() -> dict[str, Any]:
                 "exit_count": len(generated.get("exit_plans") or []),
                 "expired_count": expired,
                 "polled_orders": polled,
+                "auto_approval": auto_result,
+                "auto_execution": exec_result,
             }
         )
     return {"portfolios": results, "cached_regime_count": len(cached_regime)}
