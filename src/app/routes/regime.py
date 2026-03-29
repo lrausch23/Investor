@@ -3149,7 +3149,10 @@ def regime_market_data_settings(
     from src.regime.ibkr_market_data import IBKRMarketDataProvider, get_market_data_provider_config
 
     settings = get_market_data_provider_config()
-    connected = bool(IBKRMarketDataProvider().is_available())
+    try:
+        connected = bool(IBKRMarketDataProvider().is_available())
+    except Exception:
+        connected = False
     return JSONResponse(
         content={
             "settings": settings,

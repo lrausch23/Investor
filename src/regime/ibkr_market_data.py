@@ -112,12 +112,31 @@ class IBKRMarketDataProvider:
         self.config = config
 
     def is_available(self) -> bool:
-        backend = get_shared_ib_backend(account_id=str(self.config.account_id), config=self.config, connect_if_needed=False)
-        return bool(backend is not None and backend.is_connected())
+        backend = get_shared_ib_backend(
+            account_id=str(self.config.account_id),
+            config=self.config,
+            connect_if_needed=False,
+        )
+        if backend is None:
+            return False
+        ib = getattr(backend, "_ib", None)
+        if ib is None:
+            return False
+        try:
+            return bool(ib.isConnected())
+        except Exception:
+            return False
 
     def fetch(self, *, symbol: str, start: dt.date, end: dt.date) -> pd.DataFrame:
         backend = get_shared_ib_backend(account_id=str(self.config.account_id), config=self.config, connect_if_needed=True)
-        if backend is None or not backend.is_connected() or getattr(backend, "_ib", None) is None:
+        ib = getattr(backend, "_ib", None) if backend is not None else None
+        if backend is None or ib is None:
+            raise ProviderError("IBKR market data unavailable (gateway not connected).")
+        try:
+            connected = bool(ib.isConnected())
+        except Exception:
+            connected = False
+        if not connected:
             raise ProviderError("IBKR market data unavailable (gateway not connected).")
 
         _RATE_LIMITER.acquire()
@@ -130,7 +149,6 @@ class IBKRMarketDataProvider:
             except Exception:
                 contract = SimpleNamespace(symbol=str(symbol).upper(), secType="STK", exchange="SMART", currency="USD")
 
-            ib = backend._ib
             await ib.qualifyContractsAsync(contract)
             bars = await ib.reqHistoricalDataAsync(
                 contract,

@@ -71,11 +71,11 @@ def test_ibkr_provider_fetch_returns_canonical_frame(temp_modules, monkeypatch) 
         async def reqHistoricalDataAsync(self, *args, **kwargs):
             return [FakeBar("2025-01-02", 100.0), FakeBar("2025-01-03", 101.0)]
 
+        def isConnected(self):
+            return True
+
     class FakeBackend:
         _ib = FakeIB()
-
-        def is_connected(self):
-            return True
 
     class FakeThread:
         def run(self, fn, *args, **kwargs):
@@ -195,8 +195,7 @@ def test_market_data_settings_get_reports_ibkr_status(temp_modules, monkeypatch)
     _store, ibkr_md = temp_modules
 
     class FakeBackend:
-        def is_connected(self):
-            return True
+        _ib = type("FakeIB", (), {"isConnected": lambda self: True})()
 
     monkeypatch.setattr(ibkr_md, "get_shared_ib_backend", lambda **kwargs: FakeBackend())
     client = _route_client()

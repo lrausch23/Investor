@@ -460,7 +460,11 @@ class BenchmarkDataClient:
                 providers.append(self.cache)  # type: ignore[arg-type]
             elif name == "ibkr":
                 saved_enabled = enabled.get("ibkr")
-                if saved_enabled is not False and self.ibkr.is_available():
+                try:
+                    ibkr_available = saved_enabled is not False and self.ibkr.is_available()
+                except Exception:
+                    ibkr_available = False
+                if ibkr_available:
                     providers.append(self.ibkr)
             elif name == "stooq":
                 saved_enabled = enabled.get("stooq")
