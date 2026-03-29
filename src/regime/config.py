@@ -112,6 +112,7 @@ class IBKRConfig:
     port: int = field(default_factory=lambda: int(os.environ.get("IBKR_PORT", "7497")))
     client_id: int = field(default_factory=lambda: int(os.environ.get("IBKR_CLIENT_ID", "1")))
     account_id: str = field(default_factory=lambda: os.environ.get("IBKR_ACCOUNT_ID", "DUP579027"))
+    live_account_id: str = field(default_factory=lambda: os.environ.get("IBKR_LIVE_ACCOUNT_ID", ""))
     live_backend: bool = field(default_factory=lambda: os.environ.get("IBKR_LIVE_BACKEND", "false").lower() in ("true", "1", "yes"))
     timeout: int = field(default_factory=lambda: int(os.environ.get("IBKR_TIMEOUT", "10")))
 
@@ -126,9 +127,12 @@ def validate_ibkr_readiness() -> dict[str, bool]:
         "live_backend_enabled": bool(config.live_backend),
         "account_configured": bool(str(config.account_id or "").strip()),
         "port_is_paper": int(config.port) == 7497,
+        "port_is_valid": int(config.port) in {7496, 7497, 4001, 4002},
         "host_is_local": str(config.host).strip().lower() in {"127.0.0.1", "localhost"},
     }
-    checks["all_clear"] = all(checks.values())
+    checks["all_clear"] = all(
+        checks[key] for key in ("live_backend_enabled", "account_configured", "port_is_valid", "host_is_local")
+    )
     return checks
 
 

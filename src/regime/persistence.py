@@ -683,6 +683,14 @@ def set_daily_capital_ceiling_pct(pct: float) -> None:
     set_setting("daily_capital_ceiling_pct", str(max(0.0, min(1.0, float(pct)))))
 
 
+def is_live_trading_unlocked() -> bool:
+    return get_setting("live_trading_unlocked") == "true"
+
+
+def set_live_trading_unlocked(unlocked: bool) -> None:
+    set_setting("live_trading_unlocked", "true" if unlocked else "false")
+
+
 def set_setting(key: str, value: str) -> None:
     now = datetime.now(timezone.utc).isoformat()
     with _connect() as conn:

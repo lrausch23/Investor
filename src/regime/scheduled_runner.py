@@ -16,6 +16,7 @@ from .paper_trading import auto_approve_plans, auto_execute_approved, compute_da
 from .persistence import (
     get_operating_mode,
     get_daily_snapshots,
+    is_live_trading_unlocked,
     get_pending_transition_outcomes,
     get_paper_positions,
     list_paper_portfolios,
@@ -116,8 +117,12 @@ def run_scheduled_paper_plans() -> dict[str, Any]:
             except Exception:
                 polled = 0
         if auto_result.get("approved", 0) > 0 and get_operating_mode() == "autonomous":
-            exec_adapter = PaperBrokerAdapter(portfolio_id)
-            exec_result = auto_execute_approved(portfolio_id, exec_adapter, DEFAULT_RISK_GUARDRAILS, actor="scheduler")
+            broker_type = str(portfolio.get("broker_type") or "paper").lower()
+            if broker_type == "ibkr" and is_live_trading_unlocked():
+                exec_result = {"skipped": True, "reason": "Live account — manual execution required"}
+            else:
+                exec_adapter = PaperBrokerAdapter(portfolio_id)
+                exec_result = auto_execute_approved(portfolio_id, exec_adapter, DEFAULT_RISK_GUARDRAILS, actor="scheduler")
         results.append(
             {
                 "portfolio_id": portfolio_id,

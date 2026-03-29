@@ -8,7 +8,14 @@ from .broker_adapter import AccountSummary, BrokerAdapter, OrderRequest, OrderRe
 from .ib_connection import IBConnectionBackend, IBConnectionManager
 from .ib_order_translator import translate_account_summary, translate_order_request, translate_order_state, translate_position
 from .ib_types import get_market_hours_status, is_market_open, next_market_open
-from .persistence import get_paper_portfolio, get_trade_plans, log_audit_event, update_trade_plan_status
+from .persistence import (
+    get_operating_mode,
+    get_paper_portfolio,
+    get_trade_plans,
+    is_live_trading_unlocked,
+    log_audit_event,
+    update_trade_plan_status,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -57,14 +64,8 @@ class IBKRBrokerAdapter(BrokerAdapter):
             )
         return connected
 
-    def submit_order(self, order: OrderRequest) -> OrderResult:
-        if not self._ensure_connected(
-            ticker=str(order.ticker or ""),
-            action=str(order.action or ""),
-            quantity=float(order.quantity or 0.0),
-        ):
-            return OrderResult(order_id="", status="rejected", ticker=order.ticker.upper(), action=order.action, quantity=order.quantity, message="IBKR connection unavailable.")
-        account_id = str(
+    def _get_account_id(self) -> str:
+        return str(
             getattr(
                 self._manager.backend,
                 "_account_id",
@@ -72,17 +73,25 @@ class IBKRBrokerAdapter(BrokerAdapter):
             )
             or ""
         )
-        if not account_id.startswith("DU"):
-            logger.critical("REFUSING ORDER: account %s is not a paper account (DU* prefix)", account_id)
+
+    def _validate_account_safety(self, order: OrderRequest) -> OrderResult | None:
+        account_id = self._get_account_id()
+        if account_id.startswith("DU"):
+            return None
+        if not is_live_trading_unlocked():
+            logger.critical(
+                "REFUSING ORDER: live account %s detected but live trading is locked.",
+                account_id,
+            )
             log_audit_event(
-                order_id=f"order-rejected-{self._portfolio_id}-{int(dt.datetime.now(dt.timezone.utc).timestamp())}",
+                order_id=f"order-rejected-live-locked-{int(dt.datetime.now(dt.timezone.utc).timestamp())}",
                 portfolio_id=self._portfolio_id,
                 event_type="rejected",
                 ticker=str(order.ticker or "").upper(),
                 action=str(order.action or ""),
                 quantity=float(order.quantity or 0.0),
                 actor="system",
-                details=f"Live account detected: {account_id}",
+                details=f"Live account {account_id} blocked: live_trading_unlocked=false",
             )
             return OrderResult(
                 order_id="",
@@ -90,8 +99,48 @@ class IBKRBrokerAdapter(BrokerAdapter):
                 ticker=str(order.ticker or "").upper(),
                 action=order.action,
                 quantity=float(order.quantity or 0.0),
-                message="Live account detected — paper only",
+                message=f"Live trading locked. Paper only until unlocked via settings for {account_id}.",
             )
+        mode = get_operating_mode()
+        if mode != "manual":
+            logger.warning("Live account %s detected in %s mode — Manual mode required.", account_id, mode)
+            log_audit_event(
+                order_id=f"order-rejected-live-mode-{int(dt.datetime.now(dt.timezone.utc).timestamp())}",
+                portfolio_id=self._portfolio_id,
+                event_type="rejected",
+                ticker=str(order.ticker or "").upper(),
+                action=str(order.action or ""),
+                quantity=float(order.quantity or 0.0),
+                actor="system",
+                details=f"Live account {account_id} in {mode} mode — Manual mode required",
+            )
+            return OrderResult(
+                order_id="",
+                status="rejected",
+                ticker=str(order.ticker or "").upper(),
+                action=order.action,
+                quantity=float(order.quantity or 0.0),
+                message=f"Live account requires Manual mode. Current mode: {mode}.",
+            )
+        logger.info(
+            "LIVE ORDER: account=%s, ticker=%s, action=%s, qty=%s",
+            account_id,
+            order.ticker,
+            order.action,
+            order.quantity,
+        )
+        return None
+
+    def submit_order(self, order: OrderRequest) -> OrderResult:
+        if not self._ensure_connected(
+            ticker=str(order.ticker or ""),
+            action=str(order.action or ""),
+            quantity=float(order.quantity or 0.0),
+        ):
+            return OrderResult(order_id="", status="rejected", ticker=order.ticker.upper(), action=order.action, quantity=order.quantity, message="IBKR connection unavailable.")
+        safety_result = self._validate_account_safety(order)
+        if safety_result is not None:
+            return safety_result
         if not is_market_open() and not self._allow_outside_rth:
             return OrderResult(
                 order_id="",

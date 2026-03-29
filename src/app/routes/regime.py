@@ -13,7 +13,7 @@ import sqlite3
 import threading
 import time
 import uuid
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError, as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass, is_dataclass
 from typing import Any
 from urllib.parse import parse_qs
@@ -131,6 +131,7 @@ def _load_hmm_runtime() -> tuple[dict[str, Any] | None, str | None]:
             validate_guardrails,
         )
         from src.regime.ib_connection import MockIBBackend, get_ib_backend, get_mock_ib_backend
+        from src.regime.ib_thread import get_ib_thread
         from src.regime.ibkr_adapter import IBKRBrokerAdapter, poll_pending_orders
         from src.regime.ib_types import get_market_hours_status
         from src.regime.charts import build_confidence_timeline, build_regime_price_chart, build_transition_heatmap
@@ -226,7 +227,9 @@ def _load_hmm_runtime() -> tuple[dict[str, Any] | None, str | None]:
             upsert_watchlist_candidate,
             upsert_thesis,
             get_operating_mode,
+            is_live_trading_unlocked,
             OPERATING_MODES,
+            set_live_trading_unlocked,
         )
         from src.regime.discovery import (
             check_entry_signals,
@@ -310,6 +313,7 @@ def _load_hmm_runtime() -> tuple[dict[str, Any] | None, str | None]:
         "IBKRConfig": IBKRConfig,
         "DEFAULT_IBKR_CONFIG": DEFAULT_IBKR_CONFIG,
         "validate_ibkr_readiness": validate_ibkr_readiness,
+        "get_ib_thread": get_ib_thread,
         "RiskGuardrails": RiskGuardrails,
         "DEFAULT_RISK_GUARDRAILS": DEFAULT_RISK_GUARDRAILS,
         "BrokerAdapter": BrokerAdapter,
@@ -373,6 +377,8 @@ def _load_hmm_runtime() -> tuple[dict[str, Any] | None, str | None]:
         "get_daily_capital_ceiling_pct": get_daily_capital_ceiling_pct,
         "set_daily_capital_ceiling_pct": set_daily_capital_ceiling_pct,
         "get_daily_capital_deployed": get_daily_capital_deployed,
+        "is_live_trading_unlocked": is_live_trading_unlocked,
+        "set_live_trading_unlocked": set_live_trading_unlocked,
         "OPERATING_MODES": OPERATING_MODES,
         "get_daily_audit_summary": get_daily_audit_summary,
         "get_daily_snapshots": get_daily_snapshots,
@@ -1207,7 +1213,7 @@ def _get_broker_adapter(runtime: dict[str, Any], portfolio_id: int) -> Any:
         backend = runtime["get_ib_backend"](
             portfolio_id,
             live=bool(config.live_backend),
-            account_id=str(config.account_id),
+            account_id=str(config.live_account_id or config.account_id) if bool(config.live_backend) else str(config.account_id),
             starting_cash=float(portfolio.get("current_cash") or portfolio.get("starting_budget") or 100000.0),
         )
         return runtime["IBKRBrokerAdapter"](
@@ -1221,18 +1227,11 @@ def _get_broker_adapter(runtime: dict[str, Any], portfolio_id: int) -> Any:
 
 
 def _get_broker_adapter_safe(runtime: dict[str, Any], portfolio_id: int) -> Any:
-    pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ibkr-adapter")
     try:
-        future = pool.submit(_get_broker_adapter, runtime, portfolio_id)
-        return future.result(timeout=_ADAPTER_TIMEOUT)
-    except FuturesTimeoutError:
-        logger.warning("IBKR adapter connection timed out for portfolio %s after %ss", portfolio_id, _ADAPTER_TIMEOUT)
-        return None
+        return _get_broker_adapter(runtime, portfolio_id)
     except Exception as exc:
-        logger.warning("IBKR adapter connection failed for portfolio %s: %s", portfolio_id, exc)
+        logger.warning("Broker adapter creation failed for portfolio %s: %s", portfolio_id, exc)
         return None
-    finally:
-        pool.shutdown(wait=False, cancel_futures=True)
 
 
 async def _get_broker_adapter_safe_async(runtime: dict[str, Any], portfolio_id: int) -> Any:
@@ -2856,6 +2855,8 @@ def _build_shell_context(
             "paper_audit_summary": "/regime/paper-portfolio/__PORTFOLIO_ID__/audit/summary",
             "ibkr_settings": "/regime/ibkr/settings",
             "ibkr_test_connection": "/regime/ibkr/test-connection",
+            "ibkr_status": "/regime/ibkr/status",
+            "ibkr_live_unlock": "/regime/ibkr/live-unlock",
             "frontier_models": "/regime/frontier/models",
             "frontier_settings": "/regime/frontier/settings",
             "autonomy_settings": "/regime/autonomy/settings",
@@ -3006,6 +3007,7 @@ def regime_ibkr_settings(
                 "port": config.port,
                 "client_id": config.client_id,
                 "account_id": config.account_id,
+                "live_account_id": config.live_account_id,
                 "live_backend": config.live_backend,
                 "timeout": config.timeout,
             },
@@ -3025,13 +3027,12 @@ async def regime_ibkr_settings_update(
     port = int(form.get("port") or 7497)
     client_id = int(form.get("client_id") or 1)
     account_id = str(form.get("account_id") or "").strip()
+    live_account_id = str(form.get("live_account_id") or "").strip()
     live_backend = str(form.get("live_backend") or "false").lower() in ("true", "1", "yes", "on")
     timeout = int(form.get("timeout") or 10)
 
-    if port not in (7497, 4002):
-        raise HTTPException(status_code=422, detail="Port must be 7497 (TWS paper) or 4002 (Gateway paper). Live ports (7496/4001) are blocked.")
-    if live_backend and not account_id.startswith("DU"):
-        raise HTTPException(status_code=422, detail="Cannot enable live backend with non-paper account (must start with DU).")
+    if port not in (7497, 4002, 7496, 4001):
+        raise HTTPException(status_code=422, detail="Port must be one of 7497, 4002, 7496, or 4001.")
     if host not in ("127.0.0.1", "localhost"):
         raise HTTPException(status_code=422, detail="Host must be 127.0.0.1 or localhost. Remote connections are not supported.")
     if not (1 <= client_id <= 32):
@@ -3045,6 +3046,7 @@ async def regime_ibkr_settings_update(
             "IBKR_PORT": str(port),
             "IBKR_CLIENT_ID": str(client_id),
             "IBKR_ACCOUNT_ID": account_id,
+            "IBKR_LIVE_ACCOUNT_ID": live_account_id,
             "IBKR_LIVE_BACKEND": "true" if live_backend else "false",
             "IBKR_TIMEOUT": str(timeout),
         }
@@ -3524,6 +3526,63 @@ def regime_ibkr_test_connection(
         result["ibkr_connected"] = False
         result["error"] = f"Connection test failed: {exc}"
     return JSONResponse(content=result)
+
+
+@router.get("/ibkr/status")
+def regime_ibkr_status(
+    actor: str = Depends(require_actor),
+):
+    del actor
+    from src.regime.config import IBKRConfig, validate_ibkr_readiness
+    from src.regime.ib_thread import get_ib_thread
+    from src.regime.persistence import is_live_trading_unlocked
+
+    config = IBKRConfig()
+    readiness = validate_ibkr_readiness()
+    ib_thread = get_ib_thread()
+    return JSONResponse(
+        content={
+            "ib_thread_alive": ib_thread.is_alive,
+            "readiness": readiness,
+            "live_trading_unlocked": is_live_trading_unlocked(),
+            "config": {
+                "host": config.host,
+                "port": config.port,
+                "account_id": config.account_id,
+                "live_account_id": config.live_account_id or None,
+                "live_backend": config.live_backend,
+            },
+        }
+    )
+
+
+@router.put("/ibkr/live-unlock")
+async def regime_ibkr_live_unlock(
+    request: Request,
+    actor: str = Depends(require_actor),
+):
+    del actor
+    from src.regime.persistence import is_live_trading_unlocked, log_audit_event, set_live_trading_unlocked
+
+    body = await request.json()
+    unlock = bool(body.get("unlocked", False))
+    confirm = str(body.get("confirm", ""))
+    if unlock and confirm != "I understand the risks":
+        raise HTTPException(
+            status_code=422,
+            detail='To unlock live trading, include {"confirm": "I understand the risks"}',
+        )
+    set_live_trading_unlocked(unlock)
+    log_audit_event(
+        order_id=f"live-unlock-{int(dt.datetime.now(dt.timezone.utc).timestamp())}",
+        portfolio_id=0,
+        event_type="created",
+        ticker="SYSTEM",
+        action="config",
+        actor="user",
+        details=f"Live trading {'unlocked' if unlock else 'locked'}",
+    )
+    return JSONResponse(content={"live_trading_unlocked": is_live_trading_unlocked()})
 
 
 @router.get("/holdings")
@@ -4382,7 +4441,6 @@ async def regime_paper_plan_precheck(
             }
         )
     def _run_precheck_sync() -> list[dict[str, Any]]:
-        fallback_adapter = None
         checked: list[dict[str, Any]] = []
         for plan in plans:
             ticker = str(plan.get("ticker") or "").upper()
@@ -4410,48 +4468,19 @@ async def regime_paper_plan_precheck(
                     }
                 )
             except Exception as exc:
-                logger.warning(
-                    "Guardrail precheck failed for portfolio %s plan %s (%s), retrying with local data: %s",
-                    portfolio_id,
-                    plan.get("id"),
-                    ticker,
-                    exc,
+                logger.warning("Guardrail validation failed for %s: %s", ticker, exc)
+                checked.append(
+                    {
+                        "plan_id": int(plan["id"]),
+                        "ticker": ticker,
+                        "action": str(plan.get("action") or ""),
+                        "guardrail_passed": False,
+                        "guardrail_checks": [],
+                        "guardrail_result": {"allowed": False, "error": f"Broker connection error: {exc}"},
+                        "broker_type": str(portfolio.get("broker_type") or "paper"),
+                        "error": f"Broker connection error: {exc}",
+                    }
                 )
-                try:
-                    if fallback_adapter is None:
-                        fallback_adapter = runtime["PaperBrokerAdapter"](portfolio_id)
-                    result = runtime["validate_guardrails"](order, fallback_adapter, runtime["DEFAULT_RISK_GUARDRAILS"])
-                    checked.append(
-                        {
-                            "plan_id": int(plan["id"]),
-                            "ticker": ticker,
-                            "action": str(plan.get("action") or ""),
-                            "guardrail_passed": bool(result.allowed),
-                            "guardrail_checks": _json_ready(result.checks),
-                            "guardrail_result": _json_ready(result),
-                            "broker_type": "paper_fallback",
-                            "fallback": True,
-                        }
-                    )
-                except Exception as fallback_exc:
-                    logger.warning(
-                        "Fallback precheck also failed for plan %s (%s): %s",
-                        plan.get("id"),
-                        ticker,
-                        fallback_exc,
-                    )
-                    checked.append(
-                        {
-                            "plan_id": int(plan["id"]),
-                            "ticker": ticker,
-                            "action": str(plan.get("action") or ""),
-                            "guardrail_passed": False,
-                            "guardrail_checks": [],
-                            "guardrail_result": {"allowed": False, "error": str(fallback_exc)},
-                            "broker_type": str(portfolio.get("broker_type") or "paper"),
-                            "error": str(fallback_exc),
-                        }
-                    )
         return checked
 
     try:
@@ -4522,8 +4551,7 @@ async def regime_paper_execute(
         raise HTTPException(status_code=409, detail="Paper portfolio is closed.")
     adapter = await _get_broker_adapter_safe_async(runtime, portfolio_id)
     if adapter is None:
-        return JSONResponse(content={"executed": [], "errors": ["IBKR connection unavailable."], "submitted": 0, "filled": 0})
-    used_fallback = False
+        return JSONResponse(status_code=503, content={"executed": [], "errors": ["IBKR connection unavailable."], "submitted": 0, "filled": 0, "broker_error": True})
     try:
         payload = await asyncio.to_thread(
             runtime["execute_approved_plans_via_adapter"],
@@ -4533,30 +4561,23 @@ async def regime_paper_execute(
             actor="user",
         )
     except Exception as exc:
-        logger.warning(
-            "Execute via IBKR adapter failed for portfolio %s, retrying with local paper adapter: %s",
-            portfolio_id,
-            exc,
+        logger.error("Execution failed for portfolio %s: %s", portfolio_id, exc)
+        return JSONResponse(
+            status_code=503,
+            content={
+                "executed": [],
+                "errors": [f"Broker execution failed: {exc}"],
+                "submitted": 0,
+                "filled": 0,
+                "broker_error": True,
+            },
         )
-        fallback_adapter = runtime["PaperBrokerAdapter"](portfolio_id)
-        payload = await asyncio.to_thread(
-            runtime["execute_approved_plans_via_adapter"],
-            portfolio_id,
-            fallback_adapter,
-            guardrails=runtime["DEFAULT_RISK_GUARDRAILS"],
-            actor="user",
-        )
-        used_fallback = True
 
-    if not used_fallback:
-        ibkr_adapter_cls = runtime.get("IBKRBrokerAdapter")
-        if ibkr_adapter_cls is not None and isinstance(adapter, ibkr_adapter_cls):
-            await asyncio.sleep(1)
-            poll_results = await asyncio.to_thread(runtime["poll_pending_orders"], adapter, portfolio_id)
-            payload["immediate_fills"] = len([row for row in poll_results if str(getattr(row, "status", "")).lower() == "filled"])
-    if used_fallback:
-        payload["fallback"] = True
-        payload["fallback_reason"] = "IBKR adapter unavailable in thread context; executed with local paper adapter."
+    ibkr_adapter_cls = runtime.get("IBKRBrokerAdapter")
+    if ibkr_adapter_cls is not None and isinstance(adapter, ibkr_adapter_cls):
+        await asyncio.sleep(1)
+        poll_results = await asyncio.to_thread(runtime["poll_pending_orders"], adapter, portfolio_id)
+        payload["immediate_fills"] = len([row for row in poll_results if str(getattr(row, "status", "")).lower() == "filled"])
     return JSONResponse(content=_json_ready(payload))
 
 

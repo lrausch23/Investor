@@ -61,7 +61,7 @@ def _client(monkeypatch, store, paper, broker, config) -> TestClient:
     return TestClient(create_app())
 
 
-def test_precheck_falls_back_to_paper_adapter_on_ibkr_failure(temp_modules, monkeypatch) -> None:
+def test_precheck_returns_broker_error_on_ibkr_failure(temp_modules, monkeypatch) -> None:
     store, paper, broker, config = temp_modules
     portfolio = store.create_paper_portfolio("UAT-Sandbox", 100000.0, broker_type="ibkr")
     store.create_trade_plan(portfolio["id"], "NVDA", "Buy", 50, "Entry", proposed_price=100.0)
@@ -84,12 +84,11 @@ def test_precheck_falls_back_to_paper_adapter_on_ibkr_failure(temp_modules, monk
     assert response.status_code == 200
     payload = response.json()
     assert len(payload["plans"]) == 1
-    assert payload["plans"][0]["guardrail_passed"] is True
-    assert payload["plans"][0]["broker_type"] == "paper_fallback"
-    assert payload["plans"][0]["fallback"] is True
+    assert payload["plans"][0]["guardrail_passed"] is False
+    assert "Broker connection error" in payload["plans"][0]["error"]
 
 
-def test_precheck_fallback_still_enforces_guardrails(temp_modules, monkeypatch) -> None:
+def test_precheck_failure_returns_empty_checks(temp_modules, monkeypatch) -> None:
     store, paper, broker, config = temp_modules
     portfolio = store.create_paper_portfolio("UAT-Sandbox", 100000.0, broker_type="ibkr")
     store.create_trade_plan(portfolio["id"], "NVDA", "Buy", 200, "Too large", proposed_price=100.0)
@@ -110,22 +109,15 @@ def test_precheck_fallback_still_enforces_guardrails(temp_modules, monkeypatch) 
     assert response.status_code == 200
     plan = response.json()["plans"][0]
     assert plan["guardrail_passed"] is False
-    checks = {row["name"]: row for row in plan["guardrail_checks"]}
-    assert checks["max_single_order_value"]["passed"] is False
+    assert plan["guardrail_checks"] == []
+    assert "Broker connection error" in plan["error"]
 
 
-def test_precheck_fallback_adapter_created_once_for_batch(temp_modules, monkeypatch) -> None:
+def test_precheck_batch_returns_error_rows_for_each_failure(temp_modules, monkeypatch) -> None:
     store, paper, broker, config = temp_modules
     portfolio = store.create_paper_portfolio("UAT-Sandbox", 100000.0, broker_type="ibkr")
     for ticker in ("NVDA", "AVGO", "MU"):
         store.create_trade_plan(portfolio["id"], ticker, "Buy", 10, "Entry", proposed_price=100.0)
-
-    created = {"count": 0}
-
-    class CountingPaperBrokerAdapter(broker.PaperBrokerAdapter):
-        def __init__(self, portfolio_id: int):
-            created["count"] += 1
-            super().__init__(portfolio_id)
 
     async def fake_adapter(runtime_arg, portfolio_id_arg):
         del runtime_arg, portfolio_id_arg
@@ -140,18 +132,17 @@ def test_precheck_fallback_adapter_created_once_for_batch(temp_modules, monkeypa
     monkeypatch.setattr(
         regime_route,
         "_load_hmm_runtime",
-        lambda: ({**_runtime(store, paper, broker, config), "validate_guardrails": validating, "PaperBrokerAdapter": CountingPaperBrokerAdapter}, None),
+        lambda: ({**_runtime(store, paper, broker, config), "validate_guardrails": validating}, None),
     )
     client = TestClient(create_app())
     response = client.post(f"/regime/paper-portfolio/{portfolio['id']}/plans/precheck")
     assert response.status_code == 200
     payload = response.json()
     assert len(payload["plans"]) == 3
-    assert all("error" not in row for row in payload["plans"])
-    assert created["count"] == 1
+    assert all("Broker connection error" in row["error"] for row in payload["plans"])
 
 
-def test_precheck_mixed_primary_and_fallback(temp_modules, monkeypatch) -> None:
+def test_precheck_mixed_primary_and_error(temp_modules, monkeypatch) -> None:
     store, paper, broker, config = temp_modules
     portfolio = store.create_paper_portfolio("UAT-Sandbox", 100000.0, broker_type="ibkr")
     store.create_trade_plan(portfolio["id"], "NVDA", "Buy", 10, "Primary works", proposed_price=100.0)
@@ -176,21 +167,14 @@ def test_precheck_mixed_primary_and_fallback(temp_modules, monkeypatch) -> None:
     by_ticker = {row["ticker"]: row for row in response.json()["plans"]}
     assert by_ticker["NVDA"]["guardrail_passed"] is True
     assert by_ticker["NVDA"]["broker_type"] == "ibkr"
-    assert "fallback" not in by_ticker["NVDA"]
-    assert by_ticker["MU"]["guardrail_passed"] is True
-    assert by_ticker["MU"]["broker_type"] == "paper_fallback"
-    assert by_ticker["MU"]["fallback"] is True
+    assert by_ticker["MU"]["guardrail_passed"] is False
+    assert "Broker connection error" in by_ticker["MU"]["error"]
 
 
-def test_precheck_double_failure_returns_error_entry(temp_modules, monkeypatch) -> None:
+def test_precheck_failure_returns_error_entry(temp_modules, monkeypatch) -> None:
     store, paper, broker, config = temp_modules
     portfolio = store.create_paper_portfolio("UAT-Sandbox", 100000.0, broker_type="ibkr")
     store.create_trade_plan(portfolio["id"], "NVDA", "Buy", 10, "Entry", proposed_price=100.0)
-
-    class BrokenPaperBrokerAdapter:
-        def __init__(self, portfolio_id: int):
-            del portfolio_id
-            raise RuntimeError("paper fallback unavailable")
 
     async def fake_adapter(runtime_arg, portfolio_id_arg):
         del runtime_arg, portfolio_id_arg
@@ -204,14 +188,14 @@ def test_precheck_double_failure_returns_error_entry(temp_modules, monkeypatch) 
     monkeypatch.setattr(
         regime_route,
         "_load_hmm_runtime",
-        lambda: ({**_runtime(store, paper, broker, config), "validate_guardrails": validating, "PaperBrokerAdapter": BrokenPaperBrokerAdapter}, None),
+        lambda: ({**_runtime(store, paper, broker, config), "validate_guardrails": validating}, None),
     )
     client = TestClient(create_app())
     response = client.post(f"/regime/paper-portfolio/{portfolio['id']}/plans/precheck")
     assert response.status_code == 200
     plan = response.json()["plans"][0]
     assert plan["guardrail_passed"] is False
-    assert "paper fallback unavailable" in plan["error"]
+    assert "Broker connection error" in plan["error"]
 
 
 def test_paper_broker_adapter_in_runtime(temp_modules) -> None:

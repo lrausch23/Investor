@@ -2,71 +2,73 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
-import threading
-from typing import Callable
+from typing import Any, Callable
 
 from .ib_connection import IBConnectionBackend
+from .ib_thread import get_ib_thread
 from .ib_types import IBAccountSummary, IBOrder, IBOrderState, IBOrderStatus, IBOrderType, IBPosition
 
 logger = logging.getLogger(__name__)
 
 
 class LiveIBBackend(IBConnectionBackend):
-    """Real IB connection via ib_insync.
-
-    Import is intentionally lazy so the mock-backed system still works when
-    `ib_insync` is not installed.
-    """
+    """Real IB connection via ib_insync dispatched through the dedicated IB thread."""
 
     def __init__(self, *, account_id: str = "DUP579027"):
-        from ib_insync import IB
-
-        self._ib = IB()
+        self._ib: Any = None
         self._account_id = account_id
-        self._lock = threading.RLock()
         self._callbacks: list[Callable[[IBOrderState], None]] = []
         self._order_map: dict[int, object] = {}
 
     def connect(self, host: str, port: int, client_id: int) -> bool:
-        with self._lock:
-            try:
-                if self._ib.isConnected():
-                    return True
-                self._ib.connect(host, port, clientId=client_id, timeout=10)
-                self._ib.orderStatusEvent += self._on_order_status
-                if self._ib.isConnected():
-                    accounts = list(self._ib.managedAccounts() or [])
-                    if self._account_id not in accounts:
-                        logger.error(
-                            "Account %s not found in managed accounts: %s",
-                            self._account_id,
-                            accounts,
-                        )
-                        self._ib.disconnect()
-                        return False
-                    logger.info("Connected to IBKR, account %s verified", self._account_id)
-                return bool(self._ib.isConnected())
-            except Exception as exc:
-                logger.warning("IB connect failed: %s", exc)
-                return False
+        thread = get_ib_thread()
 
-    def disconnect(self) -> None:
-        with self._lock:
+        def _connect() -> bool:
+            if self._ib is None:
+                from ib_insync import IB
+
+                self._ib = IB()
             if self._ib.isConnected():
-                self._ib.disconnect()
-
-    def is_connected(self) -> bool:
-        with self._lock:
+                return True
+            self._ib.connect(host, port, clientId=client_id, timeout=10)
+            self._ib.orderStatusEvent += self._on_order_status
+            if self._ib.isConnected():
+                accounts = list(self._ib.managedAccounts() or [])
+                if self._account_id not in accounts:
+                    logger.error("Account %s not found in managed accounts: %s", self._account_id, accounts)
+                    self._ib.disconnect()
+                    return False
+                logger.info("Connected to IBKR, account %s verified", self._account_id)
             return bool(self._ib.isConnected())
 
+        try:
+            return thread.run(_connect, timeout=15)
+        except Exception as exc:
+            logger.warning("IB connect failed: %s", exc)
+            return False
+
+    def disconnect(self) -> None:
+        if self._ib is None:
+            return
+        get_ib_thread().run(lambda: self._ib.disconnect() if self._ib.isConnected() else None)
+
+    def is_connected(self) -> bool:
+        if self._ib is None:
+            return False
+        return bool(get_ib_thread().run(self._ib.isConnected))
+
     def next_order_id(self) -> int:
-        with self._lock:
-            return int(self._ib.client.getReqId())
+        if self._ib is None:
+            raise RuntimeError("IBKR backend is not connected.")
+        return int(get_ib_thread().run(lambda: self._ib.client.getReqId()))
 
     def place_order(self, order: IBOrder) -> IBOrderState:
-        from ib_insync import Contract, LimitOrder, MarketOrder, StopOrder
+        if self._ib is None:
+            raise RuntimeError("IBKR backend is not connected.")
 
-        with self._lock:
+        def _place() -> IBOrderState:
+            from ib_insync import Contract, LimitOrder, MarketOrder, StopOrder
+
             contract = Contract(symbol=order.contract_symbol, secType="STK", exchange="SMART", currency="USD")
             self._ib.qualifyContracts(contract)
             if order.order_type == IBOrderType.MARKET:
@@ -83,22 +85,43 @@ class LiveIBBackend(IBConnectionBackend):
             self._order_map[order.order_id] = trade
             return self._trade_to_state(trade, order.order_id)
 
+        return get_ib_thread().run(_place)
+
     def cancel_order(self, order_id: int) -> IBOrderState:
-        with self._lock:
+        if self._ib is None:
+            raise RuntimeError("IBKR backend is not connected.")
+
+        def _cancel() -> IBOrderState:
             trade = self._order_map.get(int(order_id))
             if trade is None:
-                return IBOrderState(int(order_id), IBOrderStatus.API_CANCELLED, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, dt.datetime.now(dt.timezone.utc).isoformat(), "Unknown order")
+                return IBOrderState(
+                    int(order_id),
+                    IBOrderStatus.API_CANCELLED,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    dt.datetime.now(dt.timezone.utc).isoformat(),
+                    "Unknown order",
+                )
             self._ib.cancelOrder(trade.order)
             self._ib.sleep(0.5)
             return self._trade_to_state(trade, int(order_id))
 
+        return get_ib_thread().run(_cancel)
+
     def get_order_status(self, order_id: int) -> IBOrderState:
-        with self._lock:
-            trade = self._order_map[int(order_id)]
-            return self._trade_to_state(trade, int(order_id))
+        if self._ib is None:
+            raise RuntimeError("IBKR backend is not connected.")
+        return get_ib_thread().run(lambda: self._trade_to_state(self._order_map[int(order_id)], int(order_id)))
 
     def get_positions(self) -> list[IBPosition]:
-        with self._lock:
+        if self._ib is None:
+            return []
+
+        def _positions() -> list[IBPosition]:
             positions = self._ib.positions()
             return [
                 IBPosition(
@@ -113,8 +136,13 @@ class LiveIBBackend(IBConnectionBackend):
                 if pos.account == self._account_id
             ]
 
+        return get_ib_thread().run(_positions)
+
     def get_account_summary(self) -> IBAccountSummary:
-        with self._lock:
+        if self._ib is None:
+            raise RuntimeError("IBKR backend is not connected.")
+
+        def _summary() -> IBAccountSummary:
             summary = self._ib.accountSummary(self._account_id)
             values = {}
             for item in summary:
@@ -133,6 +161,8 @@ class LiveIBBackend(IBConnectionBackend):
                 available_funds=values.get("AvailableFunds", 0.0),
                 unrealized_pnl=values.get("UnrealizedPnL"),
             )
+
+        return get_ib_thread().run(_summary)
 
     def register_order_callback(self, callback: Callable[[IBOrderState], None]) -> None:
         self._callbacks.append(callback)

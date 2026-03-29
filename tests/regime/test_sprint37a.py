@@ -61,7 +61,7 @@ def _client(monkeypatch, store, paper, broker, config) -> TestClient:
     return TestClient(create_app())
 
 
-def test_execute_falls_back_to_paper_adapter_on_ibkr_failure(temp_modules, monkeypatch) -> None:
+def test_execute_returns_503_on_ibkr_failure(temp_modules, monkeypatch) -> None:
     store, paper, broker, config = temp_modules
     portfolio = store.create_paper_portfolio("UAT-Sandbox", 100000.0, broker_type="ibkr")
     plan = store.create_trade_plan(portfolio["id"], "NVDA", "Buy", 10, "Entry", proposed_price=100.0)
@@ -86,12 +86,10 @@ def test_execute_falls_back_to_paper_adapter_on_ibkr_failure(temp_modules, monke
     )
     client = TestClient(create_app())
     response = client.post(f"/regime/paper-portfolio/{portfolio['id']}/plans/execute")
-    assert response.status_code == 200
+    assert response.status_code == 503
     payload = response.json()
-    assert len(payload["executed"]) == 1
-    assert payload["fallback"] is True
-    assert "local paper adapter" in payload["fallback_reason"].lower()
-    assert "immediate_fills" not in payload
+    assert payload["executed"] == []
+    assert payload["broker_error"] is True
 
 
 def test_execute_uses_ibkr_when_available(temp_modules, monkeypatch) -> None:
@@ -135,7 +133,7 @@ def test_execute_uses_ibkr_when_available(temp_modules, monkeypatch) -> None:
     assert called["poll"] == 1
 
 
-def test_execute_fallback_records_fills_in_sqlite(temp_modules, monkeypatch) -> None:
+def test_execute_failure_does_not_record_fills_in_sqlite(temp_modules, monkeypatch) -> None:
     store, paper, broker, config = temp_modules
     portfolio = store.create_paper_portfolio("UAT-Sandbox", 100000.0, broker_type="ibkr")
     plan = store.create_trade_plan(portfolio["id"], "NVDA", "Buy", 10, "Entry", proposed_price=100.0)
@@ -160,18 +158,14 @@ def test_execute_fallback_records_fills_in_sqlite(temp_modules, monkeypatch) -> 
     )
     client = TestClient(create_app())
     response = client.post(f"/regime/paper-portfolio/{portfolio['id']}/plans/execute")
-    assert response.status_code == 200
-    payload = response.json()
-    assert len(payload["executed"]) == 1
-    assert float(payload["executed"][0]["execution_price"]) > 0
+    assert response.status_code == 503
     portfolio_row = store.get_paper_portfolio(portfolio["id"])
-    assert float(portfolio_row["current_cash"]) == pytest.approx(100000.0 - 1010.0)
+    assert float(portfolio_row["current_cash"]) == pytest.approx(100000.0)
     positions = store.get_paper_positions(portfolio["id"], status="Open")
-    assert len(positions) == 1
-    assert positions[0]["ticker"] == "NVDA"
+    assert positions == []
 
 
-def test_execute_fallback_still_enforces_guardrails(temp_modules, monkeypatch) -> None:
+def test_execute_failure_returns_503_before_any_fill(temp_modules, monkeypatch) -> None:
     store, paper, broker, config = temp_modules
     portfolio = store.create_paper_portfolio("UAT-Sandbox", 100000.0, broker_type="ibkr")
     plan = store.create_trade_plan(portfolio["id"], "NVDA", "Buy", 200, "Too large", proposed_price=100.0)
@@ -196,11 +190,10 @@ def test_execute_fallback_still_enforces_guardrails(temp_modules, monkeypatch) -
     )
     client = TestClient(create_app())
     response = client.post(f"/regime/paper-portfolio/{portfolio['id']}/plans/execute")
-    assert response.status_code == 200
+    assert response.status_code == 503
     payload = response.json()
     assert payload["executed"] == []
-    assert len(payload["skipped"]) == 1
-    assert payload["skipped"][0]["status"] == "guardrail_blocked"
+    assert payload["broker_error"] is True
     assert store.get_paper_positions(portfolio["id"], status="Open") == []
 
 
@@ -215,7 +208,7 @@ def test_execute_adapter_none_returns_error(temp_modules, monkeypatch) -> None:
     monkeypatch.setattr(regime_route, "_get_broker_adapter_safe_async", no_adapter)
     client = _client(monkeypatch, store, paper, broker, config)
     response = client.post(f"/regime/paper-portfolio/{portfolio['id']}/plans/execute")
-    assert response.status_code == 200
+    assert response.status_code == 503
     payload = response.json()
     assert payload["executed"] == []
     assert payload["errors"] == ["IBKR connection unavailable."]

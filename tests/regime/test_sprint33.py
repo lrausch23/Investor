@@ -51,19 +51,19 @@ def test_ibkr_settings_update_paper_port(monkeypatch, tmp_path: Path) -> None:
     assert "IBKR_PORT=7497" in contents
 
 
-def test_ibkr_settings_rejects_live_port() -> None:
+def test_ibkr_settings_accepts_live_port() -> None:
     client = _client()
     response = client.post("/regime/ibkr/settings", data={"port": "7496", "account_id": "DUP579027"})
-    assert response.status_code == 422
+    assert response.status_code == 200
 
 
-def test_ibkr_settings_rejects_non_du_with_live() -> None:
+def test_ibkr_settings_accepts_non_du_with_live() -> None:
     client = _client()
     response = client.post(
         "/regime/ibkr/settings",
-        data={"port": "7497", "account_id": "U123456", "live_backend": "true"},
+        data={"port": "7496", "account_id": "DUP579027", "live_account_id": "U123456", "live_backend": "true"},
     )
-    assert response.status_code == 422
+    assert response.status_code == 200
 
 
 def test_ibkr_test_connection_no_tws(monkeypatch) -> None:
@@ -95,6 +95,7 @@ def test_ibkr_test_connection_success(monkeypatch) -> None:
             return None
 
     monkeypatch.setattr(socket, "create_connection", lambda *args, **kwargs: _Sock())
+    monkeypatch.setenv("IBKR_ACCOUNT_ID", "DUP579027")
     import src.regime.ib_live_backend as live_backend
 
     monkeypatch.setattr(live_backend, "LiveIBBackend", _Backend)

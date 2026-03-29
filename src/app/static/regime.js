@@ -62,6 +62,7 @@
     showAllTableColumns: false,
     ibkrSettings: null,
     ibkrReadiness: null,
+    ibkrStatus: null,
     ibkrTestResult: null,
     ibkrRestartRequired: false,
     expandedDiagnosticsTicker: null,
@@ -2569,13 +2570,17 @@
     if (!mount || !state.config?.endpoints?.ibkr_settings) return;
     const config = state.ibkrSettings || {};
     const readiness = state.ibkrReadiness || {};
+    const status = state.ibkrStatus || {};
     const test = state.ibkrTestResult || null;
     const checks = [
       ["live_backend_enabled", "Live backend enabled"],
-      ["port_is_paper", "Paper port"],
+      ["port_is_valid", "Valid port"],
       ["host_is_local", "Localhost only"],
       ["account_configured", "Account configured"],
     ];
+    const liveUnlocked = !!status.live_trading_unlocked;
+    const liveAccountId = status?.config?.live_account_id || config.live_account_id || "";
+    const accountLabel = liveAccountId ? `Live ${liveAccountId}` : `Paper ${config.account_id || ""}`;
     mount.innerHTML = `
       <section class="ui-card" style="padding:12px">
         <div class="table-toolbar">
@@ -2591,16 +2596,26 @@
           </div>
         </div>
         ${state.ibkrRestartRequired ? '<div class="banner--warn" style="margin-top:10px; padding:10px">Settings saved. Restart the server (`make run`) to apply changes.</div>' : ""}
+        <div class="ui-card" style="padding:10px; margin-top:10px">
+          <div style="font-weight:600">Connection Status</div>
+          <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:8px">
+            <span class="${status.ib_thread_alive ? "ui-badge ui-badge--safe" : "ui-badge ui-badge--bad"}">IB Thread ${status.ib_thread_alive ? "alive" : "down"}</span>
+            <span class="${readiness.live_backend_enabled ? "ui-badge ui-badge--warn" : "ui-badge ui-badge--neutral"}">${escapeHtml(accountLabel)}</span>
+            <span class="${liveUnlocked ? "ui-badge ui-badge--bad" : "ui-badge ui-badge--safe"}">Live ${liveUnlocked ? "Unlocked" : "Locked"}</span>
+          </div>
+        </div>
         <form id="regimeIBKRSettingsForm" style="display:grid; grid-template-columns:repeat(2, minmax(0,1fr)); gap:10px; margin-top:12px">
           <label>Host<input type="text" name="host" value="${escapeHtml(config.host || "127.0.0.1")}" readonly /></label>
-          <label>Port<select name="port"><option value="7497" ${Number(config.port || 7497) === 7497 ? "selected" : ""}>7497 (TWS paper)</option><option value="4002" ${Number(config.port || 7497) === 4002 ? "selected" : ""}>4002 (Gateway paper)</option></select></label>
+          <label>Port<select name="port"><option value="7497" ${Number(config.port || 7497) === 7497 ? "selected" : ""}>7497 (TWS paper)</option><option value="4002" ${Number(config.port || 7497) === 4002 ? "selected" : ""}>4002 (Gateway paper)</option><option value="7496" ${Number(config.port || 7497) === 7496 ? "selected" : ""}>7496 (TWS live)</option><option value="4001" ${Number(config.port || 7497) === 4001 ? "selected" : ""}>4001 (Gateway live)</option></select></label>
           <label>Client ID<input type="number" min="1" max="32" name="client_id" value="${escapeHtml(config.client_id ?? 1)}" /></label>
           <label>Account ID<input type="text" name="account_id" value="${escapeHtml(config.account_id || "")}" /></label>
+          <label>Live Account ID<input type="text" name="live_account_id" value="${escapeHtml(config.live_account_id || "")}" /></label>
           <label>Timeout<input type="number" min="5" max="60" name="timeout" value="${escapeHtml(config.timeout ?? 10)}" /></label>
           <label style="display:flex; align-items:center; gap:8px; margin-top:24px"><input type="checkbox" name="live_backend" ${config.live_backend ? "checked" : ""} /> Live Backend</label>
           <div style="grid-column:1 / -1; display:flex; gap:8px; flex-wrap:wrap">
             <button class="btn btn--secondary" type="submit">Save Settings</button>
             <button class="btn btn--primary" type="button" id="regimeIBKRTestConnection">Test Connection</button>
+            <button class="btn ${liveUnlocked ? "btn--secondary" : "btn--danger"}" type="button" id="regimeIBKRLiveToggle">${liveUnlocked ? "Lock Live Trading" : "Unlock Live Trading"}</button>
           </div>
         </form>
         ${test ? `
@@ -2622,6 +2637,8 @@
     }
     const testBtn = byId("regimeIBKRTestConnection");
     if (testBtn) testBtn.addEventListener("click", testIBKRConnection);
+    const liveToggleBtn = byId("regimeIBKRLiveToggle");
+    if (liveToggleBtn) liveToggleBtn.addEventListener("click", toggleLiveTrading);
   }
 
   async function loadIBKRSettings() {
@@ -2632,6 +2649,11 @@
       if (!response.ok) throw new Error(payload.detail || `Unable to load IBKR settings (${response.status})`);
       state.ibkrSettings = payload.config || {};
       state.ibkrReadiness = payload.readiness || {};
+      if (state.config?.endpoints?.ibkr_status) {
+        const statusResponse = await fetch(state.config.endpoints.ibkr_status, { headers: { Accept: "application/json" } });
+        const statusPayload = await statusResponse.json();
+        if (statusResponse.ok) state.ibkrStatus = statusPayload;
+      }
       renderIBKRSettings();
     } catch (error) {
       const mount = byId("regimeIBKRSettings");
@@ -2650,6 +2672,7 @@
     body.set("port", String(fd.get("port") || "7497"));
     body.set("client_id", String(fd.get("client_id") || "1"));
     body.set("account_id", String(fd.get("account_id") || ""));
+    body.set("live_account_id", String(fd.get("live_account_id") || ""));
     body.set("timeout", String(fd.get("timeout") || "10"));
     body.set("live_backend", fd.get("live_backend") ? "true" : "false");
     try {
@@ -2681,6 +2704,38 @@
       showToast(payload.ibkr_connected === false || payload.tcp_reachable === false ? "Connection test failed." : "Connection test complete.");
     } catch (error) {
       showToast(`Unable to test IBKR connection: ${error.message || error}`, "error");
+    }
+  }
+
+  async function toggleLiveTrading() {
+    if (!state.config?.endpoints?.ibkr_live_unlock) return;
+    const liveUnlocked = !!(state.ibkrStatus && state.ibkrStatus.live_trading_unlocked);
+    const nextUnlocked = !liveUnlocked;
+    const liveAccountId = state.ibkrStatus?.config?.live_account_id || state.ibkrSettings?.live_account_id || "configured live account";
+    if (nextUnlocked) {
+      const confirmed = window.prompt(`WARNING: This will enable live trading with real money on account ${liveAccountId}.\nType exactly: I understand the risks`);
+      if (confirmed !== "I understand the risks") {
+        showToast("Live trading unlock cancelled.", "error");
+        return;
+      }
+    }
+    try {
+      const response = await fetch(state.config.endpoints.ibkr_live_unlock, {
+        method: "PUT",
+        headers: { Accept: "application/json", "Content-Type": "application/json" },
+        body: JSON.stringify({
+          unlocked: nextUnlocked,
+          confirm: nextUnlocked ? "I understand the risks" : "",
+        }),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.detail || `Live toggle failed (${response.status})`);
+      if (!state.ibkrStatus) state.ibkrStatus = {};
+      state.ibkrStatus.live_trading_unlocked = !!payload.live_trading_unlocked;
+      renderIBKRSettings();
+      showToast(payload.live_trading_unlocked ? "Live trading unlocked." : "Live trading locked.");
+    } catch (error) {
+      showToast(`Unable to update live trading lock: ${error.message || error}`, "error");
     }
   }
 

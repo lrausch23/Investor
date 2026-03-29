@@ -297,7 +297,7 @@ class IBConnectionManager:
             "client_id": self.client_id,
             "account_id": getattr(self.backend, "_account_id", "unknown"),
             "market_hours": get_market_hours_status().value,
-            "last_check": dt.datetime.utcnow().isoformat(),
+            "last_check": dt.datetime.now(dt.timezone.utc).isoformat(),
         }
 
 
@@ -324,19 +324,9 @@ def get_ib_backend(
     config: IBKRConfig = DEFAULT_IBKR_CONFIG,
 ) -> IBConnectionBackend:
     if live:
-        import asyncio
-
         from .ib_live_backend import LiveIBBackend
 
         derived_client_id = int(config.client_id) + max(1, int(portfolio_id))
-
-        # ib_insync requires an asyncio event loop. FastAPI sync endpoints
-        # run in AnyIO worker threads that lack one, so ensure a loop exists.
-        try:
-            asyncio.get_running_loop()
-        except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
 
         with _LIVE_BACKENDS_LOCK:
             backend = _LIVE_BACKENDS.get(int(portfolio_id))
