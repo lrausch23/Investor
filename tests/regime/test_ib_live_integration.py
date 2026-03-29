@@ -54,9 +54,9 @@ def test_live_order_lifecycle(live_backend):
     for _ in range(5):
         time.sleep(2)
         status = live_backend.get_order_status(result.order_id)
-        if status.status.value.lower() in {"filled", "submitted"}:
+        if status.status.value.lower() in {"filled", "submitted", "presubmitted"}:
             break
-    assert status.status.value.lower() in {"filled", "submitted", "pendingsubmit"}
+    assert status.status.value.lower() in {"filled", "submitted", "pendingsubmit", "presubmitted"}
 
     positions = live_backend.get_positions()
     assert isinstance(positions, list)

@@ -39,6 +39,7 @@ from .persistence import (
     list_paper_portfolios,
     list_themes,
     open_paper_position,
+    save_alert,
     save_daily_snapshot,
     set_auto_approve_threshold,
     set_daily_capital_ceiling_pct,
@@ -52,6 +53,15 @@ logger = logging.getLogger(__name__)
 
 CachedRegimeValue = tuple[str, float] | dict[str, Any]
 CachedRegimeMap = dict[str, CachedRegimeValue]
+
+
+def _normalize_close_series(frame: pd.DataFrame | None) -> pd.Series:
+    if frame is None or frame.empty or "Close" not in frame.columns:
+        return pd.Series(dtype=float)
+    close = frame["Close"]
+    if getattr(close, "ndim", 1) > 1:
+        close = close.iloc[:, 0]
+    return pd.to_numeric(close, errors="coerce").dropna()
 
 
 def compute_theme_budget(
@@ -258,8 +268,20 @@ def generate_buy_plans(
     *,
     config: PaperTradingConfig = DEFAULT_PAPER_TRADING_CONFIG,
 ) -> list[dict[str, Any]]:
+    from .vix_freeze import is_vix_frozen
+
     portfolio = get_paper_portfolio(portfolio_id)
     if portfolio is None:
+        return []
+    if is_vix_frozen():
+        logger.warning("VIX freeze active — skipping buy plan generation")
+        save_alert(
+            "vix_freeze",
+            "Buy plan generation skipped by VIX freeze",
+            severity="critical",
+            portfolio_id=portfolio_id,
+            message="VIX freeze is active. New Buy plans were not generated.",
+        )
         return []
     allocation = allocate_budget(portfolio_id, config=config)
     theme_budgets = {int(item["theme_id"]): item for item in allocation.get("themes", [])}
@@ -496,6 +518,8 @@ def execute_approved_plans(portfolio_id: int) -> dict[str, Any]:
 
 
 def auto_approve_plans(portfolio_id: int) -> dict[str, Any]:
+    from .vix_freeze import is_vix_frozen
+
     mode = get_operating_mode()
     if mode == "manual":
         return {
@@ -556,12 +580,25 @@ def auto_approve_plans(portfolio_id: int) -> dict[str, Any]:
                 blocked += 1
                 details.append({"plan_id": plan_id, "ticker": ticker, "action": action, "result": "blocked_ceiling", "meta_labeler_score": score, "order_value": order_value})
                 continue
+            if is_vix_frozen():
+                blocked += 1
+                details.append({"plan_id": plan_id, "ticker": ticker, "action": action, "result": "blocked_vix_freeze", "meta_labeler_score": score, "order_value": order_value})
+                continue
             if mode == "semi_auto":
                 if score is None:
                     skipped += 1
                     details.append({"plan_id": plan_id, "ticker": ticker, "action": action, "result": "skipped_no_score", "meta_labeler_score": score, "order_value": order_value})
                     continue
                 if score < threshold:
+                    save_alert(
+                        "meta_labeler_veto",
+                        f"ML veto: {ticker} (score {score:.0%})",
+                        severity="info",
+                        ticker=ticker,
+                        portfolio_id=portfolio_id,
+                        message=f"Plan skipped — ML confidence {score:.0%} below threshold {threshold:.0%}.",
+                        data={"plan_id": plan_id, "score": score, "threshold": threshold},
+                    )
                     skipped += 1
                     details.append({"plan_id": plan_id, "ticker": ticker, "action": action, "result": "skipped_ml", "meta_labeler_score": score, "order_value": order_value})
                     continue
@@ -797,9 +834,9 @@ def compute_benchmark_comparison(
                 progress=False,
                 threads=False,
             )
-        close = frame["Close"].dropna() if frame is not None and not frame.empty and "Close" in frame.columns else pd.Series(dtype=float)
-        _close_first = float(close.iloc[0].item() if hasattr(close.iloc[0], "item") else close.iloc[0]) if len(close) else 0.0
-        _close_last = float(close.iloc[-1].item() if hasattr(close.iloc[-1], "item") else close.iloc[-1]) if len(close) else 0.0
+        close = _normalize_close_series(frame)
+        _close_first = float(close.iloc[0]) if len(close) else 0.0
+        _close_last = float(close.iloc[-1]) if len(close) else 0.0
         benchmark_return = float((_close_last - _close_first) / _close_first) if len(close) >= 2 and _close_first else None
     except Exception as exc:
         logger.warning("Unable to compute paper-trading benchmark comparison.", exc_info=exc)

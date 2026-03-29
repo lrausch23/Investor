@@ -28,6 +28,9 @@ def _fake_runtime() -> dict:
         "frontier_provider": "auto",
         "frontier_model": "",
     }
+    alert_store = [
+        {"id": 1, "alert_type": "vix_freeze", "severity": "critical", "title": "VIX freeze activated", "message": "Buys frozen.", "acknowledged": 0, "created_at": "2026-03-29T12:00:00+00:00", "data": {}},
+    ]
 
     class FakePaperBrokerAdapter:
         def __init__(self, portfolio_id, **kwargs):
@@ -93,6 +96,14 @@ def _fake_runtime() -> dict:
         "set_setting": lambda key, value: settings_store.__setitem__(str(key), str(value)),
         "get_all_settings": lambda prefix="": {k: v for k, v in settings_store.items() if not prefix or k.startswith(prefix)},
         "delete_setting": lambda key: settings_store.pop(str(key), None) is not None,
+        "save_alert": lambda alert_type, title, **kwargs: {"id": 99, "alert_type": alert_type, "title": title, **kwargs},
+        "get_alerts": lambda unacknowledged_only=False, alert_type=None, limit=50, since=None: [
+            item for item in alert_store
+            if (not unacknowledged_only or not item.get("acknowledged"))
+            and (not alert_type or item.get("alert_type") == alert_type)
+        ][:limit],
+        "acknowledge_alert": lambda alert_id: next((item.update({"acknowledged": 1}) or True for item in alert_store if int(item["id"]) == int(alert_id)), False),
+        "acknowledge_all_alerts": lambda: sum(1 for item in alert_store if not item.get("acknowledged") and not item.update({"acknowledged": 1})),
         "delete_thesis": lambda ticker: True,
         "format_alert_summary": lambda alerts: "summary",
         "get_investor_db_path": lambda: "/tmp/investor.db",
@@ -130,6 +141,13 @@ def _fake_runtime() -> dict:
         "get_market_hours_status": lambda: SimpleNamespace(value="regular"),
         "DEFAULT_IBKR_CONFIG": SimpleNamespace(host="127.0.0.1", port=7497, client_id=1, account_id="DUP579027", live_backend=False),
         "validate_ibkr_readiness": lambda: {"all_clear": True, "port_is_paper": True, "host_is_local": True, "live_backend_enabled": False, "account_configured": True},
+        "check_vix_freeze": lambda: {"vix": 22.5, "frozen": False, "freeze_threshold": 35.0, "resume_threshold": 30.0, "changed": False},
+        "manual_override_vix_freeze": lambda unfreeze: {"vix": 22.5, "frozen": not bool(unfreeze), "freeze_threshold": 35.0, "resume_threshold": 30.0, "changed": True},
+        "get_vix_freeze_threshold": lambda: 35.0,
+        "get_vix_resume_threshold": lambda: 30.0,
+        "is_vix_frozen": lambda: False,
+        "dispatch_notification": lambda *args, **kwargs: {"in_app": True},
+        "sweep_monitoring_alerts": lambda portfolio_id: [],
         "DEFAULT_RISK_GUARDRAILS": object(),
         "OrderRequest": FakeOrderRequest,
         "validate_guardrails": lambda order, adapter, guardrails: SimpleNamespace(
@@ -383,15 +401,34 @@ def test_holdings_badge_partial_renders() -> None:
 
 
 def test_alerts_endpoint(monkeypatch) -> None:
-    monkeypatch.setattr(
-        regime_route,
-        "_fetch_recent_alerts",
-        lambda days=7: [{"ticker": "NVDA", "previous_label": "Neutral", "current_label": "Bull"}],
-    )
     client = _client(monkeypatch)
     response = client.get("/regime/alerts")
     assert response.status_code == 200
     assert response.json()["count"] == 1
+    assert response.json()["alerts"][0]["alert_type"] == "vix_freeze"
+
+
+def test_alert_acknowledge_routes(monkeypatch) -> None:
+    client = _client(monkeypatch)
+    response = client.post("/regime/alerts/1/acknowledge")
+    assert response.status_code == 200
+    assert response.json()["acknowledged"] is True
+    all_response = client.post("/regime/alerts/acknowledge-all")
+    assert all_response.status_code == 200
+    assert "acknowledged_count" in all_response.json()
+
+
+def test_vix_routes(monkeypatch) -> None:
+    client = _client(monkeypatch)
+    status_response = client.get("/regime/vix/status")
+    assert status_response.status_code == 200
+    assert status_response.json()["freeze_threshold"] == 35.0
+    settings_response = client.put("/regime/vix/settings", json={"freeze_threshold": 40, "resume_threshold": 33})
+    assert settings_response.status_code == 200
+    assert settings_response.json()["freeze_threshold"] == 35.0
+    override_response = client.post("/regime/vix/override", json={"unfreeze": False})
+    assert override_response.status_code == 200
+    assert override_response.json()["frozen"] is True
 
 
 def test_journal_endpoints(monkeypatch) -> None:

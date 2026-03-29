@@ -118,7 +118,7 @@ def test_get_ib_backend_live_true_import(temp_modules) -> None:
     assert getattr(backend, "_client_id", None) == 2
 
 
-def test_get_ib_backend_live_caches_per_portfolio(temp_modules) -> None:
+def test_get_ib_backend_live_caches_per_portfolio(temp_modules, monkeypatch) -> None:
     _store, config, _ib_types, ib_connection, _ibkr, _paper, _scheduled = temp_modules
     import sys
 
@@ -142,7 +142,7 @@ def test_get_ib_backend_live_caches_per_portfolio(temp_modules) -> None:
         def managedAccounts(self):
             return [config.DEFAULT_IBKR_CONFIG.account_id]
 
-    sys.modules["ib_insync"] = SimpleNamespace(IB=_FakeIB)
+    monkeypatch.setitem(sys.modules, "ib_insync", SimpleNamespace(IB=_FakeIB))
     backend1 = ib_connection.get_ib_backend(2, live=True, account_id=config.DEFAULT_IBKR_CONFIG.account_id)
     backend2 = ib_connection.get_ib_backend(2, live=True, account_id=config.DEFAULT_IBKR_CONFIG.account_id)
     backend3 = ib_connection.get_ib_backend(3, live=True, account_id=config.DEFAULT_IBKR_CONFIG.account_id)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
 import logging
 from typing import Any, Callable
@@ -19,19 +20,25 @@ class LiveIBBackend(IBConnectionBackend):
         self._account_id = account_id
         self._callbacks: list[Callable[[IBOrderState], None]] = []
         self._order_map: dict[int, object] = {}
+        self._status_callback_registered = False
 
     def connect(self, host: str, port: int, client_id: int) -> bool:
         thread = get_ib_thread()
 
-        def _connect() -> bool:
+        async def _connect() -> bool:
             if self._ib is None:
                 from ib_insync import IB
 
                 self._ib = IB()
             if self._ib.isConnected():
                 return True
-            self._ib.connect(host, port, clientId=client_id, timeout=10)
-            self._ib.orderStatusEvent += self._on_order_status
+            if hasattr(self._ib, "connectAsync"):
+                await self._ib.connectAsync(host, port, clientId=client_id, timeout=10)
+            else:
+                self._ib.connect(host, port, clientId=client_id, timeout=10)
+            if not self._status_callback_registered:
+                self._ib.orderStatusEvent += self._on_order_status
+                self._status_callback_registered = True
             if self._ib.isConnected():
                 accounts = list(self._ib.managedAccounts() or [])
                 if self._account_id not in accounts:
@@ -66,11 +73,11 @@ class LiveIBBackend(IBConnectionBackend):
         if self._ib is None:
             raise RuntimeError("IBKR backend is not connected.")
 
-        def _place() -> IBOrderState:
+        async def _place() -> IBOrderState:
             from ib_insync import Contract, LimitOrder, MarketOrder, StopOrder
 
             contract = Contract(symbol=order.contract_symbol, secType="STK", exchange="SMART", currency="USD")
-            self._ib.qualifyContracts(contract)
+            await self._ib.qualifyContractsAsync(contract)
             if order.order_type == IBOrderType.MARKET:
                 ib_order = MarketOrder(order.action.value, order.quantity)
             elif order.order_type == IBOrderType.LIMIT:
@@ -91,7 +98,7 @@ class LiveIBBackend(IBConnectionBackend):
         if self._ib is None:
             raise RuntimeError("IBKR backend is not connected.")
 
-        def _cancel() -> IBOrderState:
+        async def _cancel() -> IBOrderState:
             trade = self._order_map.get(int(order_id))
             if trade is None:
                 return IBOrderState(
@@ -107,7 +114,7 @@ class LiveIBBackend(IBConnectionBackend):
                     "Unknown order",
                 )
             self._ib.cancelOrder(trade.order)
-            self._ib.sleep(0.5)
+            await asyncio.sleep(0.5)
             return self._trade_to_state(trade, int(order_id))
 
         return get_ib_thread().run(_cancel)
@@ -121,8 +128,8 @@ class LiveIBBackend(IBConnectionBackend):
         if self._ib is None:
             return []
 
-        def _positions() -> list[IBPosition]:
-            positions = self._ib.positions()
+        async def _positions() -> list[IBPosition]:
+            positions = await self._ib.reqPositionsAsync()
             return [
                 IBPosition(
                     account_id=pos.account,
@@ -142,8 +149,8 @@ class LiveIBBackend(IBConnectionBackend):
         if self._ib is None:
             raise RuntimeError("IBKR backend is not connected.")
 
-        def _summary() -> IBAccountSummary:
-            summary = self._ib.accountSummary(self._account_id)
+        async def _summary() -> IBAccountSummary:
+            summary = await self._ib.accountSummaryAsync(self._account_id)
             values = {}
             for item in summary:
                 if item.account == self._account_id:

@@ -49,6 +49,9 @@
     paperAudit: [],
     paperAuditSummary: null,
     paperMonitoring: null,
+    alertHistory: [],
+    unacknowledgedAlerts: [],
+    vixStatus: null,
     monitoringTimer: null,
     paperPrecheck: {},
     paperExecutionResults: null,
@@ -355,6 +358,153 @@
     window.setTimeout(() => {
       if (toast.parentNode) toast.parentNode.removeChild(toast);
     }, 5000);
+  }
+
+  function alertEndpoint(alertId = null) {
+    const base = String(state.config?.endpoints?.alert_acknowledge || "");
+    return alertId == null ? "" : base.replace("__ALERT_ID__", encodeURIComponent(String(alertId)));
+  }
+
+  function alertToneStyle(severity) {
+    const normalized = String(severity || "info").toLowerCase();
+    if (normalized === "critical") return "background:#fef2f2;border:1px solid #fecaca;color:#991b1b";
+    if (normalized === "warning") return "background:#fffbeb;border:1px solid #fde68a;color:#92400e";
+    return "background:#eff6ff;border:1px solid #bfdbfe;color:#1d4ed8";
+  }
+
+  function renderAlertToasts() {
+    const mount = byId("regimeAlertToastMount");
+    if (!mount) return;
+    const alerts = Array.isArray(state.unacknowledgedAlerts) ? state.unacknowledgedAlerts : [];
+    if (!alerts.length) {
+      mount.innerHTML = "";
+      return;
+    }
+    mount.innerHTML = `
+      <div class="ui-card" style="padding:12px">
+        <div class="table-toolbar">
+          <div class="ui-section-title">Active Alerts</div>
+          <button class="btn btn--secondary" type="button" id="regimeAlertDismissAll">Dismiss all</button>
+        </div>
+        <div style="display:grid; gap:8px; margin-top:10px">
+          ${alerts.slice(0, 5).map((alert) => `
+            <div style="${alertToneStyle(alert.severity)}; border-radius:10px; padding:10px; display:flex; justify-content:space-between; gap:10px; align-items:flex-start">
+              <div>
+                <div style="font-weight:600">${escapeHtml(alert.title || "")}</div>
+                <div class="ui-muted" style="margin-top:4px">${escapeHtml(alert.message || "")}</div>
+              </div>
+              <button class="btn btn--secondary" type="button" data-alert-ack="${escapeHtml(alert.id)}">×</button>
+            </div>
+          `).join("")}
+        </div>
+      </div>
+    `;
+    mount.querySelectorAll("[data-alert-ack]").forEach((button) => {
+      button.addEventListener("click", async () => {
+        try {
+          const response = await fetch(alertEndpoint(button.getAttribute("data-alert-ack")), { method: "POST", headers: { Accept: "application/json" } });
+          const payload = await response.json();
+          if (!response.ok) throw new Error(payload.detail || `Acknowledge failed (${response.status})`);
+          await loadAlerts();
+        } catch (error) {
+          showToast(`Unable to acknowledge alert: ${error.message || error}`, "error");
+        }
+      });
+    });
+    const dismissAll = byId("regimeAlertDismissAll");
+    if (dismissAll) {
+      dismissAll.addEventListener("click", async () => {
+        try {
+          const response = await fetch(state.config.endpoints.alerts_acknowledge_all, { method: "POST", headers: { Accept: "application/json" } });
+          const payload = await response.json();
+          if (!response.ok) throw new Error(payload.detail || `Dismiss all failed (${response.status})`);
+          await loadAlerts();
+        } catch (error) {
+          showToast(`Unable to dismiss alerts: ${error.message || error}`, "error");
+        }
+      });
+    }
+  }
+
+  function renderAlertHistory() {
+    const mount = byId("regimeAlertHistoryMount");
+    if (!mount) return;
+    const alerts = Array.isArray(state.alertHistory) ? state.alertHistory : [];
+    mount.innerHTML = `
+      <details class="ui-card" style="padding:12px" open>
+        <summary style="cursor:pointer; font-weight:600">Alert History</summary>
+        <div class="table-wrap" style="margin-top:10px">
+          <table>
+            <thead>
+              <tr>
+                <th>Time</th>
+                <th>Type</th>
+                <th>Severity</th>
+                <th>Title</th>
+                <th>Ack</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${alerts.length ? alerts.map((alert) => `
+                <tr>
+                  <td>${escapeHtml(relativeTime(alert.created_at))}</td>
+                  <td><span class="ui-badge ui-badge--neutral">${escapeHtml(alert.alert_type || "")}</span></td>
+                  <td><span class="${String(alert.severity || "") === "critical" ? "ui-badge ui-badge--bad" : String(alert.severity || "") === "warning" ? "ui-badge ui-badge--warn" : "ui-badge ui-badge--safe"}">${escapeHtml(alert.severity || "")}</span></td>
+                  <td>${escapeHtml(alert.title || "")}</td>
+                  <td>${Number(alert.acknowledged || 0) ? "✓" : ""}</td>
+                </tr>
+              `).join("") : '<tr><td colspan="5" class="ui-muted">No alerts yet.</td></tr>'}
+            </tbody>
+          </table>
+        </div>
+      </details>
+    `;
+  }
+
+  function renderVixStatus() {
+    const mount = byId("regimeVixStatusMount");
+    if (!mount) return;
+    const status = state.vixStatus || {};
+    if (status.vix == null && !status.frozen) {
+      mount.innerHTML = "";
+      return;
+    }
+    const vix = Number(status.vix || 0);
+    const freeze = Number(status.freeze_threshold || 35);
+    const resume = Number(status.resume_threshold || 30);
+    const tone = status.frozen ? "banner--warn" : vix >= freeze ? "banner--warn" : vix >= resume ? "ui-card" : "banner--ok";
+    mount.innerHTML = `
+      <div class="${tone}" style="padding:10px; border-radius:10px">
+        <div class="table-toolbar">
+          <div>
+            <div style="font-weight:600">VIX: ${escapeHtml(vix.toFixed(1))}</div>
+            <div class="ui-muted">${status.frozen ? "VIX FREEZE ACTIVE — Buy entries suspended" : `Freeze ${freeze.toFixed(0)} · Resume ${resume.toFixed(0)}`}</div>
+          </div>
+          <button class="btn btn--secondary" type="button" id="regimeVixOverride">${status.frozen ? "Manual Unfreeze" : "Manual Freeze"}</button>
+        </div>
+      </div>
+    `;
+    const button = byId("regimeVixOverride");
+    if (button) {
+      button.addEventListener("click", async () => {
+        const unfreeze = !!status.frozen;
+        if (!window.confirm(unfreeze ? "Lift the VIX freeze manually?" : "Activate the VIX freeze manually?")) return;
+        try {
+          const response = await fetch(state.config.endpoints.vix_override, {
+            method: "POST",
+            headers: { Accept: "application/json", "Content-Type": "application/json" },
+            body: JSON.stringify({ unfreeze }),
+          });
+          const payload = await response.json();
+          if (!response.ok) throw new Error(payload.detail || `VIX override failed (${response.status})`);
+          state.vixStatus = payload;
+          renderVixStatus();
+          await loadAlerts();
+        } catch (error) {
+          showToast(`Unable to update VIX freeze: ${error.message || error}`, "error");
+        }
+      });
+    }
   }
 
   function syncCustomInputFromTickers(tickers) {
@@ -2507,6 +2657,32 @@
     updateStatusBar();
   }
 
+  async function loadAlerts() {
+    if (!state.config?.endpoints?.alerts) return;
+    const [unackResponse, historyResponse] = await Promise.all([
+      fetch(`${state.config.endpoints.alerts}?unacknowledged=true&limit=5`, { headers: { Accept: "application/json" } }),
+      fetch(`${state.config.endpoints.alerts}?limit=25`, { headers: { Accept: "application/json" } }),
+    ]);
+    const [unackPayload, historyPayload] = await Promise.all([unackResponse.json(), historyResponse.json()]);
+    if (unackResponse.ok) {
+      state.unacknowledgedAlerts = Array.isArray(unackPayload.alerts) ? unackPayload.alerts : [];
+    }
+    if (historyResponse.ok) {
+      state.alertHistory = Array.isArray(historyPayload.alerts) ? historyPayload.alerts : [];
+    }
+    renderAlertToasts();
+    renderAlertHistory();
+  }
+
+  async function loadVixStatus() {
+    if (!state.config?.endpoints?.vix_status) return;
+    const response = await fetch(state.config.endpoints.vix_status, { headers: { Accept: "application/json" } });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.detail || `Unable to load VIX status (${response.status})`);
+    state.vixStatus = payload;
+    renderVixStatus();
+  }
+
   function startMonitoringPolling() {
     stopMonitoringPolling();
     const portfolio = currentPaperPortfolio();
@@ -2514,7 +2690,7 @@
     const interval = isMarketOpenForMonitoring() ? 30000 : 120000;
     state.monitoringTimer = window.setInterval(async () => {
       try {
-        await refreshMonitoringDashboard();
+        await Promise.all([refreshMonitoringDashboard(), loadAlerts(), loadVixStatus()]);
       } catch (error) {
         stopMonitoringPolling();
         showToast(`Unable to refresh monitoring dashboard: ${error.message || error}`, "error");
@@ -3136,6 +3312,14 @@
                     Max daily deployment
                     <input id="regimeAutonomyCeiling" type="number" min="0" max="100" step="5" value="${escapeHtml((Number(autonomy.daily_capital_ceiling_pct ?? 0.25) * 100).toFixed(0))}" />
                   </label>
+                  <label>
+                    VIX freeze threshold
+                    <input id="regimeVixFreezeThreshold" type="number" min="10" max="100" step="1" value="${escapeHtml(Number((state.vixStatus || {}).freeze_threshold || 35).toFixed(0))}" />
+                  </label>
+                  <label>
+                    VIX resume threshold
+                    <input id="regimeVixResumeThreshold" type="number" min="5" max="100" step="1" value="${escapeHtml(Number((state.vixStatus || {}).resume_threshold || 30).toFixed(0))}" />
+                  </label>
                   <button class="btn btn--secondary" type="button" id="regimeAutonomySave" style="align-self:end">Save</button>
                 </div>
               </details>
@@ -3233,10 +3417,30 @@
       autonomySave.addEventListener("click", async () => {
         const thresholdInput = byId("regimeAutonomyThreshold");
         const ceilingInput = byId("regimeAutonomyCeiling");
+        const vixFreezeInput = byId("regimeVixFreezeThreshold");
+        const vixResumeInput = byId("regimeVixResumeThreshold");
         await saveAutonomySettings({
           auto_approve_threshold: thresholdInput ? Number(thresholdInput.value || autonomy.auto_approve_threshold || 0.65) : autonomy.auto_approve_threshold,
           daily_capital_ceiling_pct: ceilingInput ? Number(ceilingInput.value || 25) / 100 : autonomy.daily_capital_ceiling_pct,
         });
+        if (state.config?.endpoints?.vix_settings) {
+          try {
+            const response = await fetch(state.config.endpoints.vix_settings, {
+              method: "PUT",
+              headers: { Accept: "application/json", "Content-Type": "application/json" },
+              body: JSON.stringify({
+                freeze_threshold: vixFreezeInput ? Number(vixFreezeInput.value || 35) : 35,
+                resume_threshold: vixResumeInput ? Number(vixResumeInput.value || 30) : 30,
+              }),
+            });
+            const payload = await response.json();
+            if (!response.ok) throw new Error(payload.detail || `VIX settings failed (${response.status})`);
+            state.vixStatus = { ...(state.vixStatus || {}), ...payload, frozen: !!(state.vixStatus || {}).frozen, vix: (state.vixStatus || {}).vix };
+            renderVixStatus();
+          } catch (error) {
+            showToast(`Unable to save VIX settings: ${error.message || error}`, "error");
+          }
+        }
       });
     }
   }
@@ -3275,18 +3479,24 @@
       state.paperAudit = [];
       state.paperAuditSummary = null;
       state.paperMonitoring = null;
+      state.unacknowledgedAlerts = [];
+      state.alertHistory = [];
+      state.vixStatus = null;
       state.paperPrecheck = {};
       renderPaperBudget();
       renderPaperPlans();
       renderPaperPositions();
       renderPaperPerformance();
       renderAuditTrail();
+      renderAlertToasts();
+      renderAlertHistory();
+      renderVixStatus();
       renderMonitoringDashboard(null);
       stopMonitoringPolling();
       return;
     }
     try {
-      const [detailResponse, autonomySettingsResponse, autonomyStatusResponse, budgetResponse, plansResponse, positionsResponse, performanceResponse, auditResponse, precheckResponse, monitoringResponse] = await Promise.all([
+      const [detailResponse, autonomySettingsResponse, autonomyStatusResponse, budgetResponse, plansResponse, positionsResponse, performanceResponse, auditResponse, precheckResponse, monitoringResponse, alertsResponse, alertHistoryResponse, vixResponse] = await Promise.all([
         fetch(paperEndpoint("paper_portfolio", portfolioId), { headers: { Accept: "application/json" } }),
         fetch(state.config.endpoints.autonomy_settings, { headers: { Accept: "application/json" } }),
         fetch(paperEndpoint("paper_autonomy_status", portfolioId), { headers: { Accept: "application/json" } }),
@@ -3297,6 +3507,9 @@
         fetch(paperEndpoint("paper_audit", portfolioId), { headers: { Accept: "application/json" } }),
         fetch(paperEndpoint("paper_precheck", portfolioId), { method: "POST", headers: { Accept: "application/json" } }),
         fetch(paperEndpoint("paper_monitoring", portfolioId), { headers: { Accept: "application/json" } }),
+        fetch(`${state.config.endpoints.alerts}?unacknowledged=true&limit=5`, { headers: { Accept: "application/json" } }),
+        fetch(`${state.config.endpoints.alerts}?limit=25`, { headers: { Accept: "application/json" } }),
+        fetch(state.config.endpoints.vix_status, { headers: { Accept: "application/json" } }),
       ]);
       const parseJson = async (response) => {
         try {
@@ -3305,7 +3518,7 @@
           return {};
         }
       };
-      const [detail, autonomySettings, autonomyStatus, budget, plans, positions, performance, audit, precheck, monitoring] = await Promise.all([
+      const [detail, autonomySettings, autonomyStatus, budget, plans, positions, performance, audit, precheck, monitoring, alerts, alertHistory, vixStatus] = await Promise.all([
         parseJson(detailResponse),
         parseJson(autonomySettingsResponse),
         parseJson(autonomyStatusResponse),
@@ -3316,6 +3529,9 @@
         parseJson(auditResponse),
         parseJson(precheckResponse),
         parseJson(monitoringResponse),
+        parseJson(alertsResponse),
+        parseJson(alertHistoryResponse),
+        parseJson(vixResponse),
       ]);
       const warnPanel = (label, response, payload) => {
         const message = payload && (payload.detail || payload.error) ? payload.detail || payload.error : `${label} failed (${response.status})`;
@@ -3384,12 +3600,33 @@
         warnPanel("Precheck", precheckResponse, precheck);
         state.paperPrecheck = {};
       }
+      if (alertsResponse.ok) {
+        state.unacknowledgedAlerts = Array.isArray(alerts.alerts) ? alerts.alerts : [];
+      } else {
+        warnPanel("Alerts", alertsResponse, alerts);
+        state.unacknowledgedAlerts = [];
+      }
+      if (alertHistoryResponse.ok) {
+        state.alertHistory = Array.isArray(alertHistory.alerts) ? alertHistory.alerts : [];
+      } else {
+        warnPanel("Alert history", alertHistoryResponse, alertHistory);
+        state.alertHistory = [];
+      }
+      if (vixResponse.ok) {
+        state.vixStatus = vixStatus;
+      } else {
+        warnPanel("VIX", vixResponse, vixStatus);
+        state.vixStatus = null;
+      }
       renderPaperPortfolioSection();
       renderPaperBudget();
       renderPaperPlans();
       renderPaperPositions();
       renderPaperPerformance();
       renderAuditTrail();
+      renderAlertToasts();
+      renderAlertHistory();
+      renderVixStatus();
       renderMonitoringDashboard(monitoring);
       maybeStartPaperOrderPolling();
       startMonitoringPolling();
@@ -4200,6 +4437,9 @@
       renderPaperPositions();
       renderPaperPerformance();
       renderAuditTrail();
+      renderAlertToasts();
+      renderAlertHistory();
+      renderVixStatus();
       renderMonitoringDashboard(null);
     } catch (error) {
       console.error("Unable to render initial paper trading shell.", error);

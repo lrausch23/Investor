@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib
 from pathlib import Path
 
+import pandas as pd
 import pytest
 from fastapi.testclient import TestClient
 
@@ -237,6 +238,19 @@ def test_budget_route(temp_modules, monkeypatch) -> None:
     response = client.get(f"/regime/paper-portfolio/{portfolio['id']}/budget")
     assert response.status_code == 200
     assert "themes" in response.json()
+
+
+def test_compute_benchmark_comparison_handles_multicolumn_close(temp_modules) -> None:
+    store, paper, _scheduled, _config = temp_modules
+    portfolio = store.create_paper_portfolio("Sandbox", 100000.0)
+    frame = pd.DataFrame(
+        {
+            ("Close", "SPY"): [100.0, 110.0],
+            ("Close", "QQQ"): [200.0, 220.0],
+        }
+    )
+    payload = paper.compute_benchmark_comparison(portfolio["id"], benchmark_data=frame)
+    assert payload["benchmark_return_pct"] == pytest.approx(10.0)
 
 
 def test_scheduled_plan_generation(temp_modules, monkeypatch) -> None:

@@ -184,6 +184,9 @@ def _load_hmm_runtime() -> tuple[dict[str, Any] | None, str | None]:
             count_todays_trades,
             delete_setting,
             get_auto_approve_threshold,
+            get_alerts,
+            acknowledge_alert,
+            acknowledge_all_alerts,
             get_daily_capital_ceiling_pct,
             get_daily_capital_deployed,
             get_supply_chain,
@@ -207,6 +210,7 @@ def _load_hmm_runtime() -> tuple[dict[str, Any] | None, str | None]:
             open_paper_position,
             remove_ticker_from_theme,
             save_supply_chain_layers,
+            save_alert,
             save_regime_change_with_price,
             save_daily_snapshot,
             save_regime_event,
@@ -266,6 +270,8 @@ def _load_hmm_runtime() -> tuple[dict[str, Any] | None, str | None]:
             compute_theme_attribution,
         )
         from src.regime.alerts import format_alert_summary
+        from src.regime.notifications import dispatch_notification
+        from src.regime.monitoring import sweep_monitoring_alerts
         from src.regime.paper_trading import (
             allocate_budget,
             auto_approve_plans,
@@ -302,6 +308,13 @@ def _load_hmm_runtime() -> tuple[dict[str, Any] | None, str | None]:
             compute_unified_confidence,
         )
         from src.regime.triple_barrier import BarrierConfig, apply_triple_barrier_labels, build_labeled_frame
+        from src.regime.vix_freeze import (
+            check_vix_freeze,
+            get_vix_freeze_threshold,
+            get_vix_resume_threshold,
+            is_vix_frozen,
+            manual_override_vix_freeze,
+        )
     except ImportError:
         return None, (
             "Regime analytics are unavailable because hmm-market-regime-tool is not installed "
@@ -368,6 +381,10 @@ def _load_hmm_runtime() -> tuple[dict[str, Any] | None, str | None]:
         "count_todays_trades": count_todays_trades,
         "get_setting": get_setting,
         "set_setting": set_setting,
+        "save_alert": save_alert,
+        "get_alerts": get_alerts,
+        "acknowledge_alert": acknowledge_alert,
+        "acknowledge_all_alerts": acknowledge_all_alerts,
         "get_all_settings": get_all_settings,
         "delete_setting": delete_setting,
         "get_operating_mode": get_operating_mode,
@@ -448,6 +465,13 @@ def _load_hmm_runtime() -> tuple[dict[str, Any] | None, str | None]:
         "compute_daily_snapshot": compute_daily_snapshot,
         "record_trade_outcome": record_trade_outcome,
         "save_daily_snapshot": save_daily_snapshot,
+        "dispatch_notification": dispatch_notification,
+        "sweep_monitoring_alerts": sweep_monitoring_alerts,
+        "check_vix_freeze": check_vix_freeze,
+        "manual_override_vix_freeze": manual_override_vix_freeze,
+        "is_vix_frozen": is_vix_frozen,
+        "get_vix_freeze_threshold": get_vix_freeze_threshold,
+        "get_vix_resume_threshold": get_vix_resume_threshold,
         "get_calibration_data": get_calibration_data,
         "get_historical_regime_durations": get_historical_regime_durations,
         "get_trade_plan": get_trade_plan,
@@ -1404,6 +1428,13 @@ def _fetch_regime_change_history(tickers: list[str], days: int = 90) -> list[dic
 
 
 def _fetch_recent_alerts(days: int = 7) -> list[dict[str, Any]]:
+    runtime, _runtime_error = _load_hmm_runtime()
+    if runtime is not None and callable(runtime.get("get_alerts")):
+        since = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=int(days))).strftime("%Y-%m-%d")
+        try:
+            return runtime["get_alerts"](since=since, limit=50)
+        except Exception as exc:
+            logger.debug("Unable to load persisted alerts.", exc_info=exc)
     db_path = next((candidate for candidate in _history_db_candidates() if candidate.exists()), None)
     if db_path is None:
         return []
@@ -2820,8 +2851,13 @@ def _build_shell_context(
             "effectiveness": "/regime/effectiveness",
             "backtest": "/regime/backtest/__TICKER__",
             "alerts": "/regime/alerts",
+            "alert_acknowledge": "/regime/alerts/__ALERT_ID__/acknowledge",
+            "alerts_acknowledge_all": "/regime/alerts/acknowledge-all",
             "journal": "/regime/journal",
             "journal_stats": "/regime/journal/stats",
+            "vix_status": "/regime/vix/status",
+            "vix_settings": "/regime/vix/settings",
+            "vix_override": "/regime/vix/override",
             "themes": "/regime/themes",
             "theme": "/regime/themes/__THEME_ID__",
             "theme_tickers": "/regime/themes/__THEME_ID__/tickers",
@@ -4965,11 +5001,101 @@ def regime_backtest(
 
 @router.get("/alerts")
 def regime_alerts(
+    unacknowledged: bool = False,
+    alert_type: str | None = None,
+    limit: int = 50,
     session: Session = Depends(db_session),
     actor: str = Depends(require_actor),
 ):
     del session, actor
-    return JSONResponse(content={"alerts": _fetch_recent_alerts(days=7), "count": len(_fetch_recent_alerts(days=7))})
+    runtime, runtime_error = _load_hmm_runtime()
+    if runtime is None:
+        raise HTTPException(status_code=503, detail=runtime_error or "Regime analytics are unavailable.")
+    alerts = runtime["get_alerts"](
+        unacknowledged_only=bool(unacknowledged),
+        alert_type=alert_type,
+        limit=max(1, min(int(limit), 200)),
+    )
+    return JSONResponse(content=_json_ready({"alerts": alerts, "count": len(alerts)}))
+
+
+@router.post("/alerts/{alert_id}/acknowledge")
+def regime_alert_acknowledge(
+    alert_id: int,
+    session: Session = Depends(db_session),
+    actor: str = Depends(require_actor),
+):
+    del session, actor
+    runtime, runtime_error = _load_hmm_runtime()
+    if runtime is None:
+        raise HTTPException(status_code=503, detail=runtime_error or "Regime analytics are unavailable.")
+    success = bool(runtime["acknowledge_alert"](alert_id))
+    if not success:
+        raise HTTPException(status_code=404, detail="Alert not found.")
+    return JSONResponse(content={"acknowledged": True})
+
+
+@router.post("/alerts/acknowledge-all")
+def regime_alerts_acknowledge_all(
+    session: Session = Depends(db_session),
+    actor: str = Depends(require_actor),
+):
+    del session, actor
+    runtime, runtime_error = _load_hmm_runtime()
+    if runtime is None:
+        raise HTTPException(status_code=503, detail=runtime_error or "Regime analytics are unavailable.")
+    count = int(runtime["acknowledge_all_alerts"]())
+    return JSONResponse(content={"acknowledged_count": count})
+
+
+@router.get("/vix/status")
+def regime_vix_status(
+    session: Session = Depends(db_session),
+    actor: str = Depends(require_actor),
+):
+    del session, actor
+    runtime, runtime_error = _load_hmm_runtime()
+    if runtime is None:
+        raise HTTPException(status_code=503, detail=runtime_error or "Regime analytics are unavailable.")
+    return JSONResponse(content=_json_ready(runtime["check_vix_freeze"]()))
+
+
+@router.put("/vix/settings")
+async def regime_vix_settings(
+    request: Request,
+    session: Session = Depends(db_session),
+    actor: str = Depends(require_actor),
+):
+    del session, actor
+    runtime, runtime_error = _load_hmm_runtime()
+    if runtime is None:
+        raise HTTPException(status_code=503, detail=runtime_error or "Regime analytics are unavailable.")
+    body = await request.json()
+    if "freeze_threshold" in body:
+        runtime["set_setting"]("vix_freeze_threshold", str(max(10.0, float(body["freeze_threshold"]))))
+    if "resume_threshold" in body:
+        runtime["set_setting"]("vix_resume_threshold", str(max(5.0, float(body["resume_threshold"]))))
+    return JSONResponse(
+        content={
+            "freeze_threshold": runtime["get_vix_freeze_threshold"](),
+            "resume_threshold": runtime["get_vix_resume_threshold"](),
+        }
+    )
+
+
+@router.post("/vix/override")
+async def regime_vix_override(
+    request: Request,
+    session: Session = Depends(db_session),
+    actor: str = Depends(require_actor),
+):
+    del session, actor
+    runtime, runtime_error = _load_hmm_runtime()
+    if runtime is None:
+        raise HTTPException(status_code=503, detail=runtime_error or "Regime analytics are unavailable.")
+    body = await request.json()
+    status = runtime["manual_override_vix_freeze"](bool(body.get("unfreeze", True)))
+    return JSONResponse(content=_json_ready(status))
 
 
 @router.get("/journal")

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import threading
 from concurrent.futures import Future, TimeoutError as FutureTimeoutError
@@ -45,7 +46,18 @@ class IBThread:
         def _task() -> None:
             try:
                 result = fn(*args)
-                future.set_result(result)
+                if inspect.isawaitable(result):
+                    task = self._loop.create_task(result)
+
+                    def _copy_result(completed: asyncio.Future[Any]) -> None:
+                        try:
+                            future.set_result(completed.result())
+                        except Exception as exc:
+                            future.set_exception(exc)
+
+                    task.add_done_callback(_copy_result)
+                else:
+                    future.set_result(result)
             except Exception as exc:
                 future.set_exception(exc)
 

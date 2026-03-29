@@ -44,6 +44,14 @@ def test_ib_thread_starts_and_runs_callable() -> None:
     assert thread.run(lambda: 42) == 42
 
 
+def test_ib_thread_runs_coroutine() -> None:
+    async def _answer() -> int:
+        await asyncio.sleep(0)
+        return 42
+
+    assert ib_thread_module.get_ib_thread().run(_answer) == 42
+
+
 def test_ib_thread_runs_on_dedicated_thread() -> None:
     caller = threading.current_thread()
     ib_thread = ib_thread_module.get_ib_thread()
@@ -218,4 +226,3 @@ def test_scheduler_skips_auto_execute_for_live_unlocked_ibkr(monkeypatch) -> Non
     monkeypatch.setattr("src.regime.scheduled_runner.load_payload", lambda: {"rows": []})
     result = importlib.import_module("src.regime.scheduled_runner").run_scheduled_paper_plans()
     assert result["portfolios"][0]["auto_execution"]["skipped"] is True
-

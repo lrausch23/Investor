@@ -8,7 +8,7 @@ from .data import download_market_frame
 from .digest import generate_weekly_digest
 from .hmm_engine import fit_regime_model
 from .investor_adapter import get_tax_assumptions, get_wash_sale_risk, positions_by_ticker_and_account
-from .persistence import get_recent_regime_changes, get_signal_effectiveness, save_regime_event
+from .persistence import get_alerts, get_recent_regime_changes, get_signal_effectiveness, save_alert, save_regime_event
 from .signals import (
     build_composite_signal,
     compute_price_targets,
@@ -243,3 +243,20 @@ def format_alert_summary(alerts: list[Any]) -> str:
                 f"{alert.ticker}: price {alert.current_price:.2f} is within {alert.distance_pct:.1%} of stop {alert.stop_price:.2f}"
             )
     return "\n".join(lines)
+
+
+def check_loss_breach(portfolio_id: int, daily_pnl: float, daily_loss_limit: float) -> dict[str, Any] | None:
+    if daily_pnl >= 0 or abs(float(daily_pnl)) <= float(daily_loss_limit):
+        return None
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    existing = get_alerts(alert_type="daily_loss_breach", since=today, limit=50)
+    if any(int(item.get("portfolio_id") or 0) == int(portfolio_id) for item in existing):
+        return None
+    return save_alert(
+        "daily_loss_breach",
+        f"Daily loss limit breached: ${daily_pnl:,.2f}",
+        severity="critical",
+        portfolio_id=portfolio_id,
+        message=f"Daily P&L ${daily_pnl:,.2f} exceeded loss limit ${daily_loss_limit:,.2f}.",
+        data={"daily_pnl": float(daily_pnl), "limit": float(daily_loss_limit)},
+    )

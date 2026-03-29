@@ -4,11 +4,14 @@ from typing import Any
 
 from .alerts import (
     check_regime_changes,
+    check_loss_breach,
     check_signal_changes,
     check_stop_proximity,
     check_transition_risk_spikes,
     format_alert_summary,
 )
+from .notifications import dispatch_notification
+from .monitoring import sweep_monitoring_alerts
 from .discovery import check_entry_signals, expire_stale_candidates, run_full_discovery
 from .investor_adapter import get_investor_db_path, get_portfolio_tickers_filtered, get_latest_prices
 from .attribution import compute_ml_accuracy, compute_theme_attribution
@@ -24,11 +27,13 @@ from .persistence import (
     update_transition_outcome,
 )
 from .config import DEFAULT_IBKR_CONFIG
+from .vix_freeze import check_vix_freeze
 from .broker_adapter import PaperBrokerAdapter
 from .config import DEFAULT_RISK_GUARDRAILS
 from .ib_connection import get_ib_backend, get_mock_ib_backend
 from .ibkr_adapter import IBKRBrokerAdapter, poll_pending_orders
 from src.app.routes.regime_cache import load_payload
+from .persistence import save_alert
 
 
 def run_scheduled_regime_checks(tickers: list[str] | None = None) -> dict[str, Any]:
@@ -59,6 +64,47 @@ def run_scheduled_regime_checks(tickers: list[str] | None = None) -> dict[str, A
             return_21d=realized,
         )
     all_alerts = [*regime_alerts, *risk_alerts, *signal_alerts, *stop_alerts]
+    for alert in all_alerts:
+        payload = None
+        if hasattr(alert, "ticker") and hasattr(alert, "new_label"):
+            payload = save_alert(
+                "regime_change",
+                f"{alert.ticker}: {alert.previous_label or 'Unknown'} → {alert.new_label}",
+                severity="warning",
+                ticker=alert.ticker,
+                message=f"Regime transition, action: {alert.composite_action}",
+                data={"previous": alert.previous_label, "new": alert.new_label, "risk": alert.transition_risk},
+            )
+        elif hasattr(alert, "threshold"):
+            payload = save_alert(
+                "risk_spike",
+                f"{alert.ticker}: transition risk {alert.transition_risk:.1%}",
+                severity="warning",
+                ticker=alert.ticker,
+                message=f"Transition risk exceeded threshold {alert.threshold:.0%}.",
+                data={"risk": alert.transition_risk, "threshold": alert.threshold},
+            )
+        elif hasattr(alert, "previous_action"):
+            payload = save_alert(
+                "signal_change",
+                f"{alert.ticker}: {alert.previous_action or 'Unknown'} → {alert.new_action}",
+                severity="info",
+                ticker=alert.ticker,
+                message="Composite signal changed.",
+                data={"previous": alert.previous_action, "new": alert.new_action},
+            )
+        elif hasattr(alert, "stop_price"):
+            severity = "critical" if float(alert.distance_pct) <= 0.02 else "warning"
+            payload = save_alert(
+                "stop_proximity",
+                f"{alert.ticker}: {alert.distance_pct:.1%} from stop",
+                severity=severity,
+                ticker=alert.ticker,
+                message=f"Price {alert.current_price:.2f} is near stop {alert.stop_price:.2f}.",
+                data={"distance_pct": alert.distance_pct, "stop_price": alert.stop_price},
+            )
+        if payload and payload.get("severity") in {"warning", "critical"}:
+            dispatch_notification(str(payload.get("alert_type")), str(payload.get("title")), str(payload.get("message") or ""), str(payload.get("severity") or "info"))
     return {"alerts": all_alerts, "summary": format_alert_summary(all_alerts)}
 
 
@@ -81,6 +127,7 @@ def run_scheduled_discovery(
 
 
 def run_scheduled_paper_plans() -> dict[str, Any]:
+    vix_status = check_vix_freeze()
     cached_payload = load_payload() or {}
     cached_rows = cached_payload.get("rows") if isinstance(cached_payload, dict) else []
     cached_regime = {
@@ -93,6 +140,7 @@ def run_scheduled_paper_plans() -> dict[str, Any]:
         if str(portfolio.get("status") or "") != "Active":
             continue
         portfolio_id = int(portfolio["id"])
+        monitoring_alerts = sweep_monitoring_alerts(portfolio_id)
         expired = expire_stale_plans(portfolio_id)
         generated = generate_daily_plans(portfolio_id, cached_regime=cached_regime, cached_payload=cached_payload)
         auto_result = auto_approve_plans(portfolio_id)
@@ -131,12 +179,13 @@ def run_scheduled_paper_plans() -> dict[str, Any]:
                 "buy_count": len(generated.get("buy_plans") or []),
                 "exit_count": len(generated.get("exit_plans") or []),
                 "expired_count": expired,
+                "alert_count": len(monitoring_alerts),
                 "polled_orders": polled,
                 "auto_approval": auto_result,
                 "auto_execution": exec_result,
             }
         )
-    return {"portfolios": results, "cached_regime_count": len(cached_regime)}
+    return {"portfolios": results, "cached_regime_count": len(cached_regime), "vix_status": vix_status}
 
 
 def run_end_of_day_processing() -> dict[str, Any]:
@@ -182,6 +231,9 @@ def run_end_of_day_processing() -> dict[str, Any]:
             if position.get("exit_date"):
                 outcomes.append(record_trade_outcome(portfolio_id, position, float(position.get("exit_price") or 0.0)))
     performance = run_performance_snapshot()
+    for snapshot in snapshots:
+        daily_pnl = float(snapshot.get("unrealized_pnl") or 0.0) + float(snapshot.get("realized_pnl") or 0.0)
+        check_loss_breach(int(snapshot["portfolio_id"]), daily_pnl, float(DEFAULT_RISK_GUARDRAILS.daily_loss_limit))
     return {
         "snapshots": snapshots,
         "snapshot_count": len(snapshots),

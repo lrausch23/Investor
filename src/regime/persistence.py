@@ -83,6 +83,34 @@ def _ensure_paper_schema(conn: sqlite3.Connection) -> None:
         pass
 
 
+def _create_alert_log_table(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS alert_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            alert_type TEXT NOT NULL CHECK (
+                alert_type IN (
+                    'regime_change', 'risk_spike', 'signal_change', 'stop_proximity',
+                    'daily_loss_breach', 'meta_labeler_veto', 'vix_freeze', 'vix_resume',
+                    'execution_error', 'connection_lost', 'connection_restored',
+                    'drawdown_breach', 'concentration_breach', 'ml_accuracy_drift',
+                    'capital_ceiling_breach', 'test'
+                )
+            ),
+            severity TEXT NOT NULL DEFAULT 'info' CHECK (severity IN ('info', 'warning', 'critical')),
+            ticker TEXT,
+            portfolio_id INTEGER,
+            title TEXT NOT NULL,
+            message TEXT NOT NULL DEFAULT '',
+            data_json TEXT,
+            acknowledged INTEGER NOT NULL DEFAULT 0,
+            acknowledged_at TEXT,
+            created_at TEXT NOT NULL
+        )
+        """
+    )
+
+
 def _create_paper_trade_plan_table(conn: sqlite3.Connection) -> None:
     conn.execute(
         """
@@ -419,6 +447,19 @@ def _connect() -> sqlite3.Connection:
         )
         """
     )
+    _create_alert_log_table(conn)
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS ix_alert_log_created
+        ON alert_log(created_at)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS ix_alert_log_unacknowledged
+        ON alert_log(acknowledged, created_at)
+        """
+    )
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS meta_labeler_training_log (
@@ -724,6 +765,131 @@ def delete_setting(key: str) -> bool:
     with _connect() as conn:
         cursor = conn.execute("DELETE FROM regime_settings WHERE key = ?", (str(key),))
         return bool(cursor.rowcount)
+
+
+def save_alert(
+    alert_type: str,
+    title: str,
+    *,
+    severity: str = "info",
+    ticker: str | None = None,
+    portfolio_id: int | None = None,
+    message: str = "",
+    data: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    created_at = datetime.now(timezone.utc).isoformat()
+    data_json = json.dumps(data or {}, default=str) if data is not None else None
+    with _connect() as conn:
+        cursor = conn.execute(
+            """
+            INSERT INTO alert_log (
+                alert_type, severity, ticker, portfolio_id, title, message,
+                data_json, acknowledged, acknowledged_at, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, 0, NULL, ?)
+            """,
+            (
+                str(alert_type),
+                str(severity or "info"),
+                str(ticker or "").upper() or None,
+                int(portfolio_id) if portfolio_id is not None else None,
+                str(title or ""),
+                str(message or ""),
+                data_json,
+                created_at,
+            ),
+        )
+        alert_id = int(cursor.lastrowid)
+    row = get_alerts(limit=1, since=created_at)
+    if row and int(row[0].get("id") or 0) == alert_id:
+        return row[0]
+    return {
+        "id": alert_id,
+        "alert_type": str(alert_type),
+        "severity": str(severity or "info"),
+        "ticker": str(ticker or "").upper() or None,
+        "portfolio_id": int(portfolio_id) if portfolio_id is not None else None,
+        "title": str(title or ""),
+        "message": str(message or ""),
+        "data": data or {},
+        "acknowledged": 0,
+        "acknowledged_at": None,
+        "created_at": created_at,
+    }
+
+
+def get_alerts(
+    *,
+    unacknowledged_only: bool = False,
+    alert_type: str | None = None,
+    limit: int = 50,
+    since: str | None = None,
+) -> list[dict[str, Any]]:
+    clauses: list[str] = ["1 = 1"]
+    params: list[Any] = []
+    if unacknowledged_only:
+        clauses.append("acknowledged = 0")
+    if alert_type:
+        clauses.append("alert_type = ?")
+        params.append(str(alert_type))
+    if since:
+        clauses.append("created_at >= ?")
+        params.append(str(since))
+    params.append(max(1, int(limit)))
+    with _connect() as conn:
+        rows = conn.execute(
+            f"""
+            SELECT *
+            FROM alert_log
+            WHERE {' AND '.join(clauses)}
+            ORDER BY created_at DESC, id DESC
+            LIMIT ?
+            """,
+            params,
+        ).fetchall()
+    payload: list[dict[str, Any]] = []
+    for row in rows:
+        item = dict(row)
+        raw = item.pop("data_json", None)
+        if raw:
+            try:
+                item["data"] = json.loads(str(raw))
+            except json.JSONDecodeError:
+                item["data"] = {"raw": str(raw)}
+        else:
+            item["data"] = {}
+        payload.append(item)
+    return payload
+
+
+def acknowledge_alert(alert_id: int) -> bool:
+    acknowledged_at = datetime.now(timezone.utc).isoformat()
+    with _connect() as conn:
+        cursor = conn.execute(
+            """
+            UPDATE alert_log
+            SET acknowledged = 1,
+                acknowledged_at = ?
+            WHERE id = ?
+            """,
+            (acknowledged_at, int(alert_id)),
+        )
+        return bool(cursor.rowcount)
+
+
+def acknowledge_all_alerts() -> int:
+    acknowledged_at = datetime.now(timezone.utc).isoformat()
+    with _connect() as conn:
+        cursor = conn.execute(
+            """
+            UPDATE alert_log
+            SET acknowledged = 1,
+                acknowledged_at = ?
+            WHERE acknowledged = 0
+            """,
+            (acknowledged_at,),
+        )
+        return int(cursor.rowcount or 0)
 
 
 def log_training_run(
