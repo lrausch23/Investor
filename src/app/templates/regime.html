@@ -1,7 +1,7 @@
 {% extends "layout.html" %}
 {% block content %}
   {% from "partials/ui/components.html" import kpi_card %}
-  <script src="https://cdn.plot.ly/plotly-2.35.0.min.js"></script>
+  <script src="{{ url_for('static', path='vendor/plotly-2.35.0.min.js') }}"></script>
 
   <div class="holdings-header">
     <div class="page-title">

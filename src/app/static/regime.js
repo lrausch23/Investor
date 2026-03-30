@@ -1974,13 +1974,20 @@
   function renderChartsForTicker(ticker) {
     if (!ticker || state.detailChartsRendered[ticker]) return;
     const row = (state.lastPayload && Array.isArray(state.lastPayload.rows) ? state.lastPayload.rows : []).find((item) => String(item.ticker || "") === String(ticker));
-    if (row && row.charts && window.Plotly) {
+    if (row && row.charts) {
       const priceMount = byId(`regimePlotlyPrice_${ticker}`);
       const transitionMount = byId(`regimePlotlyTransition_${ticker}`);
       const confidenceMount = byId(`regimePlotlyConfidence_${ticker}`);
-      if (priceMount && row.charts.price) window.Plotly.newPlot(priceMount, row.charts.price.data || [], row.charts.price.layout || {}, { responsive: true });
-      if (transitionMount && row.charts.transition) window.Plotly.newPlot(transitionMount, row.charts.transition.data || [], row.charts.transition.layout || {}, { responsive: true });
-      if (confidenceMount && row.charts.confidence) window.Plotly.newPlot(confidenceMount, row.charts.confidence.data || [], row.charts.confidence.layout || {}, { responsive: true });
+      if (window.Plotly) {
+        if (priceMount && row.charts.price) window.Plotly.newPlot(priceMount, row.charts.price.data || [], row.charts.price.layout || {}, { responsive: true });
+        if (transitionMount && row.charts.transition) window.Plotly.newPlot(transitionMount, row.charts.transition.data || [], row.charts.transition.layout || {}, { responsive: true });
+        if (confidenceMount && row.charts.confidence) window.Plotly.newPlot(confidenceMount, row.charts.confidence.data || [], row.charts.confidence.layout || {}, { responsive: true });
+      } else {
+        const notice = '<div class="ui-muted" style="padding:24px;text-align:center;color:#6b7280">Plotly library unavailable — interactive chart cannot render.<br><span style="font-size:12px">Check that <code>static/vendor/plotly-2.35.0.min.js</code> exists.</span></div>';
+        if (priceMount && row.charts.price && !priceMount.innerHTML) priceMount.innerHTML = notice;
+        if (transitionMount && row.charts.transition && !transitionMount.innerHTML) transitionMount.innerHTML = notice;
+        if (confidenceMount && row.charts.confidence && !confidenceMount.innerHTML) confidenceMount.innerHTML = notice;
+      }
     }
     renderForwardChart(ticker);
     renderConfidenceChart(ticker);
