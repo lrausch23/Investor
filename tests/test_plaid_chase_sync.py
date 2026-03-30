@@ -142,7 +142,7 @@ def test_plaid_chase_investments_one_time_24m_backfill(session, monkeypatch):
     from src.core import sync_runner as sr
 
     fixed_now = _dt.datetime(2026, 1, 9, 12, 0, 0, tzinfo=_dt.timezone.utc)
-    monkeypatch.setattr(sr, "utcnow", lambda: fixed_now)
+    monkeypatch.setattr(sr, "now_utc", lambda: fixed_now)
 
     conn = _mk_conn(session)
     conn.metadata_json = {"plaid_env": "sandbox", "plaid_enable_investments": True}

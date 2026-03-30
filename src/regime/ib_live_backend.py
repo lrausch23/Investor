@@ -5,6 +5,7 @@ import datetime as dt
 import logging
 from typing import Any, Callable
 
+from .exceptions import BrokerConnectionError
 from .ib_connection import IBConnectionBackend
 from .ib_thread import get_ib_thread
 from .ib_types import IBAccountSummary, IBOrder, IBOrderState, IBOrderStatus, IBOrderType, IBPosition
@@ -66,12 +67,12 @@ class LiveIBBackend(IBConnectionBackend):
 
     def next_order_id(self) -> int:
         if self._ib is None:
-            raise RuntimeError("IBKR backend is not connected.")
+            raise BrokerConnectionError("IBKR backend is not connected.")
         return int(get_ib_thread().run(lambda: self._ib.client.getReqId()))
 
     def place_order(self, order: IBOrder) -> IBOrderState:
         if self._ib is None:
-            raise RuntimeError("IBKR backend is not connected.")
+            raise BrokerConnectionError("IBKR backend is not connected.")
 
         async def _place() -> IBOrderState:
             from ib_insync import Contract, LimitOrder, MarketOrder, StopOrder
@@ -96,7 +97,7 @@ class LiveIBBackend(IBConnectionBackend):
 
     def cancel_order(self, order_id: int) -> IBOrderState:
         if self._ib is None:
-            raise RuntimeError("IBKR backend is not connected.")
+            raise BrokerConnectionError("IBKR backend is not connected.")
 
         async def _cancel() -> IBOrderState:
             trade = self._order_map.get(int(order_id))
@@ -121,7 +122,7 @@ class LiveIBBackend(IBConnectionBackend):
 
     def get_order_status(self, order_id: int) -> IBOrderState:
         if self._ib is None:
-            raise RuntimeError("IBKR backend is not connected.")
+            raise BrokerConnectionError("IBKR backend is not connected.")
         return get_ib_thread().run(lambda: self._trade_to_state(self._order_map[int(order_id)], int(order_id)))
 
     def get_positions(self) -> list[IBPosition]:
@@ -147,7 +148,7 @@ class LiveIBBackend(IBConnectionBackend):
 
     def get_account_summary(self) -> IBAccountSummary:
         if self._ib is None:
-            raise RuntimeError("IBKR backend is not connected.")
+            raise BrokerConnectionError("IBKR backend is not connected.")
 
         async def _summary() -> IBAccountSummary:
             summary = await self._ib.accountSummaryAsync(self._account_id)
@@ -173,7 +174,7 @@ class LiveIBBackend(IBConnectionBackend):
 
     def cancel_all_orders(self) -> list[dict[str, Any]]:
         if self._ib is None:
-            raise RuntimeError("IBKR backend is not connected.")
+            raise BrokerConnectionError("IBKR backend is not connected.")
 
         def _cancel_all() -> list[dict[str, Any]]:
             cancelled: list[dict[str, Any]] = []
@@ -186,7 +187,7 @@ class LiveIBBackend(IBConnectionBackend):
 
     def flatten_position(self, ticker: str, quantity: float, side: str = "long") -> dict[str, Any]:
         if self._ib is None:
-            raise RuntimeError("IBKR backend is not connected.")
+            raise BrokerConnectionError("IBKR backend is not connected.")
 
         def _flatten() -> dict[str, Any]:
             from ib_insync import Contract, MarketOrder

@@ -8,9 +8,8 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
-import yfinance as yf
-
 from .config import EXCLUDED_TICKER_PATTERNS, HMM_ELIGIBLE_ASSET_CLASSES, ticker_candidates
+from .market_data_client import download_daily_bars, get_ticker_info
 from .persistence import get_cached_sector, save_sector_cache
 
 DEFAULT_INVESTOR_DB_PATHS = (
@@ -91,14 +90,7 @@ def _fetch_live_market_price(ticker: str, metadata_json: str | None = None) -> f
     provider_symbol = _parse_provider_symbol(metadata_json, ticker)
     for candidate in ticker_candidates(provider_symbol):
         try:
-            history = yf.download(
-                tickers=candidate,
-                period="5d",
-                interval="1d",
-                auto_adjust=True,
-                progress=False,
-                threads=False,
-            )
+            history = download_daily_bars(candidate, period="5d", auto_adjust=True)
         except Exception:
             continue
         if history.empty:
@@ -126,15 +118,7 @@ def _fetch_live_market_prices(metadata_by_ticker: dict[str, str | None]) -> dict
         return {}
 
     try:
-        history = yf.download(
-            tickers=list(candidate_to_ticker),
-            period="5d",
-            interval="1d",
-            auto_adjust=True,
-            progress=False,
-            threads=False,
-            group_by="ticker",
-        )
+        history = download_daily_bars(list(candidate_to_ticker), period="5d", auto_adjust=True, group_by="ticker")
     except Exception:
         return {}
     if history.empty:
@@ -269,11 +253,8 @@ def get_sector_map(db_path: str | None, tickers: list[str]) -> dict[str, str]:
 
     unresolved = [ticker for ticker in unique_tickers if ticker not in sectors]
     for ticker in unresolved:
-        try:
-            info = yf.Ticker(ticker).info or {}
-            sector = str(info.get("sector") or info.get("industry") or "").strip()
-        except Exception:
-            sector = ""
+        info = get_ticker_info(ticker)
+        sector = str(info.get("sector") or info.get("industry") or "").strip()
         if sector:
             sectors[ticker] = sector
             save_sector_cache(ticker, sector)

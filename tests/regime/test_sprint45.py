@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 import pytest
 
 from src.app.routes import regime as regime_route
+from src.regime.exceptions import DataValidationError
 from src.regime import paper_trading as paper_trading_module
 from src.regime import persistence as persistence_module
 
@@ -86,10 +87,10 @@ def test_operating_mode_rejects_invalid_value(temp_modules) -> None:
     store, _paper, _db_path = temp_modules
     try:
         store.set_operating_mode("unsafe")
-    except ValueError as exc:
+    except DataValidationError as exc:
         assert "Invalid mode" in str(exc)
     else:
-        raise AssertionError("Expected ValueError")
+        raise AssertionError("Expected DataValidationError")
 
 
 def test_trade_plan_persists_meta_labeler_score(temp_modules) -> None:

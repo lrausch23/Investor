@@ -9,7 +9,6 @@ from dataclasses import asdict
 from typing import Any
 
 import pandas as pd
-import yfinance as yf
 
 from .broker_adapter import BrokerAdapter, OrderRequest, PaperBrokerAdapter, submit_guarded_order, validate_guardrails
 from .config import (
@@ -19,6 +18,7 @@ from .config import (
     RiskGuardrails,
 )
 from .discovery import _quick_regime_screen
+from .market_data_client import download_daily_bars, get_ticker_info
 from .persistence import (
     close_paper_position,
     count_todays_trades,
@@ -195,13 +195,10 @@ def _batch_current_prices(tickers: list[str]) -> dict[str, float]:
     if not normalized:
         return {}
     try:
-        frame = yf.download(
-            tickers=normalized if len(normalized) > 1 else normalized[0],
+        frame = download_daily_bars(
+            normalized if len(normalized) > 1 else normalized[0],
             period="5d",
-            interval="1d",
             auto_adjust=False,
-            progress=False,
-            threads=False,
             group_by="column",
         )
     except Exception as exc:
@@ -231,7 +228,7 @@ def _batch_current_prices(tickers: list[str]) -> dict[str, float]:
     missing = [ticker for ticker in normalized if ticker not in prices]
     for ticker in missing:
         try:
-            history = yf.Ticker(ticker).history(period="5d", interval="1d", auto_adjust=False)
+            history = download_daily_bars(ticker, period="5d", auto_adjust=False)
             if history is not None and not history.empty and "Close" in history.columns:
                 cleaned = history["Close"].dropna()
                 if not cleaned.empty:
@@ -240,7 +237,7 @@ def _batch_current_prices(tickers: list[str]) -> dict[str, float]:
         except Exception as exc:
             logger.debug("Ticker history fallback failed for %s.", ticker, exc_info=exc)
         try:
-            info_price = yf.Ticker(ticker).info.get("currentPrice")
+            info_price = get_ticker_info(ticker).get("currentPrice")
             if info_price is not None:
                 prices[ticker] = float(info_price)
         except Exception as exc:
@@ -826,14 +823,7 @@ def compute_benchmark_comparison(
     try:
         frame = benchmark_data
         if frame is None:
-            frame = yf.download(
-                benchmark_ticker,
-                period=f"{days}d",
-                interval="1d",
-                auto_adjust=False,
-                progress=False,
-                threads=False,
-            )
+            frame = download_daily_bars(benchmark_ticker, period=f"{days}d", auto_adjust=False)
         close = _normalize_close_series(frame)
         _close_first = float(close.iloc[0]) if len(close) else 0.0
         _close_last = float(close.iloc[-1]) if len(close) else 0.0
@@ -885,14 +875,7 @@ def compute_paper_performance(portfolio_id: int) -> dict[str, Any]:
     days = max(30, (_now() - started_at).days + 5)
     benchmark_data = None
     try:
-        benchmark_data = yf.download(
-            "SPY",
-            period=f"{days}d",
-            interval="1d",
-            auto_adjust=False,
-            progress=False,
-            threads=False,
-        )
+        benchmark_data = download_daily_bars("SPY", period=f"{days}d", auto_adjust=False)
     except Exception as exc:
         logger.warning("Unable to prefetch benchmark data for paper trading.", exc_info=exc)
     try:

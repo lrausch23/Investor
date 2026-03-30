@@ -9,7 +9,7 @@ from pathlib import Path
 from dataclasses import asdict, is_dataclass
 from typing import Any
 
-from .exceptions import DuplicateThemeError, PersistenceError
+from .exceptions import DataValidationError, DuplicateThemeError, PersistenceError
 from .logging_config import setup_regime_logging
 
 setup_regime_logging()
@@ -783,7 +783,7 @@ def get_operating_mode() -> str:
 def set_operating_mode(mode: str) -> None:
     normalized = str(mode or "").strip().lower()
     if normalized not in OPERATING_MODES:
-        raise ValueError(f"Invalid mode: {mode}. Must be one of {OPERATING_MODES}")
+        raise DataValidationError(f"Invalid mode: {mode}. Must be one of {OPERATING_MODES}")
     set_setting("operating_mode", normalized)
 
 
@@ -823,7 +823,7 @@ def get_lot_selection_method() -> str:
 def set_lot_selection_method(method: str) -> str:
     normalized = str(method or "").strip().upper()
     if normalized not in LOT_SELECTION_METHODS:
-        raise ValueError(f"Invalid lot selection method: {method}")
+        raise DataValidationError(f"Invalid lot selection method: {method}")
     set_setting("lot_selection_method", normalized)
     return normalized
 
@@ -1730,7 +1730,7 @@ def close_tax_lot(
     remaining_quantity = float(lot.get("remaining_quantity") or 0.0)
     close_qty = float(quantity_to_close or 0.0)
     if close_qty <= 0 or close_qty > remaining_quantity + 1e-9:
-        raise ValueError("Invalid quantity_to_close for tax lot.")
+        raise DataValidationError("Invalid quantity_to_close for tax lot.")
     cost_basis = float(lot.get("cost_basis_per_share") or 0.0)
     realized_pnl = (float(exit_price) - cost_basis) * close_qty
     new_remaining = max(0.0, remaining_quantity - close_qty)

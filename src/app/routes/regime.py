@@ -37,7 +37,7 @@ from src.app.routes.regime_cache import (
     save_qualitative_cache,
 )
 from src.db.session import get_session
-from src.regime.exceptions import DuplicateThemeError
+from src.regime.exceptions import DataValidationError, DuplicateThemeError
 
 
 router = APIRouter(prefix="/regime", tags=["regime"])
@@ -3201,7 +3201,7 @@ async def regime_market_data_settings_update(
         raise HTTPException(status_code=422, detail="Request body must be a JSON object.")
     try:
         settings = save_market_data_provider_config(body)
-    except ValueError as exc:
+    except (ValueError, DataValidationError) as exc:
         raise HTTPException(status_code=422, detail=str(exc))
     return JSONResponse(content={"settings": settings, "saved": True})
 

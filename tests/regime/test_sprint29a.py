@@ -51,13 +51,13 @@ def test_compute_paper_performance_downloads_benchmark_once(temp_modules, monkey
     portfolio = store.create_paper_portfolio("Sandbox", 100000.0)
     calls: list[tuple[tuple, dict]] = []
 
-    def fake_download(*args, **kwargs):
-        calls.append((args, kwargs))
+    def fake_download(tickers, period="365d", **kwargs):
+        calls.append(((tickers,), kwargs))
         import pandas as pd
 
         return pd.DataFrame({"Close": [100.0, 101.0, 102.0]})
 
-    monkeypatch.setattr(paper.yf, "download", fake_download)
+    monkeypatch.setattr(paper, "download_daily_bars", fake_download)
     payload = paper.compute_paper_performance(portfolio["id"])
     assert payload["benchmark"]["benchmark_ticker"] == "SPY"
     assert len(calls) == 1

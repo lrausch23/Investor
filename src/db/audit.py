@@ -6,7 +6,7 @@ from typing import Any, Optional
 from sqlalchemy.orm import Session
 
 from src.db.models import AuditLog
-from src.utils.time import utcnow
+from src.utils.time import now_utc
 
 
 def log_change(
@@ -22,7 +22,7 @@ def log_change(
 ) -> None:
     session.add(
         AuditLog(
-            at=utcnow(),
+            at=now_utc(),
             actor=actor,
             action=action,
             entity=entity,

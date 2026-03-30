@@ -39,7 +39,7 @@ def test_crowd_cache_ttl_eviction(temp_modules, monkeypatch) -> None:
     fresh_ts = float(config_module.DEFAULT_DISCOVERY_THRESHOLDS.crowd_cache_ttl_seconds) + 10.0
     monkeypatch.setattr(discovery_module.time, "time", lambda: fresh_ts)
     discovery_module._CROWD_SCORE_CACHE["OLD"] = (stale_ts, 10, {"ticker": "OLD"})
-    monkeypatch.setattr(discovery_module.yf, "Ticker", lambda ticker: type("Ticker", (), {"info": {"numberOfAnalystOpinions": 2, "heldPercentInstitutions": 0.1, "averageVolume": 1000, "regularMarketPrice": 10.0, "shortPercentOfFloat": 0.01}})())
+    monkeypatch.setattr(discovery_module, "get_ticker_info", lambda ticker: {"numberOfAnalystOpinions": 2, "heldPercentInstitutions": 0.1, "averageVolume": 1000, "regularMarketPrice": 10.0, "shortPercentOfFloat": 0.01})
     discovery_module.compute_crowd_score("NEW")
     assert "OLD" not in discovery_module._CROWD_SCORE_CACHE
 

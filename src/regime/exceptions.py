@@ -1,9 +1,13 @@
-"""Custom exceptions for regime analysis."""
+"""Custom exception hierarchy for the Investor platform."""
 from __future__ import annotations
 
 
-class RegimeError(Exception):
-    """Base exception for all regime analysis errors."""
+class InvestorError(Exception):
+    """Base exception for all Investor application errors."""
+
+
+class RegimeError(InvestorError):
+    """Base for regime analysis errors."""
 
 
 class DataFetchError(RegimeError):
@@ -18,7 +22,7 @@ class ModelFittingError(RegimeError):
     """HMM model fitting failed to converge or produced invalid results."""
 
 
-class PersistenceError(RegimeError):
+class PersistenceError(InvestorError):
     """Database operation failed."""
 
 
@@ -26,8 +30,24 @@ class LLMProviderError(RegimeError):
     """LLM API call failed."""
 
 
-class ConfigurationError(RegimeError):
+class ConfigurationError(InvestorError):
     """Missing or invalid configuration."""
+
+
+class BrokerError(InvestorError):
+    """Broker connection or execution failure."""
+
+
+class BrokerConnectionError(BrokerError):
+    """Cannot connect to broker backend."""
+
+
+class BrokerExecutionError(BrokerError):
+    """Trade execution failed."""
+
+
+class DataValidationError(InvestorError):
+    """Input data failed validation."""
 
 
 class DuplicateThemeError(PersistenceError):

@@ -57,7 +57,7 @@ def upsert_merchant_setting(
     row.recurring_enabled = bool(recurring_enabled)
     row.cadence = cad
     # updated_at is set by app logic (UTCDateTime default); update explicitly on write.
-    from src.utils.time import utcnow
+    from src.utils.time import now_utc
 
-    row.updated_at = utcnow()
+    row.updated_at = now_utc()
 

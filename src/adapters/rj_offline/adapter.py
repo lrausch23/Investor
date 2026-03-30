@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from src.importers.adapters import BrokerAdapter, ProviderError
-from src.utils.time import date_from_filename, end_of_day_utc, utcfromtimestamp, utcnow
+from src.utils.time import date_from_filename, end_of_day_utc, now_utc, utcfromtimestamp
 
 
 def _sha256_bytes(b: bytes) -> str:
@@ -940,7 +940,7 @@ class RJOfflineAdapter(BrokerAdapter):
                 elif _looks_like_holdings(txt):
                     holdings_files.append(p)
             if not holdings_files:
-                return {"as_of": (as_of or utcnow()).isoformat(), "items": []}
+                return {"as_of": (as_of or now_utc()).isoformat(), "items": []}
             holdings_files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
 
         p = holdings_files[0]
@@ -963,7 +963,7 @@ class RJOfflineAdapter(BrokerAdapter):
             except Exception:
                 hdr = None
 
-            asof_dt = end_of_day_utc(asof_date) if asof_date else (as_of or utcnow())
+            asof_dt = end_of_day_utc(asof_date) if asof_date else (as_of or now_utc())
             provider_account_id = "RJ:TAXABLE"
             items: list[dict[str, Any]] = []
             total_value = 0.0

@@ -33,7 +33,7 @@ except Exception as e:  # pragma: no cover
         f"Original error: {type(e).__name__}: {e}"
     ) from e
 
-from src.utils.time import utcnow
+from src.utils.time import now_utc
 from src.db.types import UTCDateTime
 
 
@@ -110,8 +110,8 @@ class HouseholdEntity(Base):
     display_name: Mapped[str] = mapped_column(String(200), nullable=False)
     tin_last4: Mapped[Optional[str]] = mapped_column(String(4))
     notes: Mapped[Optional[str]] = mapped_column(Text)
-    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=utcnow, nullable=False)
-    updated_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=utcnow, nullable=False)
+    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=now_utc, nullable=False)
+    updated_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=now_utc, nullable=False)
 
 
 class Account(Base):
@@ -205,8 +205,8 @@ class BullionHolding(Base):
     currency: Mapped[str] = mapped_column(String(8), nullable=False, default="USD")
     as_of_date: Mapped[dt.date] = mapped_column(Date, nullable=False)
     notes: Mapped[Optional[str]] = mapped_column(Text)
-    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=utcnow, nullable=False)
-    updated_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=utcnow, nullable=False)
+    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=now_utc, nullable=False)
+    updated_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=now_utc, nullable=False)
 
     account: Mapped["Account"] = relationship()
 
@@ -286,7 +286,7 @@ class Plan(Base):
     __tablename__ = "plans"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=utcnow, nullable=False)
+    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=now_utc, nullable=False)
     policy_id: Mapped[int] = mapped_column(ForeignKey("bucket_policies.id"), nullable=False)
     taxpayer_scope: Mapped[str] = mapped_column(PlanScope, nullable=False)
     goal_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
@@ -299,7 +299,7 @@ class AuditLog(Base):
     __tablename__ = "audit_logs"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=utcnow, nullable=False)
+    at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=now_utc, nullable=False)
     actor: Mapped[str] = mapped_column(String(200), nullable=False)
     action: Mapped[str] = mapped_column(String(50), nullable=False)
     entity: Mapped[str] = mapped_column(String(100), nullable=False)
@@ -320,7 +320,7 @@ class NativeWorkspaceState(Base):
     scope: Mapped[str] = mapped_column(String(20), nullable=False)  # household|trust|personal
     scenario_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
     notes_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list, nullable=False)
-    updated_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=utcnow, nullable=False)
+    updated_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=now_utc, nullable=False)
     updated_by: Mapped[Optional[str]] = mapped_column(String(200))
 
 
@@ -337,7 +337,7 @@ class NativePlannerRun(Base):
     notes_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list, nullable=False)
     actions_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list, nullable=False)
     summary_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
-    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=utcnow, nullable=False)
+    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=now_utc, nullable=False)
     created_by: Mapped[Optional[str]] = mapped_column(String(200))
 
 
@@ -363,8 +363,8 @@ class TaxProfile(Base):
     household_size: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
     dependents_count: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     trust_income_taxable_to_user: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
-    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=utcnow, nullable=False)
-    updated_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=utcnow, nullable=False)
+    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=now_utc, nullable=False)
+    updated_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=now_utc, nullable=False)
 
 
 class TaxInput(Base):
@@ -374,8 +374,8 @@ class TaxInput(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     year: Mapped[int] = mapped_column(Integer, nullable=False)
     data_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
-    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=utcnow, nullable=False)
-    updated_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=utcnow, nullable=False)
+    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=now_utc, nullable=False)
+    updated_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=now_utc, nullable=False)
 
 
 class TaxTag(Base):
@@ -389,8 +389,8 @@ class TaxTag(Base):
     transaction_id: Mapped[int] = mapped_column(ForeignKey("transactions.id"), nullable=False)
     category: Mapped[str] = mapped_column(String(50), nullable=False)
     note: Mapped[Optional[str]] = mapped_column(Text)
-    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=utcnow, nullable=False)
-    updated_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=utcnow, nullable=False)
+    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=now_utc, nullable=False)
+    updated_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=now_utc, nullable=False)
 
 
 class TaxDocument(Base):
@@ -406,7 +406,7 @@ class TaxDocument(Base):
     tax_year: Mapped[int] = mapped_column(Integer, nullable=False)
     doc_type: Mapped[str] = mapped_column(TaxDocType, nullable=False, default="OTHER")
     filename: Mapped[str] = mapped_column(String(255), nullable=False)
-    uploaded_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=utcnow, nullable=False)
+    uploaded_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=now_utc, nullable=False)
     sha256: Mapped[str] = mapped_column(String(64), nullable=False)
     status: Mapped[str] = mapped_column(TaxDocStatus, nullable=False, default="UPLOADED")
     notes: Mapped[Optional[str]] = mapped_column(Text)
@@ -432,7 +432,7 @@ class TaxDocumentExtraction(Base):
     extracted_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
     confidence_overall: Mapped[Optional[float]] = mapped_column(Float)
     warnings: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
-    extracted_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=utcnow, nullable=False)
+    extracted_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=now_utc, nullable=False)
     extractor_version: Mapped[Optional[str]] = mapped_column(String(50))
 
     tax_document: Mapped["TaxDocument"] = relationship(back_populates="extractions")
@@ -453,7 +453,7 @@ class TaxFact(Base):
     confidence: Mapped[Optional[float]] = mapped_column(Float)
     user_confirmed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     owner_entity_id: Mapped[Optional[int]] = mapped_column(ForeignKey("household_entities.id"))
-    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=utcnow, nullable=False)
+    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=now_utc, nullable=False)
 
     tax_document: Mapped["TaxDocument"] = relationship(back_populates="facts")
     owner_entity: Mapped[Optional["HouseholdEntity"]] = relationship()
@@ -465,7 +465,7 @@ class TaxReconciliationSnapshot(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     tax_year: Mapped[int] = mapped_column(Integer, nullable=False)
-    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=utcnow, nullable=False)
+    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=now_utc, nullable=False)
     summary_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
     document_ids: Mapped[list[int]] = mapped_column(JSON, default=list, nullable=False)
     notes: Mapped[Optional[str]] = mapped_column(Text)
@@ -484,7 +484,7 @@ class ExpenseAccount(Base):
     type: Mapped[str] = mapped_column(String(50), nullable=False, default="UNKNOWN")  # CREDIT|BANK|UNKNOWN
     scope: Mapped[str] = mapped_column(String(20), nullable=False, default="PERSONAL")  # PERSONAL|FAMILY|BUSINESS
     provider_account_id: Mapped[Optional[str]] = mapped_column(String(200))
-    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=utcnow, nullable=False)
+    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=now_utc, nullable=False)
 
 
 class ExpenseAccountBalance(Base):
@@ -493,12 +493,12 @@ class ExpenseAccountBalance(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     expense_account_id: Mapped[int] = mapped_column(ForeignKey("expense_accounts.id"), nullable=False)
-    as_of_date: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=utcnow, nullable=False)
+    as_of_date: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=now_utc, nullable=False)
     balance_current: Mapped[Optional[float]] = mapped_column(Numeric(20, 2))
     balance_available: Mapped[Optional[float]] = mapped_column(Numeric(20, 2))
     currency: Mapped[str] = mapped_column(String(8), nullable=False, default="USD")
     source: Mapped[str] = mapped_column(String(50), nullable=False, default="PLAID")
-    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=utcnow, nullable=False)
+    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=now_utc, nullable=False)
 
     expense_account: Mapped["ExpenseAccount"] = relationship()
 
@@ -508,7 +508,7 @@ class ExpenseImportBatch(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     source: Mapped[str] = mapped_column(String(50), nullable=False, default="CSV")
-    imported_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=utcnow, nullable=False)
+    imported_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=now_utc, nullable=False)
     file_name: Mapped[str] = mapped_column(String(260), nullable=False)
     file_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     row_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
@@ -546,7 +546,7 @@ class ExpenseTransaction(Base):
     notes: Mapped[Optional[str]] = mapped_column(Text)
     import_batch_id: Mapped[int] = mapped_column(ForeignKey("expense_import_batches.id"), nullable=False)
     original_row_json: Mapped[Optional[dict[str, Any]]] = mapped_column(JSON)
-    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=utcnow, nullable=False)
+    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=now_utc, nullable=False)
 
     expense_account: Mapped["ExpenseAccount"] = relationship()
 
@@ -575,7 +575,7 @@ class PriceDaily(Base):
     close: Mapped[Optional[float]] = mapped_column(Numeric(20, 6))
     volume: Mapped[Optional[float]] = mapped_column(Numeric(20, 2))
     source: Mapped[str] = mapped_column(String(32), nullable=False, default="cache")
-    updated_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=utcnow, nullable=False)
+    updated_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=now_utc, nullable=False)
 
 
 class TickerClassification(Base):
@@ -588,7 +588,7 @@ class TickerClassification(Base):
     industry: Mapped[Optional[str]] = mapped_column(String(120))
     as_of_date: Mapped[Optional[dt.date]] = mapped_column(Date)
     source: Mapped[str] = mapped_column(String(32), nullable=False, default="manual")
-    updated_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=utcnow, nullable=False)
+    updated_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=now_utc, nullable=False)
 
 
 class UniverseMembership(Base):
@@ -603,7 +603,7 @@ class UniverseMembership(Base):
     ticker: Mapped[str] = mapped_column(String(32), nullable=False)
     as_of_date: Mapped[Optional[dt.date]] = mapped_column(Date)
     source: Mapped[str] = mapped_column(String(32), nullable=False, default="manual")
-    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=utcnow, nullable=False)
+    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=now_utc, nullable=False)
 
 
 class WatchlistItem(Base):
@@ -612,7 +612,7 @@ class WatchlistItem(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     ticker: Mapped[str] = mapped_column(String(32), nullable=False)
-    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=utcnow, nullable=False)
+    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=now_utc, nullable=False)
     metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
 
 
@@ -624,7 +624,7 @@ class ExpenseRule(Base):
     priority: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     json_definition: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
-    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=utcnow, nullable=False)
+    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=now_utc, nullable=False)
 
 
 class ExpenseCategory(Base):
@@ -650,8 +650,8 @@ class RecurringBill(Base):
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     is_user_confirmed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     autodetect_confidence: Mapped[Optional[float]] = mapped_column(Numeric(6, 3))
-    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=utcnow, nullable=False)
-    updated_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=utcnow, nullable=False, onupdate=utcnow)
+    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=now_utc, nullable=False)
+    updated_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=now_utc, nullable=False, onupdate=now_utc)
 
     source_account: Mapped[Optional["ExpenseAccount"]] = relationship()
 
@@ -677,7 +677,7 @@ class RecurringBillIgnore(Base):
     scope: Mapped[str] = mapped_column(String(20), nullable=False)
     rule_type: Mapped[str] = mapped_column(String(40), nullable=False)
     rule_value: Mapped[str] = mapped_column(String(200), nullable=False)
-    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=utcnow, nullable=False)
+    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=now_utc, nullable=False)
 
 
 class RecurringCardCharge(Base):
@@ -696,8 +696,8 @@ class RecurringCardCharge(Base):
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     is_user_confirmed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     autodetect_confidence: Mapped[Optional[float]] = mapped_column(Numeric(6, 3))
-    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=utcnow, nullable=False)
-    updated_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=utcnow, nullable=False, onupdate=utcnow)
+    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=now_utc, nullable=False)
+    updated_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=now_utc, nullable=False, onupdate=now_utc)
 
     source_account: Mapped[Optional["ExpenseAccount"]] = relationship()
 
@@ -723,7 +723,7 @@ class RecurringCardChargeIgnore(Base):
     scope: Mapped[str] = mapped_column(String(20), nullable=False)
     rule_type: Mapped[str] = mapped_column(String(40), nullable=False)
     rule_value: Mapped[str] = mapped_column(String(200), nullable=False)
-    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=utcnow, nullable=False)
+    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=now_utc, nullable=False)
 
 
 class ExpenseMerchantSetting(Base):
@@ -735,8 +735,8 @@ class ExpenseMerchantSetting(Base):
     merchant_display: Mapped[str] = mapped_column(String(200), nullable=False)
     recurring_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     cadence: Mapped[str] = mapped_column(String(20), nullable=False, default="UNKNOWN")  # WEEKLY|MONTHLY|QUARTERLY|SEMIANNUAL|ANNUAL|UNKNOWN
-    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=utcnow, nullable=False)
-    updated_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=utcnow, nullable=False)
+    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=now_utc, nullable=False)
+    updated_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=now_utc, nullable=False)
 
 
 class ExternalConnection(Base):
@@ -769,7 +769,7 @@ class SyncRun(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     connection_id: Mapped[int] = mapped_column(ForeignKey("external_connections.id"), nullable=False)
-    started_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=utcnow, nullable=False)
+    started_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=now_utc, nullable=False)
     finished_at: Mapped[Optional[dt.datetime]] = mapped_column(UTCDateTime())
     status: Mapped[str] = mapped_column(SyncStatus, nullable=False, default="ERROR")
 
@@ -801,7 +801,7 @@ class ExternalTransactionMap(Base):
     connection_id: Mapped[int] = mapped_column(ForeignKey("external_connections.id"), nullable=False)
     provider_txn_id: Mapped[str] = mapped_column(String(200), nullable=False)
     transaction_id: Mapped[int] = mapped_column(ForeignKey("transactions.id"), nullable=False)
-    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=utcnow, nullable=False)
+    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=now_utc, nullable=False)
 
 
 class ExternalCredential(Base):
@@ -812,8 +812,8 @@ class ExternalCredential(Base):
     connection_id: Mapped[int] = mapped_column(ForeignKey("external_connections.id"), nullable=False)
     key: Mapped[str] = mapped_column(String(100), nullable=False)
     value_encrypted: Mapped[str] = mapped_column(Text, nullable=False)  # fernet token (base64 text)
-    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=utcnow, nullable=False)
-    updated_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=utcnow, nullable=False)
+    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=now_utc, nullable=False)
+    updated_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=now_utc, nullable=False)
 
 
 class ExternalAccountMap(Base):
@@ -824,7 +824,7 @@ class ExternalAccountMap(Base):
     connection_id: Mapped[int] = mapped_column(ForeignKey("external_connections.id"), nullable=False)
     provider_account_id: Mapped[str] = mapped_column(String(200), nullable=False)
     account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"), nullable=False)
-    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=utcnow, nullable=False)
+    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=now_utc, nullable=False)
 
 
 class ExternalPayloadSnapshot(Base):
@@ -835,7 +835,7 @@ class ExternalPayloadSnapshot(Base):
     kind: Mapped[str] = mapped_column(String(50), nullable=False)  # accounts|transactions_page|holdings
     cursor: Mapped[Optional[str]] = mapped_column(String(200))
     payload_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
-    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=utcnow, nullable=False)
+    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=now_utc, nullable=False)
 
 
 class ExternalHoldingSnapshot(Base):
@@ -845,7 +845,7 @@ class ExternalHoldingSnapshot(Base):
     connection_id: Mapped[int] = mapped_column(ForeignKey("external_connections.id"), nullable=False)
     as_of: Mapped[dt.datetime] = mapped_column(UTCDateTime(), nullable=False)
     payload_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
-    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=utcnow, nullable=False)
+    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=now_utc, nullable=False)
 
 
 class ExternalLiabilitySnapshot(Base):
@@ -855,7 +855,7 @@ class ExternalLiabilitySnapshot(Base):
     connection_id: Mapped[int] = mapped_column(ForeignKey("external_connections.id"), nullable=False)
     as_of: Mapped[dt.datetime] = mapped_column(UTCDateTime(), nullable=False)
     payload_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
-    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=utcnow, nullable=False)
+    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=now_utc, nullable=False)
 
 
 class ExternalCardStatement(Base):
@@ -878,7 +878,7 @@ class ExternalCardStatement(Base):
     pay_over_time_json: Mapped[Optional[dict[str, Any]]] = mapped_column(JSON)
     source_file: Mapped[Optional[str]] = mapped_column(Text)
     file_hash: Mapped[str] = mapped_column(String(64), nullable=False)
-    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=utcnow, nullable=False)
+    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=now_utc, nullable=False)
 
     connection: Mapped["ExternalConnection"] = relationship()
     expense_account: Mapped[Optional["ExpenseAccount"]] = relationship()
@@ -895,7 +895,7 @@ class ExternalFileIngest(Base):
     file_hash: Mapped[str] = mapped_column(String(100), nullable=False)
     file_bytes: Mapped[Optional[int]] = mapped_column(Integer)
     file_mtime: Mapped[Optional[dt.datetime]] = mapped_column(UTCDateTime())
-    imported_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=utcnow, nullable=False)
+    imported_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=now_utc, nullable=False)
     stored_path: Mapped[Optional[str]] = mapped_column(Text)
     start_date_hint: Mapped[Optional[dt.date]] = mapped_column(Date)
     end_date_hint: Mapped[Optional[dt.date]] = mapped_column(Date)
@@ -936,7 +936,7 @@ class BrokerLotClosure(Base):
     ib_trade_id: Mapped[Optional[str]] = mapped_column(String(64))
     source_file_hash: Mapped[str] = mapped_column(String(100), nullable=False)
     raw_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
-    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=utcnow, nullable=False)
+    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=now_utc, nullable=False)
 
 
 class BrokerWashSaleEvent(Base):
@@ -976,7 +976,7 @@ class BrokerWashSaleEvent(Base):
     ib_trade_id: Mapped[Optional[str]] = mapped_column(String(64))
     source_file_hash: Mapped[str] = mapped_column(String(100), nullable=False)
     raw_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
-    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=utcnow, nullable=False)
+    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=now_utc, nullable=False)
 
     linked_closure: Mapped[Optional["BrokerLotClosure"]] = relationship(foreign_keys=[linked_closure_id])
 
@@ -1001,14 +1001,14 @@ class BrokerSymbolSummary(Base):
     source_file_hash: Mapped[str] = mapped_column(String(100), nullable=False)
     source_row: Mapped[int] = mapped_column(Integer, nullable=False)
     raw_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
-    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=utcnow, nullable=False)
+    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=now_utc, nullable=False)
 
 
 class TaxEstimateRun(Base):
     __tablename__ = "tax_estimate_runs"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=utcnow, nullable=False)
+    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=now_utc, nullable=False)
     actor: Mapped[str] = mapped_column(String(200), nullable=False)
     year: Mapped[int] = mapped_column(Integer, nullable=False)
     scope: Mapped[str] = mapped_column(String(32), nullable=False)  # household|trust|personal
@@ -1032,7 +1032,7 @@ class TaxLot(Base):
     basis_open: Mapped[Optional[float]] = mapped_column(Numeric(20, 2))
     source: Mapped[str] = mapped_column(String(20), nullable=False, default="RECONSTRUCTED")  # RECONSTRUCTED|AUTHORITATIVE
     created_from_txn_id: Mapped[Optional[int]] = mapped_column(ForeignKey("transactions.id"))
-    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=utcnow, nullable=False)
+    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=now_utc, nullable=False)
     metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
 
     taxpayer: Mapped["TaxpayerEntity"] = relationship()
@@ -1054,7 +1054,7 @@ class LotDisposal(Base):
     realized_gain: Mapped[Optional[float]] = mapped_column(Numeric(20, 2))
     term: Mapped[str] = mapped_column(String(10), nullable=False, default="—")  # ST|LT|—
     as_of_date: Mapped[dt.date] = mapped_column(Date, nullable=False)
-    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=utcnow, nullable=False)
+    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=now_utc, nullable=False)
     metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
 
     sell_txn: Mapped["Transaction"] = relationship(foreign_keys=[sell_txn_id])
@@ -1074,7 +1074,7 @@ class WashSaleAdjustment(Base):
     window_start: Mapped[dt.date] = mapped_column(Date, nullable=False)
     window_end: Mapped[dt.date] = mapped_column(Date, nullable=False)
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="APPLIED")  # APPLIED|FLAGGED
-    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=utcnow, nullable=False)
+    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=now_utc, nullable=False)
     notes_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
 
     loss_sale_txn: Mapped["Transaction"] = relationship(foreign_keys=[loss_sale_txn_id])
@@ -1094,7 +1094,7 @@ class CorporateActionEvent(Base):
     action_type: Mapped[str] = mapped_column(String(30), nullable=False)  # SPLIT/REVERSE_SPLIT/MERGER/...
     ratio: Mapped[Optional[float]] = mapped_column(Numeric(20, 8))
     applied: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
-    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=utcnow, nullable=False)
+    created_at: Mapped[dt.datetime] = mapped_column(UTCDateTime(), default=now_utc, nullable=False)
     apply_notes: Mapped[Optional[str]] = mapped_column(Text)
     details_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
 

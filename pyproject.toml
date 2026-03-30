@@ -3,3 +3,12 @@ testpaths = ["tests"]
 markers = [
     "integration: integration tests that require network or external services",
 ]
+filterwarnings = [
+    "ignore::DeprecationWarning:stooq.*",
+    "ignore::DeprecationWarning:streamlit.*",
+    "ignore::FutureWarning:pandas.*",
+    "ignore::DeprecationWarning:pkg_resources.*",
+    "ignore::DeprecationWarning:google.*",
+    "ignore::DeprecationWarning:starlette.templating.*",
+    "ignore::UserWarning:joblib.externals.loky.*",
+]

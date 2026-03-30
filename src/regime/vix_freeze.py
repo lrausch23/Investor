@@ -5,8 +5,7 @@ import time
 from datetime import datetime, timezone
 from typing import Any
 
-import yfinance as yf
-
+from .market_data_client import get_current_vix
 from .persistence import get_setting, save_alert, set_setting
 
 logger = logging.getLogger(__name__)
@@ -23,15 +22,8 @@ def fetch_current_vix() -> float | None:
     if _vix_cache["value"] is not None and (now - float(_vix_cache["fetched_at"] or 0.0)) < VIX_CACHE_TTL_SECONDS:
         return float(_vix_cache["value"])
     try:
-        ticker = yf.Ticker("^VIX")
-        hist = ticker.history(period="1d", interval="1m")
-        if hist is not None and not hist.empty:
-            value = float(hist["Close"].iloc[-1])
-            _vix_cache.update({"value": value, "fetched_at": now})
-            return value
-        hist_daily = ticker.history(period="5d")
-        if hist_daily is not None and not hist_daily.empty:
-            value = float(hist_daily["Close"].iloc[-1])
+        value = get_current_vix()
+        if value is not None:
             _vix_cache.update({"value": value, "fetched_at": now})
             return value
     except Exception as exc:

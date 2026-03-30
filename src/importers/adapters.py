@@ -53,9 +53,9 @@ class InteractiveBrokersAdapter(BrokerAdapter):
         return [], None
 
     def fetch_holdings(self, connection: Any, as_of: dt.datetime | None = None) -> dict[str, Any]:
-        from src.utils.time import utcnow
+        from src.utils.time import now_utc
 
-        return {"as_of": (as_of or utcnow()).isoformat(), "items": []}
+        return {"as_of": (as_of or now_utc()).isoformat(), "items": []}
 
     def test_connection(self, connection: Any) -> dict[str, Any]:
         return {"ok": False, "message": "Live IB adapter not implemented in MVP."}
@@ -71,9 +71,9 @@ class RaymondJamesAdapter(BrokerAdapter):
         return [], None
 
     def fetch_holdings(self, connection: Any, as_of: dt.datetime | None = None) -> dict[str, Any]:
-        from src.utils.time import utcnow
+        from src.utils.time import now_utc
 
-        return {"as_of": (as_of or utcnow()).isoformat(), "items": []}
+        return {"as_of": (as_of or now_utc()).isoformat(), "items": []}
 
     def test_connection(self, connection: Any) -> dict[str, Any]:
         return {"ok": False, "message": "Live RJ adapter not implemented in MVP."}
@@ -141,9 +141,9 @@ class YodleeIBFixtureAdapter(BrokerAdapter):
         else:
             holdings = meta.get("fixture_holdings") or {"items": []}
         out = dict(holdings)
-        from src.utils.time import utcnow
+        from src.utils.time import now_utc
 
-        out["as_of"] = (as_of or utcnow()).isoformat()
+        out["as_of"] = (as_of or now_utc()).isoformat()
         return out
 
     def test_connection(self, connection: Any) -> dict[str, Any]:

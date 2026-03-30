@@ -7,7 +7,7 @@ from typing import Any
 from src.adapters.yodlee_chase.client import YodleeChaseClient
 from src.core.net import network_enabled
 from src.importers.adapters import BrokerAdapter, ProviderError
-from src.utils.time import utcnow
+from src.utils.time import now_utc
 
 
 def _as_float(v: Any) -> float | None:
@@ -311,7 +311,7 @@ class YodleeChaseAdapter(BrokerAdapter):
 
     def fetch_holdings(self, connection: Any, as_of: dt.datetime | None = None) -> dict[str, Any]:
         client = self._client(connection)
-        now_dt = as_of or utcnow()
+        now_dt = as_of or now_utc()
         accounts = []
         try:
             accounts = list((getattr(connection, "run_settings", {}) or {}).get("_yodlee_accounts_cache") or [])

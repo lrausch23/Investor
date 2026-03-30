@@ -12,6 +12,7 @@ import xgboost as xgb
 from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
 
 from .ensemble import AnalystBase, AnalystResult, get_registry
+from .exceptions import DataValidationError
 
 logger = logging.getLogger(__name__)
 
@@ -257,7 +258,7 @@ class MetaLabelerEngine(AnalystBase):
 
     def save_model(self, path: str) -> dict[str, Any]:
         if not self.is_ready():
-            raise RuntimeError("Cannot save untrained model.")
+            raise DataValidationError("Cannot save untrained model.")
         os.makedirs(os.path.dirname(path), exist_ok=True)
         self._model.get_booster().save_model(path)
         return {

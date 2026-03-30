@@ -8,7 +8,7 @@ import pytest
 
 from src.regime.backtest import run_backtest
 from src.regime.diagnostics import fit_probability_calibrator
-from src.regime.exceptions import DataFetchError, InsufficientDataError, ModelFittingError, PersistenceError, RegimeError
+from src.regime.exceptions import DataFetchError, InsufficientDataError, InvestorError, ModelFittingError, PersistenceError, RegimeError
 from src.regime.hmm_engine import STATE_META, _rank_state_labels, build_features, fit_regime_model
 from src.regime.llm_layer import QualitativeAssessment, build_qualitative_assessment
 from src.regime.signals import compute_unified_confidence
@@ -64,7 +64,8 @@ def test_regime_error_hierarchy() -> None:
     assert issubclass(DataFetchError, RegimeError)
     assert issubclass(InsufficientDataError, RegimeError)
     assert issubclass(ModelFittingError, RegimeError)
-    assert issubclass(PersistenceError, RegimeError)
+    assert issubclass(PersistenceError, InvestorError)
+    assert not issubclass(PersistenceError, RegimeError)
 
 
 def test_qualitative_assessment_has_source_field(monkeypatch) -> None:

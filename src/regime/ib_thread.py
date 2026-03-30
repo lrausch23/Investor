@@ -7,6 +7,8 @@ import threading
 from concurrent.futures import Future, TimeoutError as FutureTimeoutError
 from typing import Any, Callable, TypeVar
 
+from .exceptions import BrokerConnectionError
+
 logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
@@ -28,7 +30,7 @@ class IBThread:
         self._thread = threading.Thread(target=self._run_loop, daemon=True, name="ib-thread")
         self._thread.start()
         if not self._ready.wait(timeout=5.0):
-            raise RuntimeError("IB thread failed to start within 5 seconds")
+            raise BrokerConnectionError("IB thread failed to start within 5 seconds")
         self._started = True
         logger.info("IB thread started (thread=%s, loop=%s)", self._thread.ident, id(self._loop))
 
@@ -40,7 +42,7 @@ class IBThread:
 
     def run(self, fn: Callable[..., T], *args: Any, timeout: float = 30.0) -> T:
         if self._loop is None or not self._started:
-            raise RuntimeError("IB thread not started. Call start() first.")
+            raise BrokerConnectionError("IB thread not started. Call start() first.")
         future: Future[T] = Future()
 
         def _task() -> None:

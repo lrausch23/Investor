@@ -33,7 +33,7 @@ from src.investor.expenses.reports import (
     opportunities,
     merchants_by_spend,
 )
-from src.utils.time import ensure_utc, utcfromtimestamp, utcnow
+from src.utils.time import ensure_utc, now_utc, utcfromtimestamp
 
 
 router = APIRouter(prefix="/expenses", tags=["expenses"])
@@ -157,7 +157,7 @@ def expenses_home(
     rules_exists = rp.exists()
     rules_mtime = utcfromtimestamp(rp.stat().st_mtime) if rules_exists else None
 
-    now_utc = utcnow()
+    now_utc = now_utc()
 
     def _relative_time(ts: dt.datetime | None) -> str:
         if ts is None:

@@ -7,12 +7,12 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import pandas as pd
-import yfinance as yf
 
 from .config import DEFAULT_DISCOVERY_THRESHOLDS, DiscoveryThresholds
 from .data import download_market_frame
 from .hmm_engine import fit_regime_model
 from .llm_layer import request_frontier_decision
+from .market_data_client import get_ticker_info
 from .persistence import (
     add_ticker_to_theme,
     get_supply_chain,
@@ -180,16 +180,12 @@ def compute_crowd_score(
     _prune_crowd_cache(thresholds)
     cached = _CROWD_SCORE_CACHE.get(ticker_key)
     if cached is not None:
-        timestamp, score, details = cached
+        timestamp, score, cached_details = cached
         if (time.time() - float(timestamp)) <= thresholds.crowd_cache_ttl_seconds:
-            return score, dict(details)
+            return score, dict(cached_details)
         _CROWD_SCORE_CACHE.pop(ticker_key, None)
     details: dict[str, Any] = {"ticker": ticker_key}
-    try:
-        info = yf.Ticker(ticker_key).info or {}
-    except Exception as exc:
-        logger.debug("Unable to load crowd score inputs for %s.", ticker_key, exc_info=exc)
-        info = {}
+    info = get_ticker_info(ticker_key)
 
     analysts = info.get("numberOfAnalystOpinions")
     institutional_pct = info.get("heldPercentInstitutions")
@@ -323,11 +319,7 @@ def _quick_regime_screen(ticker: str) -> tuple[str | None, float | None, float |
 
 
 def _validate_ticker(ticker: str) -> bool:
-    try:
-        info = yf.Ticker(ticker).info or {}
-    except Exception as exc:
-        logger.debug("Ticker validation failed for %s.", ticker, exc_info=exc)
-        return False
+    info = get_ticker_info(ticker)
     return bool(info.get("regularMarketPrice") or info.get("currentPrice") or info.get("marketCap"))
 
 

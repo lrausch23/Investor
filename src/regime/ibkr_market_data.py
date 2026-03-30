@@ -14,6 +14,7 @@ import pandas as pd
 from src.importers.adapters import ProviderError
 
 from .config import DEFAULT_IBKR_CONFIG
+from .exceptions import DataValidationError
 from .ib_connection import get_shared_ib_backend
 from .ib_thread import get_ib_thread
 from .persistence import get_setting, set_setting
@@ -68,13 +69,13 @@ def save_market_data_provider_config(config: dict[str, Any]) -> dict[str, Any]:
     benchmark_order = [str(item).strip().lower() for item in (config.get("benchmark_provider_order") or []) if str(item).strip()]
     momentum_order = [str(item).strip().lower() for item in (config.get("momentum_provider_order") or []) if str(item).strip()]
     if not benchmark_order or benchmark_order[0] != "cache":
-        raise ValueError("benchmark_provider_order must start with 'cache'.")
+        raise DataValidationError("benchmark_provider_order must start with 'cache'.")
     allowed_benchmark = {"cache", "ibkr", "stooq", "yahoo"}
     allowed_momentum = {"ibkr", "stooq", "finnhub"}
     if any(item not in allowed_benchmark for item in benchmark_order):
-        raise ValueError("benchmark_provider_order contains an unsupported provider.")
+        raise DataValidationError("benchmark_provider_order contains an unsupported provider.")
     if any(item not in allowed_momentum for item in momentum_order):
-        raise ValueError("momentum_provider_order contains an unsupported provider.")
+        raise DataValidationError("momentum_provider_order contains an unsupported provider.")
     payload = {
         "benchmark_provider_order": benchmark_order,
         "benchmark_enabled": {key: bool(value) for key, value in dict(config.get("benchmark_enabled") or {}).items()},

@@ -10,7 +10,7 @@ from src.core.sync_coverage import compute_coverage_status
 from src.core.sync_runner import run_sync
 from src.db.models import ExternalConnection, SyncRun, TaxpayerEntity
 from src.importers.adapters import BrokerAdapter
-from src.utils.time import utcnow
+from src.utils.time import now_utc
 
 
 class MinimalAdapter(BrokerAdapter):
@@ -33,7 +33,7 @@ class MinimalAdapter(BrokerAdapter):
         return self._pages[idx], next_cursor
 
     def fetch_holdings(self, connection, as_of=None):
-        return {"as_of": (as_of or utcnow()).isoformat(), "items": []}
+        return {"as_of": (as_of or now_utc()).isoformat(), "items": []}
 
     def test_connection(self, connection):
         return {"ok": True, "message": "ok"}

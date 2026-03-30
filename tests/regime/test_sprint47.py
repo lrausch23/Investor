@@ -57,12 +57,11 @@ def test_fetch_current_vix_returns_cached_value(temp_modules, monkeypatch) -> No
     _store, _paper, vix, _notifications, _scheduled = temp_modules
     calls = {"count": 0}
 
-    class FakeTicker:
-        def history(self, period="1d", interval=None):
-            calls["count"] += 1
-            return pd.DataFrame({"Close": [31.2]})
+    def fake_current_vix():
+        calls["count"] += 1
+        return 31.2
 
-    monkeypatch.setattr(vix.yf, "Ticker", lambda symbol: FakeTicker())
+    monkeypatch.setattr(vix, "get_current_vix", fake_current_vix)
     first = vix.fetch_current_vix()
     second = vix.fetch_current_vix()
     assert first == pytest.approx(31.2)

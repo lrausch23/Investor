@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from src.importers.adapters import BrokerAdapter, ProviderError
-from src.utils.time import date_from_filename, end_of_day_utc, utcfromtimestamp, utcnow
+from src.utils.time import date_from_filename, end_of_day_utc, now_utc, utcfromtimestamp
 
 
 def _sha256_bytes(b: bytes) -> str:
@@ -982,7 +982,7 @@ class ChaseOfflineAdapter(BrokerAdapter):
             tx_files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
             as_of_dt = utcfromtimestamp(tx_files[0].stat().st_mtime)
         else:
-            as_of_dt = as_of or utcnow()
+            as_of_dt = as_of or now_utc()
 
         net_qty: dict[str, float] = {}
         last_trade_price: dict[str, float] = {}

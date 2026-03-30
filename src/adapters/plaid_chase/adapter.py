@@ -9,7 +9,7 @@ from typing import Any
 
 from src.adapters.plaid_chase.client import PlaidApiError, PlaidClient, parse_plaid_date
 from src.importers.adapters import BrokerAdapter, ProviderError
-from src.utils.time import utcnow
+from src.utils.time import now_utc
 
 
 def _as_str(v: Any) -> str:
@@ -898,7 +898,7 @@ class PlaidChaseAdapter(BrokerAdapter):
                         return payload
             except Exception as e:
                 return {
-                    "as_of": (as_of or utcnow()).isoformat(),
+                    "as_of": (as_of or now_utc()).isoformat(),
                     "items": [],
                     "warnings": [f"Failed to parse holdings statement: {type(e).__name__}: {e}"],
                 }
@@ -907,7 +907,7 @@ class PlaidChaseAdapter(BrokerAdapter):
         client = self._client(connection)
         access_token = (getattr(connection, "credentials", {}) or {}).get("PLAID_ACCESS_TOKEN") or ""
         if not access_token:
-            return {"as_of": (as_of or utcnow()).isoformat(), "items": []}
+            return {"as_of": (as_of or now_utc()).isoformat(), "items": []}
         has_investment: bool | None = None
         cache = run_settings.get("_plaid_accounts_cache")
         if isinstance(cache, list):
@@ -935,7 +935,7 @@ class PlaidChaseAdapter(BrokerAdapter):
                 has_investment = None
         if has_investment is False:
             return {
-                "as_of": (as_of or utcnow()).isoformat(),
+                "as_of": (as_of or now_utc()).isoformat(),
                 "items": [],
                 "warnings": ["No investment accounts in item; skipping holdings fetch."],
             }
@@ -945,7 +945,7 @@ class PlaidChaseAdapter(BrokerAdapter):
             if e.info.is_item_login_required:
                 raise ProviderError("ITEM_LOGIN_REQUIRED: Plaid re-auth required. Re-link the connection via Plaid.")
             # Some institutions simply don't support investments; do not hard-fail.
-            return {"as_of": (as_of or utcnow()).isoformat(), "items": [], "warnings": [str(e)]}
+            return {"as_of": (as_of or now_utc()).isoformat(), "items": [], "warnings": [str(e)]}
 
         # Minimal holdings normalization into the same shape used elsewhere.
         items: list[dict[str, Any]] = []
@@ -968,7 +968,7 @@ class PlaidChaseAdapter(BrokerAdapter):
             (getattr(connection, "metadata_json", {}) or {}).get("plaid_item_id")
         )
 
-        as_of_dt = as_of or utcnow()
+        as_of_dt = as_of or now_utc()
         # Derive cash from holdings rows rather than account balances:
         # For Plaid investment accounts, `balances.current` is not reliably "cash" (can be total account value),
         # and many institutions model cash as a sweep "security" (e.g., QCERQ). We'll surface those as a single

@@ -16,7 +16,7 @@ from typing import Any, Optional
 
 from src.core.net import http_get
 from src.importers.adapters import BrokerAdapter, ProviderError, RangeTooLargeError
-from src.utils.time import utcnow
+from src.utils.time import now_utc
 from src.utils.rate_limit import mask_secret, rate_limit_sleep, token_serial_lock
 
 # Reuse the offline adapter's robust normalization helpers (same conventions).
@@ -779,7 +779,7 @@ class IBFlexWebAdapter(BrokerAdapter):
         # Best effort: use the effective range the sync runner computed, so we can reuse cached reports.
         start_s = rs.get("effective_start_date")
         end_s = rs.get("effective_end_date")
-        today = utcnow().date()
+        today = now_utc().date()
         try:
             start = dt.date.fromisoformat(str(start_s)) if start_s else today
             end = dt.date.fromisoformat(str(end_s)) if end_s else today
@@ -832,7 +832,7 @@ class IBFlexWebAdapter(BrokerAdapter):
             query_ids = self._query_ids(connection)
         except Exception as e:
             return {"ok": False, "message": str(e)}
-        today = utcnow().date()
+        today = now_utc().date()
         try:
             # Fetch a single report for today; resolve query *names* via GetUserInfo when needed.
             qid = self._resolve_query_id(token=token, query=query_ids[0], connection=connection)
@@ -1507,7 +1507,7 @@ class IBFlexWebAdapter(BrokerAdapter):
             best_asof = dt.datetime.fromisoformat(best_asof_raw.replace("Z", "+00:00"))
         except Exception:
             best_asof = None
-        out_asof = best_asof or as_of or utcnow()
+        out_asof = best_asof or as_of or now_utc()
 
         snapshots = [snapshots_by_asof[k] for k in sorted(snapshots_by_asof.keys())]
         out: dict[str, Any] = {

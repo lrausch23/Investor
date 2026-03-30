@@ -23,7 +23,7 @@ def _stream_client(monkeypatch) -> TestClient:
 def test_download_market_frame_adds_open_column(monkeypatch) -> None:
     index = pd.date_range("2024-01-01", periods=3, freq="D")
 
-    def fake_download(*, tickers, period, interval, auto_adjust, progress, threads):
+    def fake_download(tickers, period="3y", *, auto_adjust=True, group_by="column", **_kwargs):
         if tickers == "NVDA":
             return pd.DataFrame(
                 {
@@ -35,11 +35,21 @@ def test_download_market_frame_adds_open_column(monkeypatch) -> None:
                 },
                 index=index,
             )
-        if tickers in {"^VIX", "^TNX"}:
+        if tickers == ["^VIX", "^TNX"]:
+            return pd.DataFrame(
+                {
+                    ("Close", "^VIX"): [20.0, 21.0, 22.0],
+                    ("Close", "^TNX"): [4.0, 4.0, 4.0],
+                },
+                index=index,
+            )
+        if tickers == "^VIX":
             return pd.DataFrame({"Close": [20.0, 21.0, 22.0]}, index=index)
+        if tickers == "^TNX":
+            return pd.DataFrame({"Close": [4.0, 4.0, 4.0]}, index=index)
         raise AssertionError(f"Unexpected ticker request: {tickers}")
 
-    monkeypatch.setattr("src.regime.data.yf.download", fake_download)
+    monkeypatch.setattr("src.regime.data.download_daily_bars", fake_download)
     series = download_market_frame("NVDA", period="3y", interval="1d")
     assert "open" in series.frame.columns
     assert pd.api.types.is_float_dtype(series.frame["open"])
@@ -49,7 +59,7 @@ def test_download_market_frame_adds_open_column(monkeypatch) -> None:
 def test_download_market_frame_falls_back_open_to_close(monkeypatch) -> None:
     index = pd.date_range("2024-01-01", periods=3, freq="D")
 
-    def fake_download(*, tickers, period, interval, auto_adjust, progress, threads):
+    def fake_download(tickers, period="3y", *, auto_adjust=True, group_by="column", **_kwargs):
         if tickers == "NVDA":
             return pd.DataFrame(
                 {
@@ -60,11 +70,21 @@ def test_download_market_frame_falls_back_open_to_close(monkeypatch) -> None:
                 },
                 index=index,
             )
-        if tickers in {"^VIX", "^TNX"}:
+        if tickers == ["^VIX", "^TNX"]:
+            return pd.DataFrame(
+                {
+                    ("Close", "^VIX"): [20.0, 21.0, 22.0],
+                    ("Close", "^TNX"): [4.0, 4.0, 4.0],
+                },
+                index=index,
+            )
+        if tickers == "^VIX":
             return pd.DataFrame({"Close": [20.0, 21.0, 22.0]}, index=index)
+        if tickers == "^TNX":
+            return pd.DataFrame({"Close": [4.0, 4.0, 4.0]}, index=index)
         raise AssertionError(f"Unexpected ticker request: {tickers}")
 
-    monkeypatch.setattr("src.regime.data.yf.download", fake_download)
+    monkeypatch.setattr("src.regime.data.download_daily_bars", fake_download)
     series = download_market_frame("NVDA", period="3y", interval="1d")
     pd.testing.assert_series_equal(series.frame["open"], series.frame["price"], check_names=False)
 

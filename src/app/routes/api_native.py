@@ -19,7 +19,7 @@ from src.core.dashboard_service import parse_scope, sync_connections_coverage
 from src.core.native_snapshot import build_native_snapshot
 from src.db.audit import log_change
 from src.db.models import ExternalConnection, NativePlannerRun, NativeWorkspaceState, SyncRun
-from src.utils.time import utcnow
+from src.utils.time import now_utc
 
 router = APIRouter(prefix="/api/native", tags=["api-native"])
 
@@ -65,7 +65,7 @@ def _normalize_note_item(raw: "WorkspaceNotePayload") -> dict[str, Any]:
         "text": str(raw.text or "").strip(),
         "severity": severity,
         "done": bool(raw.done),
-        "created_at": str(raw.created_at or utcnow().isoformat()),
+        "created_at": str(raw.created_at or now_utc().isoformat()),
     }
 
 
@@ -391,7 +391,7 @@ def native_workspace_upsert(
             row.notes_json = existing
 
     row.updated_by = actor
-    row.updated_at = utcnow()
+    row.updated_at = now_utc()
     session.flush()
 
     new = _workspace_payload(row, scope)
@@ -506,7 +506,7 @@ def native_planner_run_restore(
     row.scenario_json = dict(run.scenario_json or _default_scenario())
     row.notes_json = list(run.notes_json or [])
     row.updated_by = actor
-    row.updated_at = utcnow()
+    row.updated_at = now_utc()
     session.flush()
 
     new = _workspace_payload(row, run.scope)
@@ -562,7 +562,7 @@ def native_sync_diagnostics(
 
     coverage_rows = sync_connections_coverage(session=session, scope=scope, as_of=dt.date.today())
     if not coverage_rows:
-        return JSONResponse(content=jsonable({"scope": scope, "generated_at": utcnow().isoformat(), "rows": []}))
+        return JSONResponse(content=jsonable({"scope": scope, "generated_at": now_utc().isoformat(), "rows": []}))
 
     conn_ids = [int(c.get("id") or 0) for c in coverage_rows if int(c.get("id") or 0) > 0]
     conn_rows = (
@@ -601,7 +601,7 @@ def native_sync_diagnostics(
         if len(bucket) < limit_runs:
             bucket.append(run)
 
-    now_utc = utcnow()
+    now_dt = now_utc()
     payload_rows: list[dict[str, Any]] = []
     for row in coverage_rows:
         conn_id = int(row.get("id") or 0)
@@ -622,7 +622,7 @@ def native_sync_diagnostics(
             coverage_status=str(row.get("coverage_status") or ""),
             last_successful_sync_at=row.get("last_successful_sync_at"),
             last_run_status=latest_run_status,
-            now_utc=now_utc,
+            now_utc=now_dt,
         )
         actions = _sync_action_items(
             coverage_status=str(row.get("coverage_status") or ""),
@@ -656,11 +656,11 @@ def native_sync_diagnostics(
 
     return JSONResponse(
         content=jsonable(
-            {
-                "scope": scope,
-                "generated_at": now_utc.isoformat(),
-                "limit_runs": limit_runs,
-                "rows": payload_rows,
-            }
+                {
+                    "scope": scope,
+                    "generated_at": now_dt.isoformat(),
+                    "limit_runs": limit_runs,
+                    "rows": payload_rows,
+                }
         )
     )

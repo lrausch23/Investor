@@ -6,11 +6,11 @@ import logging
 
 import numpy as np
 import pandas as pd
-import yfinance as yf
 
 from .config import ticker_candidates
 from .exceptions import DataFetchError
 from .logging_config import setup_regime_logging
+from .market_data_client import download_daily_bars, get_earnings_date, get_ticker_news
 from .persistence import get_cached_earnings_date, save_earnings_cache
 
 setup_regime_logging()
@@ -69,14 +69,7 @@ def _download_price_history(ticker: str, period: str, interval: str) -> tuple[st
     logger.debug("Downloading price history for %s using candidates=%s", ticker, candidates)
 
     for candidate in candidates:
-        history = yf.download(
-            tickers=candidate,
-            period=period,
-            interval=interval,
-            auto_adjust=True,
-            progress=False,
-            threads=False,
-        )
+        history = download_daily_bars(candidate, period=period, auto_adjust=True)
         if history.empty:
             logger.debug("No price history returned for candidate %s", candidate)
             last_history = history
@@ -93,14 +86,7 @@ def _download_macro_inputs(index: pd.Index, period: str, interval: str) -> pd.Da
 
     for symbol, series_name in macro_columns.items():
         logger.debug("Downloading macro input %s for %s", symbol, series_name)
-        history = yf.download(
-            tickers=symbol,
-            period=period,
-            interval=interval,
-            auto_adjust=False,
-            progress=False,
-            threads=False,
-        )
+        history = download_daily_bars(symbol, period=period, auto_adjust=False)
         extracted = _extract_close_series(history, symbol, series_name)
         if extracted is None:
             extracted = _empty_series(index, series_name, _DEFAULT_MACRO_VALUES[series_name])
@@ -152,8 +138,7 @@ def download_market_frame(ticker: str, period: str = "3y", interval: str = "1d")
 
 def fetch_recent_news(ticker: str, limit: int = 8) -> list[dict]:
     try:
-        ticker_obj = yf.Ticker(ticker)
-        raw_items = getattr(ticker_obj, "news", None) or []
+        raw_items = get_ticker_news(ticker, limit=limit)
     except Exception as exc:
         logger.warning("Unable to fetch recent news for %s; continuing with empty catalyst set.", ticker)
         logger.debug("Recent news fetch failed for %s.", ticker, exc_info=exc)
@@ -183,29 +168,9 @@ def get_next_earnings_date(ticker: str) -> datetime | None:
             pass
 
     try:
-        ticker_obj = yf.Ticker(ticker)
-        calendar = getattr(ticker_obj, "calendar", None)
-        earnings_date = None
-        if isinstance(calendar, pd.DataFrame) and not calendar.empty:
-            for value in calendar.to_numpy().flatten():
-                if pd.isna(value):
-                    continue
-                ts = pd.Timestamp(value)
-                if ts.tzinfo is None:
-                    ts = ts.tz_localize(timezone.utc)
-                earnings_date = ts.to_pydatetime()
-                break
-        elif isinstance(calendar, dict):
-            raw_value = calendar.get("Earnings Date")
-            values = raw_value if isinstance(raw_value, (list, tuple)) else [raw_value]
-            for value in values:
-                if value is None or value == "":
-                    continue
-                ts = pd.Timestamp(value)
-                if ts.tzinfo is None:
-                    ts = ts.tz_localize(timezone.utc)
-                earnings_date = ts.to_pydatetime()
-                break
+        earnings_date = get_earnings_date(ticker)
+        if earnings_date is not None and earnings_date.tzinfo is None:
+            earnings_date = earnings_date.replace(tzinfo=timezone.utc)
     except Exception as exc:
         logger.debug("Unable to load earnings date for %s", ticker, exc_info=exc)
         earnings_date = None

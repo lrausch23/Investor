@@ -1165,7 +1165,7 @@ def connection_upload_file(
             cand = path.with_name(f"{stem}-{i}{suffix}")
             if not cand.exists():
                 return cand
-        return path.with_name(f"{stem}-{dt.datetime.utcnow().strftime('%Y%m%d%H%M%S')}{suffix}")
+        return path.with_name(f"{stem}-{dt.datetime.now(dt.UTC).strftime('%Y%m%d%H%M%S')}{suffix}")
 
     uploaded_files: list[tuple[str, Path, int, str]] = []
     invalid_exts: list[str] = []
@@ -2276,7 +2276,7 @@ def plaid_fix_investment_dividends(
             links = txn.lot_links_json or {}
             links["raw_type"] = "DIV"
             links["reclassified_by_maintenance"] = True
-            links["reclassified_at"] = utcnow().isoformat()
+            links["reclassified_at"] = now_utc().isoformat()
             txn.lot_links_json = links
             changed += 1
         except Exception:
@@ -2364,7 +2364,7 @@ def plaid_fix_investment_sweeps(
             links = txn.lot_links_json or {}
             links["raw_type"] = txn.type
             links["reclassified_by_maintenance"] = True
-            links["reclassified_at"] = utcnow().isoformat()
+            links["reclassified_at"] = now_utc().isoformat()
             txn.lot_links_json = links
             changed += 1
         except Exception:
@@ -2432,7 +2432,7 @@ def plaid_supplemental_cashflows(
         safe = "".join(ch for ch in orig if ch.isalnum() or ch in {".", "_", "-"}).strip("._")
         if not safe:
             safe = "supplemental.csv"
-        ts = dt.datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        ts = dt.datetime.now(dt.UTC).strftime("%Y%m%d_%H%M%S")
         dest = base_dir / f"{ts}_{safe}"
         dest.write_bytes(raw_bytes)
         try:

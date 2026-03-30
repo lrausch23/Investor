@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
+from .exceptions import DataValidationError
 from .persistence import (
     DEFAULT_LTCG_DEFER_WINDOW_DAYS,
     DEFAULT_LOT_SELECTION_METHOD,
@@ -113,7 +114,7 @@ def select_lots(
         )
         remaining -= take
     if remaining > 1e-9:
-        raise ValueError("Sell quantity exceeds available tax lots.")
+        raise DataValidationError("Sell quantity exceeds available tax lots.")
     return selections
 
 

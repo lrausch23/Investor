@@ -83,7 +83,7 @@ def test_generate_supply_chain_parses_llm(temp_modules, monkeypatch) -> None:
 def test_crowd_score_low_coverage(temp_modules, monkeypatch) -> None:
     _, discovery_module = temp_modules
     discovery_module._CROWD_SCORE_CACHE.clear()
-    monkeypatch.setattr(discovery_module.yf, "Ticker", lambda ticker: SimpleNamespace(info={"numberOfAnalystOpinions": 3, "heldPercentInstitutions": 0.2, "averageVolume": 100_000, "regularMarketPrice": 10.0, "shortPercentOfFloat": 0.01}))
+    monkeypatch.setattr(discovery_module, "get_ticker_info", lambda ticker: {"numberOfAnalystOpinions": 3, "heldPercentInstitutions": 0.2, "averageVolume": 100_000, "regularMarketPrice": 10.0, "shortPercentOfFloat": 0.01})
     score, _details = discovery_module.compute_crowd_score("SMALL")
     assert score <= 20
 
@@ -91,7 +91,7 @@ def test_crowd_score_low_coverage(temp_modules, monkeypatch) -> None:
 def test_crowd_score_high_coverage(temp_modules, monkeypatch) -> None:
     _, discovery_module = temp_modules
     discovery_module._CROWD_SCORE_CACHE.clear()
-    monkeypatch.setattr(discovery_module.yf, "Ticker", lambda ticker: SimpleNamespace(info={"numberOfAnalystOpinions": 30, "heldPercentInstitutions": 0.9, "averageVolume": 5_000_000, "regularMarketPrice": 100.0, "shortPercentOfFloat": 0.2}))
+    monkeypatch.setattr(discovery_module, "get_ticker_info", lambda ticker: {"numberOfAnalystOpinions": 30, "heldPercentInstitutions": 0.9, "averageVolume": 5_000_000, "regularMarketPrice": 100.0, "shortPercentOfFloat": 0.2})
     score, _details = discovery_module.compute_crowd_score("MEGA")
     assert score >= 80
 
@@ -99,7 +99,7 @@ def test_crowd_score_high_coverage(temp_modules, monkeypatch) -> None:
 def test_crowd_score_missing_data_defaults_to_50(temp_modules, monkeypatch) -> None:
     _, discovery_module = temp_modules
     discovery_module._CROWD_SCORE_CACHE.clear()
-    monkeypatch.setattr(discovery_module.yf, "Ticker", lambda ticker: SimpleNamespace(info={}))
+    monkeypatch.setattr(discovery_module, "get_ticker_info", lambda ticker: {})
     score, details = discovery_module.compute_crowd_score("MISS")
     assert score == 50
     assert details["note"] == "insufficient data"
@@ -108,7 +108,7 @@ def test_crowd_score_missing_data_defaults_to_50(temp_modules, monkeypatch) -> N
 def test_crowd_score_llm_seed_fallback(temp_modules, monkeypatch) -> None:
     _, discovery_module = temp_modules
     discovery_module._CROWD_SCORE_CACHE.clear()
-    monkeypatch.setattr(discovery_module.yf, "Ticker", lambda ticker: SimpleNamespace(info={}))
+    monkeypatch.setattr(discovery_module, "get_ticker_info", lambda ticker: {})
     score, _details = discovery_module.compute_crowd_score("MISS", crowd_assessment=3)
     assert score == 30
 

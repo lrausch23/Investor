@@ -58,7 +58,7 @@ from src.investor.expenses.normalize import (
     normalize_merchant,
     stable_txn_id,
 )
-from src.utils.time import utcfromtimestamp, utcnow
+from src.utils.time import now_utc, utcfromtimestamp
 
 
 class SyncConfigError(Exception):
@@ -322,7 +322,7 @@ def _store_plaid_liabilities_snapshot(
         return
     env = (connection.metadata_json or {}).get("plaid_env") or None
     client = PlaidClient(env=env)
-    attempted_at = utcnow()
+    attempted_at = now_utc()
     coverage["liability_snapshot_attempted_at"] = attempted_at.isoformat()
     try:
         payload = client.liabilities_get(access_token=access_token)
@@ -347,7 +347,7 @@ def _store_plaid_liabilities_snapshot(
     except Exception as e:
         warnings.append(f"Liabilities snapshot failed for {connection.name}: {type(e).__name__}")
         return
-    as_of = utcnow()
+    as_of = now_utc()
     session.add(ExternalLiabilitySnapshot(connection_id=connection.id, as_of=as_of, payload_json=payload))
     coverage["liability_snapshots_imported"] = int(coverage.get("liability_snapshots_imported") or 0) + 1
     coverage["liability_snapshot_last_asof"] = as_of.isoformat()
@@ -1126,7 +1126,7 @@ def run_sync(
         raise SyncConfigError("Connection is disabled.")
     adapter = _adapter_for(conn)
 
-    now_dt = utcnow()
+    now_dt = now_utc()
     today = now_dt.date()
     mode_u = (mode or "").upper()
     if mode_u not in {"FULL", "INCREMENTAL"}:
@@ -1324,11 +1324,11 @@ def run_sync(
                 warnings.append(f"FULL range negotiation failed: {type(e).__name__}: {e}")
                 coverage["parse_fail_count"] = int(coverage.get("parse_fail_count") or 0)
                 run.status = "ERROR"
-                run.finished_at = utcnow()
+                run.finished_at = now_utc()
                 run.error_json = json.dumps({"error": f"{type(e).__name__}: {e}"})
                 run.coverage_json = coverage | {"warnings": warnings, "error": f"{type(e).__name__}: {e}"}
                 conn.last_error_json = json.dumps(
-                    {"at": utcnow().isoformat(), "run_id": run.id, "error": f"{type(e).__name__}: {e}"}
+                    {"at": now_utc().isoformat(), "run_id": run.id, "error": f"{type(e).__name__}: {e}"}
                 )
                 conn.coverage_status = compute_coverage_status(conn, latest_run=run)
                 session.flush()
@@ -1353,7 +1353,7 @@ def run_sync(
         coverage["accounts_fetched"] = len(accounts)
         if not accounts:
             run.status = "ERROR"
-            run.finished_at = utcnow()
+            run.finished_at = now_utc()
             run.coverage_json = coverage
             session.flush()
             log_change(
@@ -1439,7 +1439,7 @@ def run_sync(
             except Exception:
                 ExpenseAccountBalance = None  # type: ignore
             if ExpenseAccountBalance is not None:
-                now_ts = utcnow()
+                now_ts = now_utc()
                 for a in accounts:
                     if _plaid_is_investment_account(a):
                         continue
@@ -2042,7 +2042,7 @@ def run_sync(
                                     if changed:
                                         links = existing_txn.lot_links_json or {}
                                         links["reclassified_by_sync"] = True
-                                        links["reclassified_at"] = utcnow().isoformat()
+                                        links["reclassified_at"] = now_utc().isoformat()
                                         links["raw_type"] = tx_type
                                         existing_txn.lot_links_json = links
                                         coverage["updated_existing"] = int(coverage.get("updated_existing") or 0) + 1
@@ -2070,7 +2070,7 @@ def run_sync(
                                 if changed:
                                     links = existing_txn.lot_links_json or {}
                                     links["reclassified_by_sync"] = True
-                                    links["reclassified_at"] = utcnow().isoformat()
+                                    links["reclassified_at"] = now_utc().isoformat()
                                     existing_txn.lot_links_json = links
                                     coverage["updated_existing"] += 1
                         coverage["duplicates_skipped"] += 1
@@ -2500,7 +2500,7 @@ def run_sync(
                                     }
                                 )
                                 if str(a.account_type or "").upper() == "IRA":
-                                    ira_ids.append((getattr(m, "created_at", utcnow()), str(m.provider_account_id)))
+                                    ira_ids.append((getattr(m, "created_at", now_utc()), str(m.provider_account_id)))
                             if acct_map:
                                 ctx.run_settings["plaid_account_map"] = acct_map
                             if ira_ids:
@@ -2701,7 +2701,7 @@ def run_sync(
                     "Verify your Flex Query IDs (numeric) and that the query template returns data for the selected date range."
                 )
 
-        run.finished_at = utcnow()
+        run.finished_at = now_utc()
         run.pages_fetched = int(coverage.get("pages_fetched") or 0)
         run.txn_count = int(coverage.get("txn_count") or 0)
         run.new_count = int(coverage.get("new_inserted") or 0)
@@ -2712,7 +2712,7 @@ def run_sync(
 
         # Update connection pointers on SUCCESS only.
         if run.status == "SUCCESS":
-            conn.last_successful_sync_at = utcnow()
+            conn.last_successful_sync_at = now_utc()
             conn.last_successful_txn_end = eff_end
             conn.last_error_json = None
             # Persist adapter-provided cursors for incremental syncs (e.g., Plaid /transactions/sync).
@@ -2751,7 +2751,7 @@ def run_sync(
                 except Exception:
                     pass
             if mode_u == "FULL":
-                conn.last_full_sync_at = utcnow()
+                conn.last_full_sync_at = now_utc()
                 # Earliest available is the earliest imported transaction date across this connection.
                 # For expenses-only connectors (e.g., Plaid Chase when investments are disabled), we don't populate
                 # the investment `transactions` table.
@@ -2773,7 +2773,7 @@ def run_sync(
             # Store a sanitized error/partial summary (no secrets).
             conn.last_error_json = json.dumps(
                 {
-                    "at": utcnow().isoformat(),
+                    "at": now_utc().isoformat(),
                     "run_id": run.id,
                     "status": run.status,
                     "warnings": warnings[:50],
@@ -2805,10 +2805,10 @@ def run_sync(
 
     except Exception as e:
         run.status = "ERROR"
-        run.finished_at = utcnow()
+        run.finished_at = now_utc()
         run.error_json = json.dumps({"error": f"{type(e).__name__}: {e}"})
         run.coverage_json = coverage | {"warnings": warnings, "error": f"{type(e).__name__}: {e}"}
-        conn.last_error_json = json.dumps({"at": utcnow().isoformat(), "run_id": run.id, "error": f"{type(e).__name__}: {e}"})
+        conn.last_error_json = json.dumps({"at": now_utc().isoformat(), "run_id": run.id, "error": f"{type(e).__name__}: {e}"})
         conn.coverage_status = compute_coverage_status(conn, latest_run=run)
         session.flush()
         log_change(

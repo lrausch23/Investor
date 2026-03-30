@@ -7,7 +7,7 @@ import pytest
 from src.core.sync_runner import _compute_incremental_range, _negotiate_full_range, run_sync
 from src.db.models import ExternalConnection, TaxpayerEntity
 from src.importers.adapters import BrokerAdapter, ProviderError, RangeTooLargeError
-from src.utils.time import utcnow
+from src.utils.time import now_utc
 
 
 class FakeAdapter(BrokerAdapter):
@@ -44,7 +44,7 @@ class FakeAdapter(BrokerAdapter):
         return self._pages[idx], next_cursor
 
     def fetch_holdings(self, connection, as_of=None):
-        return {"as_of": (as_of or utcnow()).isoformat(), "items": []}
+        return {"as_of": (as_of or now_utc()).isoformat(), "items": []}
 
     def test_connection(self, connection):
         return {"ok": True, "message": "ok"}

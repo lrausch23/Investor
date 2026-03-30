@@ -13,7 +13,7 @@ from typing import Any, Optional
 from xml.etree import ElementTree
 
 from src.importers.adapters import BrokerAdapter, ProviderError
-from src.utils.time import date_from_filename, end_of_day_utc, utcnow
+from src.utils.time import date_from_filename, end_of_day_utc, now_utc
 from src.utils.time import utcfromtimestamp
 
 
@@ -565,7 +565,7 @@ class IBFlexOfflineAdapter(BrokerAdapter):
                     holdings_files.append(OfflineFile(path=p, file_hash=_sha256_file(p), kind="HOLDINGS"))
 
         if not holdings_files:
-            return {"as_of": (as_of or utcnow()).isoformat(), "items": []}
+            return {"as_of": (as_of or now_utc()).isoformat(), "items": []}
 
         if forced is not None:
             p = forced

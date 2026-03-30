@@ -5,6 +5,8 @@ from types import SimpleNamespace
 
 import pandas as pd
 import pytest
+
+from src.regime.exceptions import DataValidationError
 from fastapi.testclient import TestClient
 
 from src.app.main import create_app
@@ -121,7 +123,7 @@ def test_load_model_file_not_found(temp_modules) -> None:
 
 def test_save_model_untrained_raises(temp_modules) -> None:
     _store, _ensemble, meta, tmp_path = temp_modules
-    with pytest.raises(RuntimeError):
+    with pytest.raises(DataValidationError):
         meta.MetaLabelerEngine().save_model(str(tmp_path / "models" / "meta_labeler_v1.json"))
 
 

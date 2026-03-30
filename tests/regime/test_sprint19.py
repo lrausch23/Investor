@@ -79,10 +79,7 @@ def test_configured_frontier_model_supports_best_and_claude(monkeypatch) -> None
 
 
 def test_get_sector_map_uses_yfinance_fallback(monkeypatch) -> None:
-    class FakeTicker:
-        info = {"sector": "Semiconductors"}
-
-    monkeypatch.setattr("src.regime.investor_adapter.yf.Ticker", lambda ticker: FakeTicker())
+    monkeypatch.setattr("src.regime.investor_adapter.get_ticker_info", lambda ticker: {"sector": "Semiconductors"})
     monkeypatch.setattr("src.regime.investor_adapter.get_cached_sector", lambda ticker: None)
     saved: list[tuple[str, str]] = []
     monkeypatch.setattr("src.regime.investor_adapter.save_sector_cache", lambda ticker, sector: saved.append((ticker, sector)))
@@ -96,10 +93,7 @@ def test_earnings_warning_and_cache_lookup(monkeypatch) -> None:
     monkeypatch.setattr("src.regime.data.get_cached_earnings_date", lambda ticker: None)
     monkeypatch.setattr("src.regime.data.save_earnings_cache", lambda ticker, earnings_date: None)
 
-    class FakeTicker:
-        calendar = pd.DataFrame([[upcoming]])
-
-    monkeypatch.setattr("src.regime.data.yf.Ticker", lambda ticker: FakeTicker())
+    monkeypatch.setattr("src.regime.data.get_earnings_date", lambda ticker: upcoming)
     earnings_date = get_next_earnings_date("MU")
     assert earnings_date is not None
     assert "Earnings imminent" in str(earnings_warning(earnings_date))

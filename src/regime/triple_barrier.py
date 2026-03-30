@@ -6,6 +6,8 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from .exceptions import DataValidationError
+
 
 @dataclass(frozen=True)
 class BarrierConfig:
@@ -186,7 +188,7 @@ def build_labeled_frame(
     del ticker, market_frame
     price_frame = getattr(regime_result, "price_frame", None)
     if price_frame is None:
-        raise ValueError("regime_result must provide a price_frame")
+        raise DataValidationError("regime_result must provide a price_frame")
     return apply_triple_barrier_labels(
         price_frame,
         regime_col="regime",

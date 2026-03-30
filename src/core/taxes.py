@@ -260,7 +260,7 @@ def auto_tag_tax_transactions(session: Session, *, year: int) -> int:
             if tag.category != suggested and note_raw in {"", "auto", "none", "null"}:
                 tag.category = suggested
                 tag.note = "auto"
-                tag.updated_at = dt.datetime.utcnow()
+                tag.updated_at = dt.datetime.now(dt.UTC)
                 updated += 1
     if created or updated:
         session.commit()

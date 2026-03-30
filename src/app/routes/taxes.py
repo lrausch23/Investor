@@ -418,7 +418,7 @@ def taxes_inputs_update(
     profile.household_size = _parse_int(household_size, default=3)
     profile.dependents_count = _parse_int(dependents_count, default=1)
     profile.trust_income_taxable_to_user = trust_income_taxable_to_user == "on"
-    profile.updated_at = dt.datetime.utcnow()
+    profile.updated_at = dt.datetime.now(dt.UTC)
 
     monthly_form = {
         "yoga_net_profit": {
@@ -643,7 +643,7 @@ def taxes_inputs_update(
         "tax_parameter_overrides": overrides,
     }
     inputs_row.data_json = data
-    inputs_row.updated_at = dt.datetime.utcnow()
+    inputs_row.updated_at = dt.datetime.now(dt.UTC)
 
     session.flush()
     log_change(
@@ -706,7 +706,7 @@ def taxes_tags_update(
         else:
             existing.category = category
             existing.note = note
-            existing.updated_at = dt.datetime.utcnow()
+            existing.updated_at = dt.datetime.now(dt.UTC)
             updated += 1
     session.commit()
     msg = f"Updated tags ({updated} updated, {deleted} removed)."

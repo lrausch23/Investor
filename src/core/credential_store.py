@@ -17,7 +17,7 @@ except Exception as e:  # pragma: no cover
 from sqlalchemy.orm import Session
 
 from src.db.models import ExternalCredential
-from src.utils.time import utcnow
+from src.utils.time import now_utc
 
 
 class CredentialError(Exception):
@@ -71,7 +71,7 @@ def upsert_credential(session: Session, *, connection_id: int, key: str, plainte
         .one_or_none()
     )
     token = encrypt_value(plaintext)
-    now = utcnow()
+    now = now_utc()
     if row is None:
         session.add(
             ExternalCredential(

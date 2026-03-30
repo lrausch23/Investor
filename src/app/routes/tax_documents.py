@@ -172,7 +172,7 @@ def extract_tax_document_api(
         extracted_json=extraction_json,
         confidence_overall=confidence_overall,
         warnings=warnings,
-        extracted_at=dt.datetime.utcnow(),
+        extracted_at=dt.datetime.now(dt.UTC),
         extractor_version="taxdoc_v1",
     )
     session.add(extraction)
@@ -246,7 +246,7 @@ def delete_tax_document(
     data = dict(inputs_row.data_json or {})
     data["tax_doc_overrides"] = aggregate_tax_doc_overrides(session, tax_year=tax_year)
     inputs_row.data_json = data
-    inputs_row.updated_at = dt.datetime.utcnow()
+    inputs_row.updated_at = dt.datetime.now(dt.UTC)
     session.commit()
     return JSONResponse({"ok": True})
 
@@ -299,7 +299,7 @@ async def apply_tax_documents(
                 extracted_json={"doc_type": doc.doc_type, "fields": []},
                 confidence_overall=0.0,
                 warnings=["Manual entry (no extraction)"],
-                extracted_at=dt.datetime.utcnow(),
+                extracted_at=dt.datetime.now(dt.UTC),
                 extractor_version="manual",
             )
             session.add(extraction)
@@ -356,7 +356,7 @@ async def apply_tax_documents(
         if doc.doc_type:
             extracted_json["doc_type"] = doc.doc_type
         extraction.extracted_json = extracted_json
-        extraction.extracted_at = dt.datetime.utcnow()
+        extraction.extracted_at = dt.datetime.now(dt.UTC)
         session.add(extraction)
 
         session.query(TaxFact).filter(TaxFact.source_doc_id == doc.id).delete()
@@ -389,7 +389,7 @@ async def apply_tax_documents(
     data_json["tax_doc_overrides"] = overrides
     data_json["docs_primary"] = True
     inputs_row.data_json = data_json
-    inputs_row.updated_at = dt.datetime.utcnow()
+    inputs_row.updated_at = dt.datetime.now(dt.UTC)
     reconcile = build_tax_reconciliation(session, tax_year=year)
     session.add(
         TaxReconciliationSnapshot(

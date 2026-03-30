@@ -591,7 +591,7 @@ def import_supplemental_cashflows(
     elif existing is not None:
         existing.metadata_json = dict(existing.metadata_json or {})
         existing.metadata_json.update(meta_payload)
-        existing.imported_at = dt.datetime.utcnow()
+        existing.imported_at = dt.datetime.now(dt.UTC)
         existing.file_name = file_name
         existing.stored_path = stored_path
     session.commit()

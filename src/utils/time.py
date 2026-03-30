@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 UTC = dt.timezone.utc
 
 
-def utcnow() -> dt.datetime:
+def now_utc() -> dt.datetime:
     return dt.datetime.now(UTC)
 
 

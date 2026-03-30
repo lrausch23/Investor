@@ -359,13 +359,13 @@ def main() -> None:
         st.session_state["analyze_nonce"],
     )["report"]
     analyses = []
-    run_started = pd.Timestamp.utcnow()
+    run_started = pd.Timestamp.now("UTC")
     progress_bar = st.progress(0, text="Preparing analysis...")
     status = st.status("Regime Analysis", expanded=True)
     for idx, ticker in enumerate(selected_tickers, start=1):
         status.update(label=f"Analyzing {ticker} ({idx}/{len(selected_tickers)})")
         status.write(f"⏳ Downloading market data for {ticker}...")
-        started = pd.Timestamp.utcnow()
+        started = pd.Timestamp.now("UTC")
         analysis = _analyze_ticker(
             ticker,
             "3y",
@@ -381,7 +381,7 @@ def main() -> None:
             min_regime_days,
             st.session_state["analyze_nonce"],
         )
-        elapsed = (pd.Timestamp.utcnow() - started).total_seconds()
+        elapsed = (pd.Timestamp.now("UTC") - started).total_seconds()
         if elapsed < 0.05:
             status.write(f"✓ {ticker} (cached)")
         else:
@@ -389,7 +389,7 @@ def main() -> None:
             status.write(f"✓ {ticker} complete")
         analyses.append(analysis)
         progress_bar.progress(idx / len(selected_tickers), text=f"{ticker} complete")
-    total_elapsed = (pd.Timestamp.utcnow() - run_started).total_seconds()
+    total_elapsed = (pd.Timestamp.now("UTC") - run_started).total_seconds()
     status.update(label="Analysis complete", state="complete")
     st.caption(f"Analyzed {len(selected_tickers)} ticker(s) in {total_elapsed:.1f}s")
     reports = [analysis["report"] for analysis in analyses]

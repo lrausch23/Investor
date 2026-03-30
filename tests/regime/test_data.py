@@ -28,7 +28,7 @@ def test_normalize_price_history_columns_flat() -> None:
 def test_download_market_frame_falls_back_when_tnx_missing(monkeypatch) -> None:
     index = pd.date_range("2024-01-01", periods=3, freq="D")
 
-    def fake_download(*, tickers, period, interval, auto_adjust, progress, threads):
+    def fake_download(tickers, period="3y", *, auto_adjust=True, group_by="column", **_kwargs):
         if tickers == "NVDA":
             return pd.DataFrame(
                 {
@@ -39,13 +39,21 @@ def test_download_market_frame_falls_back_when_tnx_missing(monkeypatch) -> None:
                 },
                 index=index,
             )
+        if tickers == ["^VIX", "^TNX"]:
+            return pd.DataFrame(
+                {
+                    ("Close", "^VIX"): [18.0, 19.0, 20.0],
+                    ("Close", "^TNX"): [float("nan"), float("nan"), float("nan")],
+                },
+                index=index,
+            )
         if tickers == "^VIX":
             return pd.DataFrame({"Close": [18.0, 19.0, 20.0]}, index=index)
         if tickers == "^TNX":
             return pd.DataFrame()
         raise AssertionError(f"Unexpected ticker request: {tickers}")
 
-    monkeypatch.setattr("src.regime.data.yf.download", fake_download)
+    monkeypatch.setattr("src.regime.data.download_daily_bars", fake_download)
 
     series = download_market_frame("NVDA", period="3y", interval="1d")
 
@@ -58,7 +66,7 @@ def test_download_market_frame_tries_yahoo_safe_share_class_symbol(monkeypatch) 
     index = pd.date_range("2024-01-01", periods=2, freq="D")
     requested: list[str] = []
 
-    def fake_download(*, tickers, period, interval, auto_adjust, progress, threads):
+    def fake_download(tickers, period="3y", *, auto_adjust=True, group_by="column", **_kwargs):
         requested.append(tickers)
         if tickers == "BRK-B":
             return pd.DataFrame(
@@ -70,11 +78,17 @@ def test_download_market_frame_tries_yahoo_safe_share_class_symbol(monkeypatch) 
                 },
                 index=index,
             )
-        if tickers in {"^VIX", "^TNX"}:
-            return pd.DataFrame({"Close": [20.0, 21.0]}, index=index)
+        if tickers == ["^VIX", "^TNX"]:
+            return pd.DataFrame(
+                {
+                    ("Close", "^VIX"): [20.0, 21.0],
+                    ("Close", "^TNX"): [4.0, 4.0],
+                },
+                index=index,
+            )
         return pd.DataFrame()
 
-    monkeypatch.setattr("src.regime.data.yf.download", fake_download)
+    monkeypatch.setattr("src.regime.data.download_daily_bars", fake_download)
 
     series = download_market_frame("BRK B", period="3y", interval="1d")
 
@@ -84,19 +98,19 @@ def test_download_market_frame_tries_yahoo_safe_share_class_symbol(monkeypatch) 
 
 
 def test_fetch_recent_news_timeout_returns_empty(monkeypatch) -> None:
-    class BrokenTicker:
-        @property
-        def news(self):
-            raise TimeoutError("network timeout")
+    def fake_news(_ticker: str, limit: int = 8):
+        del limit
+        raise TimeoutError("network timeout")
 
-    monkeypatch.setattr("src.regime.data.yf.Ticker", lambda ticker: BrokenTicker())
+    monkeypatch.setattr("src.regime.data.get_ticker_news", fake_news)
 
     assert fetch_recent_news("PLTR") == []
 
 
 def test_fetch_recent_news_normalizes_items(monkeypatch) -> None:
-    class FakeTicker:
-        news = [
+    monkeypatch.setattr(
+        "src.regime.data.get_ticker_news",
+        lambda ticker, limit=8: [
             {
                 "content": {
                     "title": "Headline",
@@ -106,9 +120,8 @@ def test_fetch_recent_news_normalizes_items(monkeypatch) -> None:
                     "pubDate": "2026-03-26T12:00:00Z",
                 }
             }
-        ]
-
-    monkeypatch.setattr("src.regime.data.yf.Ticker", lambda ticker: FakeTicker())
+        ],
+    )
 
     payload = fetch_recent_news("PLTR")
     assert payload[0]["title"] == "Headline"

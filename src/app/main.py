@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -54,8 +55,65 @@ logger = logging.getLogger(__name__)
 setup_regime_logging()
 
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    del app
+    Path("data").mkdir(parents=True, exist_ok=True)
+    init_db()
+    try:
+        from src.app.startup_checks import run_all_checks
+
+        errors, warnings = run_all_checks()
+        for warning in warnings:
+            logger.warning("Startup check warning: %s", warning)
+        if errors:
+            for error in errors:
+                logger.error("Startup check FAILED: %s", error)
+            logger.error("Pre-flight checks found %d error(s). Some features may not work.", len(errors))
+    except Exception as exc:
+        logger.warning("Startup checks unavailable: %s", exc)
+    try:
+        from src.regime.recovery import run_startup_recovery
+
+        recovery = run_startup_recovery()
+        if recovery["stuck_orders_found"] > 0:
+            logger.warning(
+                "Startup recovery: %d stuck orders found, %d reconciled, %d expired",
+                recovery["stuck_orders_found"],
+                recovery["reconciled"],
+                recovery["expired"],
+            )
+    except Exception as exc:
+        logger.warning("Startup recovery failed: %s", exc)
+    try:
+        from src.regime.config import IBKRConfig
+        from src.regime.ib_connection import get_ib_backend, warm_shared_ib_backend
+        from src.regime.watchdog import start_watchdog
+
+        ibkr_config = IBKRConfig()
+        if ibkr_config.live_backend:
+            backend = get_ib_backend(
+                0,
+                live=True,
+                account_id=str(ibkr_config.account_id),
+                starting_cash=100000.0,
+            )
+            start_watchdog(
+                lambda: {"connected": bool(backend.is_connected())},
+                lambda: bool(backend.connect(str(ibkr_config.host), int(ibkr_config.port), int(ibkr_config.client_id))),
+            )
+            shared_ok = warm_shared_ib_backend(config=ibkr_config)
+            if shared_ok:
+                logger.info("Shared IBKR backend connected for market data")
+            else:
+                logger.warning("Shared IBKR backend warm-up failed - market data will use fallback providers")
+    except Exception as exc:
+        logger.warning("Watchdog startup skipped: %s", exc)
+    yield
+
+
 def create_app() -> FastAPI:
-    app = FastAPI(title="Investor MVP", version="0.1.0", docs_url=None, redoc_url=None)
+    app = FastAPI(title="Investor MVP", version="0.1.0", docs_url=None, redoc_url=None, lifespan=lifespan)
     try:
         app.add_middleware(SecurityHeadersMiddleware)
     except Exception as exc:
@@ -69,60 +127,6 @@ def create_app() -> FastAPI:
     except Exception:
         templates.env.globals["static_version"] = "0"
     app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
-
-    @app.on_event("startup")
-    def _startup() -> None:
-        Path("data").mkdir(parents=True, exist_ok=True)
-        init_db()
-        try:
-            from src.app.startup_checks import run_all_checks
-
-            errors, warnings = run_all_checks()
-            for warning in warnings:
-                logger.warning("Startup check warning: %s", warning)
-            if errors:
-                for error in errors:
-                    logger.error("Startup check FAILED: %s", error)
-                logger.error("Pre-flight checks found %d error(s). Some features may not work.", len(errors))
-        except Exception as exc:
-            logger.warning("Startup checks unavailable: %s", exc)
-        try:
-            from src.regime.recovery import run_startup_recovery
-
-            recovery = run_startup_recovery()
-            if recovery["stuck_orders_found"] > 0:
-                logger.warning(
-                    "Startup recovery: %d stuck orders found, %d reconciled, %d expired",
-                    recovery["stuck_orders_found"],
-                    recovery["reconciled"],
-                    recovery["expired"],
-                )
-        except Exception as exc:
-            logger.warning("Startup recovery failed: %s", exc)
-        try:
-            from src.regime.config import IBKRConfig
-            from src.regime.ib_connection import get_ib_backend, warm_shared_ib_backend
-            from src.regime.watchdog import start_watchdog
-
-            ibkr_config = IBKRConfig()
-            if ibkr_config.live_backend:
-                backend = get_ib_backend(
-                    0,
-                    live=True,
-                    account_id=str(ibkr_config.account_id),
-                    starting_cash=100000.0,
-                )
-                start_watchdog(
-                    lambda: {"connected": bool(backend.is_connected())},
-                    lambda: bool(backend.connect(str(ibkr_config.host), int(ibkr_config.port), int(ibkr_config.client_id))),
-                )
-                shared_ok = warm_shared_ib_backend(config=ibkr_config)
-                if shared_ok:
-                    logger.info("Shared IBKR backend connected for market data")
-                else:
-                    logger.warning("Shared IBKR backend warm-up failed - market data will use fallback providers")
-        except Exception as exc:
-            logger.warning("Watchdog startup skipped: %s", exc)
 
     app.include_router(dashboard_router)
     app.include_router(docs_router)
