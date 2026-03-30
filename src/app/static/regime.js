@@ -79,6 +79,7 @@
     expandedDiagnosticsTicker: null,
     frontierSettings: null,
     marketDataSettings: null,
+    ensembleWeights: null,
   };
 
   function byId(id) {
@@ -325,6 +326,44 @@
       showToast(`Unable to load ${provider} models: ${error.message || error}`, "error");
     } finally {
       modelSelect.disabled = false;
+    }
+  }
+
+  async function loadEnsembleWeights() {
+    if (!state.config?.endpoints?.ensemble_weights) return null;
+    const response = await fetch(state.config.endpoints.ensemble_weights, { headers: { Accept: "application/json" } });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.detail || "Unable to load ensemble weights");
+    state.ensembleWeights = payload;
+    renderEnsemblePanel(state.lastPayload || state.config.initial_payload || {});
+    return payload;
+  }
+
+  async function saveEnsembleWeights() {
+    if (!state.config?.endpoints?.ensemble_weights) return;
+    const mount = byId("regimeEnsembleMount");
+    if (!mount) return;
+    const analysts = {};
+    mount.querySelectorAll("[data-ensemble-row]").forEach((row) => {
+      const name = String(row.getAttribute("data-ensemble-row") || "");
+      const enabled = !!row.querySelector("[data-ensemble-enabled]")?.checked;
+      const weightValue = row.querySelector("[data-ensemble-weight]")?.value;
+      analysts[name] = { enabled, weight: Number(weightValue || 1) };
+    });
+    const aggregation = String(byId("regimeEnsembleAggregation")?.value || "mean");
+    try {
+      const response = await fetch(state.config.endpoints.ensemble_weights, {
+        method: "PUT",
+        headers: { Accept: "application/json", "Content-Type": "application/json" },
+        body: JSON.stringify({ analysts, aggregation_method: aggregation }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.detail || "Unable to save ensemble weights");
+      state.ensembleWeights = payload;
+      renderEnsemblePanel(state.lastPayload || state.config.initial_payload || {});
+      showToast("Ensemble weights saved.", "success");
+    } catch (error) {
+      showToast(`Unable to save ensemble weights: ${error.message || error}`, "error");
     }
   }
 
@@ -706,6 +745,98 @@
       const count = Number(payload.unread_alert_count || 0);
       alertsBadge.textContent = count > 0 ? `Alerts ${count}` : "Alerts";
       alertsBadge.style.display = count > 0 ? "" : "none";
+    }
+  }
+
+  function ensembleLabel(name) {
+    return String(name || "")
+      .split("_")
+      .map((part) => part ? `${part.slice(0, 1).toUpperCase()}${part.slice(1)}` : "")
+      .join(" ");
+  }
+
+  function ensureEnsembleMount() {
+    const analysisPanel = document.querySelector('[data-regime-panel="analysis"]');
+    if (!analysisPanel) return null;
+    let mount = byId("regimeEnsembleMount");
+    if (mount) return mount;
+    mount = document.createElement("div");
+    mount.id = "regimeEnsembleMount";
+    mount.style.marginTop = "14px";
+    const anchor = byId("regimeDiffMount");
+    analysisPanel.insertBefore(mount, anchor || null);
+    return mount;
+  }
+
+  function renderEnsemblePanel(payload) {
+    const mount = ensureEnsembleMount();
+    if (!mount) return;
+    if (!payload.ensemble_status && !state.ensembleWeights) {
+      mount.innerHTML = "";
+      return;
+    }
+    const weightsPayload = state.ensembleWeights || { analysts: [], aggregation_method: "mean" };
+    const analysts = Array.isArray(weightsPayload.analysts)
+      ? weightsPayload.analysts.filter((analyst) => String(analyst.name || "") !== "passthrough")
+      : [];
+    mount.innerHTML = `
+      <section class="ui-card">
+        <div class="table-toolbar">
+          <div>
+            <div class="ui-section-title">Ensemble Analysts</div>
+            <div class="ui-muted" style="margin-top:4px">Configure analyst participation and weighting for future ensemble aggregation.</div>
+          </div>
+          <div class="ui-muted">ML ${payload.ensemble_status && payload.ensemble_status.meta_labeler_active ? `Active v${payload.ensemble_status.meta_labeler_version || "?"}` : "Inactive"}</div>
+        </div>
+        <div style="display:grid; gap:12px; margin-top:12px">
+          <label style="display:grid; gap:6px; max-width:220px">
+            Aggregation
+            <select id="regimeEnsembleAggregation">
+              ${["mean", "min", "weighted"].map((method) => `<option value="${method}" ${weightsPayload.aggregation_method === method ? "selected" : ""}>${method}</option>`).join("")}
+            </select>
+          </label>
+          <div style="display:grid; gap:10px">
+            ${analysts.length ? analysts.map((analyst) => `
+              <div class="ui-card" data-ensemble-row="${escapeHtml(analyst.name)}" style="padding:10px; border:1px solid #e5e7eb">
+                <div style="display:flex; gap:12px; align-items:center; flex-wrap:wrap">
+                  <label style="display:flex; gap:8px; align-items:center; min-width:220px">
+                    <input type="checkbox" data-ensemble-enabled ${analyst.enabled ? "checked" : ""} />
+                    <strong>${escapeHtml(ensembleLabel(analyst.name))}</strong>
+                  </label>
+                  <span class="ui-badge ${analyst.ready ? "ui-badge--safe" : "ui-badge--neutral"}">${analyst.ready ? "Ready" : "Stub"}</span>
+                  <div style="display:flex; gap:10px; align-items:center; flex:1; min-width:240px">
+                    <input type="range" min="0" max="5" step="0.1" value="${escapeHtml(formatFixed(analyst.weight, 1))}" data-ensemble-weight ${analyst.enabled ? "" : "disabled"} style="flex:1" />
+                    <span class="ui-tabular-nums" data-ensemble-weight-value>${escapeHtml(formatFixed(analyst.weight, 1))}</span>
+                  </div>
+                </div>
+              </div>
+            `).join("") : '<div class="ui-muted">No analysts registered.</div>'}
+          </div>
+          <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap">
+            <button class="btn btn--secondary" id="regimeSaveEnsembleWeights" type="button">Save Weights</button>
+            <span class="ui-muted">Stubs are visible now but have no live effect until implemented.</span>
+          </div>
+        </div>
+      </section>
+    `;
+    mount.querySelectorAll("[data-ensemble-row]").forEach((row) => {
+      const checkbox = row.querySelector("[data-ensemble-enabled]");
+      const slider = row.querySelector("[data-ensemble-weight]");
+      const value = row.querySelector("[data-ensemble-weight-value]");
+      if (slider && value) {
+        slider.addEventListener("input", () => {
+          value.textContent = formatFixed(slider.value, 1);
+        });
+      }
+      if (checkbox && slider) {
+        checkbox.addEventListener("change", () => {
+          slider.disabled = !checkbox.checked;
+        });
+      }
+    });
+    const saveButton = byId("regimeSaveEnsembleWeights");
+    if (saveButton) {
+      saveButton.addEventListener("click", saveEnsembleWeights);
     }
   }
 
@@ -1711,6 +1842,7 @@
     renderWarnings(payload.warnings || []);
     renderCachedNote(payload);
     renderKpis(payload);
+    renderEnsemblePanel(payload);
     renderHeroStrip(payload);
     renderDiffPanel(payload);
     renderHeatmap(payload);
@@ -1742,6 +1874,7 @@
     savePref("activeTab", target);
     window.history.replaceState(null, "", `#${target}`);
     if (target === "trading") loadIBKRSettings();
+    if (target === "analysis") loadEnsembleWeights().catch?.(() => {});
   }
 
   function initTabs() {
@@ -4891,6 +5024,7 @@
     loadThemes().catch?.(() => {});
     loadWatchlist().catch?.(() => {});
     loadPaperPortfolios().catch?.(() => {});
+    loadEnsembleWeights().catch?.(() => {});
     setProgress("idle", 0, 0, "", "");
   }
 

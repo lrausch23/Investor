@@ -258,6 +258,7 @@ def _load_hmm_runtime() -> tuple[dict[str, Any] | None, str | None]:
             run_full_discovery,
         )
         from src.regime.ensemble import (
+            EnsembleConfig,
             PassthroughAnalyst,
             aggregate_analysts,
             get_registry,
@@ -320,7 +321,7 @@ def _load_hmm_runtime() -> tuple[dict[str, Any] | None, str | None]:
             tax_adjusted_signals,
             compute_unified_confidence,
         )
-        from src.regime.triple_barrier import BarrierConfig, apply_triple_barrier_labels, build_labeled_frame
+        from src.regime.triple_barrier import BarrierConfig, apply_triple_barrier_labels, build_labeled_frame, build_multi_ticker_labeled_frame
         from src.regime.vix_freeze import (
             check_vix_freeze,
             get_vix_freeze_threshold,
@@ -452,9 +453,11 @@ def _load_hmm_runtime() -> tuple[dict[str, Any] | None, str | None]:
         "expire_stale_candidates": expire_stale_candidates,
         "promote_candidate": promote_candidate,
         "get_registry": get_registry,
+        "EnsembleConfig": EnsembleConfig,
         "aggregate_analysts": aggregate_analysts,
         "apply_triple_barrier_labels": apply_triple_barrier_labels,
         "build_labeled_frame": build_labeled_frame,
+        "build_multi_ticker_labeled_frame": build_multi_ticker_labeled_frame,
         "BarrierConfig": BarrierConfig,
         "PassthroughAnalyst": PassthroughAnalyst,
         "MetaLabelerEngine": MetaLabelerEngine,
@@ -1780,6 +1783,13 @@ def _build_regime_dashboard_payload(
         "meta_labeler_name": getattr(meta_labeler_engine, "name", "xgboost_meta_labeler") if meta_labeler_engine else "xgboost_meta_labeler",
         "meta_labeler_version": int(active_version_raw) if active_version_raw else None,
     }
+    try:
+        ensemble_config = _ensemble_config_from_runtime(runtime)
+        payload["ensemble_status"]["aggregation_method"] = ensemble_config.aggregation_method
+        payload["ensemble_status"]["analyst_weights"] = dict(ensemble_config.analyst_weights)
+    except Exception:
+        payload["ensemble_status"]["aggregation_method"] = "mean"
+        payload["ensemble_status"]["analyst_weights"] = {}
 
     investor_db_path, available_tickers = _portfolio_tickers(runtime, session, show_all, portfolio_scope, account_id)
     _refresh_transition_outcomes(runtime, investor_db_path)
@@ -2173,45 +2183,36 @@ def _build_regime_dashboard_payload(
         and callable(set_setting_fn)
         and str(get_setting("meta_labeler_auto_retrain") or "").lower() in {"true", "1", "yes"}
     ):
+        retrain_tickers = _parse_setting_tickers(get_setting("meta_labeler_retrain_tickers") or "")
         retrain_ticker = str(get_setting("meta_labeler_retrain_ticker") or "").strip().upper()
         retrain_period = str(get_setting("meta_labeler_retrain_period") or "3y")
         retrain_day = str(get_setting("meta_labeler_retrain_day") or "Sunday")
-        if retrain_ticker:
+        if retrain_tickers or retrain_ticker:
             history = get_training_history_fn(limit=1)
             last_trained = history[0]["trained_at"] if history else None
             if should_retrain_fn(last_trained, retrain_day):
                 try:
-                    logger.info("Auto-retrain triggered for meta-labeler on %s", retrain_ticker)
-                    market_series = runtime["download_market_frame"](ticker=retrain_ticker, period=retrain_period)
-                    market_frame = getattr(market_series, "frame", market_series)
-                    regime_result = runtime["fit_regime_model"](ticker=retrain_ticker, market_frame=market_frame)
-                    labeled_frame = runtime["build_labeled_frame"](retrain_ticker, market_frame, regime_result)
-                    registry = runtime["get_registry"]()
-                    engine = registry.get("xgboost_meta_labeler")
-                    if engine is None:
-                        engine = runtime["create_and_register_meta_labeler"](_meta_labeler_config_from_runtime(runtime))
-                    metrics = engine.train(labeled_frame)
-                    if engine.is_ready():
-                        active_str = get_setting("meta_labeler_active_version")
-                        if active_str and callable(update_training_status_fn):
-                            try:
-                                update_training_status_fn(int(active_str), "superseded")
-                            except Exception:
-                                pass
-                        new_version = get_next_version_fn()
-                        model_path = version_path_fn(new_version)
-                        engine.save_model(model_path)
-                        log_training_run_fn(
-                            version=new_version,
-                            ticker=retrain_ticker,
-                            model_path=model_path,
-                            metrics=metrics,
+                    if len(retrain_tickers) >= 2:
+                        logger.info("Auto-retrain (multi-ticker): %s", ",".join(retrain_tickers))
+                        train_result = _train_meta_labeler_multi_sync(
+                            runtime,
+                            retrain_tickers,
+                            period=retrain_period,
                             notes="auto-retrain",
                         )
-                        set_setting_fn("meta_labeler_active_version", str(new_version))
-                        payload["ensemble_status"]["meta_labeler_version"] = new_version
+                    else:
+                        target_ticker = retrain_tickers[0] if retrain_tickers else retrain_ticker
+                        logger.info("Auto-retrain (single): %s", target_ticker)
+                        train_result = _train_meta_labeler_multi_sync(
+                            runtime,
+                            [target_ticker],
+                            period=retrain_period,
+                            notes="auto-retrain",
+                        )
+                    if train_result.get("ready") and train_result.get("version"):
+                        payload["ensemble_status"]["meta_labeler_version"] = train_result["version"]
                         payload["ensemble_status"]["meta_labeler_active"] = True
-                        logger.info("Auto-retrain complete: meta-labeler v%d saved", new_version)
+                        logger.info("Auto-retrain complete: meta-labeler v%d saved", int(train_result["version"]))
                 except Exception as exc:
                     logger.warning("Auto-retrain failed: %s", exc, exc_info=True)
     meta_scores: dict[str, float] = {}
@@ -2956,6 +2957,8 @@ def _build_shell_context(
             "market_data_settings": "/regime/market-data/settings",
             "frontier_models": "/regime/frontier/models",
             "frontier_settings": "/regime/frontier/settings",
+            "ensemble_analysts": "/regime/ensemble/analysts",
+            "ensemble_weights": "/regime/ensemble/weights",
             "autonomy_settings": "/regime/autonomy/settings",
             "tax_settings": "/regime/tax-settings",
             "health": "/regime/health",
@@ -3332,6 +3335,70 @@ def _ensemble_settings_payload(runtime: dict[str, Any]) -> dict[str, str]:
     return payload
 
 
+def _parse_setting_tickers(raw_value: Any) -> list[str]:
+    if isinstance(raw_value, (list, tuple)):
+        tokens = raw_value
+    else:
+        tokens = re.split(r"[,;\n]+", str(raw_value or ""))
+    seen: set[str] = set()
+    result: list[str] = []
+    for token in tokens:
+        normalized = str(token or "").strip().upper()
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            result.append(normalized)
+    return result
+
+
+def _ensemble_weights_payload(runtime: dict[str, Any]) -> dict[str, Any]:
+    registry = runtime["get_registry"]()
+    analysts: list[dict[str, Any]] = []
+    for name in registry.list_analysts():
+        analyst = registry.get(name)
+        if analyst is None:
+            continue
+        ready = bool(analyst.is_ready())
+        enabled_raw = runtime["get_setting"](f"ensemble_analyst_{name}_enabled")
+        if enabled_raw is None or str(enabled_raw).strip() == "":
+            enabled = ready
+        else:
+            enabled = str(enabled_raw).strip().lower() in {"true", "1", "yes", "on"}
+        weight_raw = runtime["get_setting"](f"ensemble_analyst_{name}_weight")
+        try:
+            weight = float(weight_raw if weight_raw is not None and str(weight_raw).strip() != "" else 1.0)
+        except Exception:
+            weight = 1.0
+        analysts.append(
+            {
+                "name": name,
+                "ready": ready,
+                "enabled": enabled,
+                "weight": max(0.0, min(5.0, weight)),
+            }
+        )
+    return {
+        "analysts": analysts,
+        "aggregation_method": str(runtime["get_setting"]("ensemble_aggregation_method") or "mean"),
+    }
+
+
+def _ensemble_config_from_runtime(runtime: dict[str, Any]) -> Any:
+    defaults = _ensemble_settings_payload(runtime)
+    weights_payload = _ensemble_weights_payload(runtime)
+    weights = {
+        str(item["name"]): float(item["weight"])
+        for item in weights_payload["analysts"]
+        if bool(item.get("enabled"))
+    }
+    config_cls = runtime["EnsembleConfig"]
+    return config_cls(
+        veto_threshold=float(defaults.get("ensemble_veto_threshold", "0.50") or 0.50),
+        confirm_threshold=float(defaults.get("ensemble_confirm_threshold", "0.65") or 0.65),
+        aggregation_method=str(weights_payload.get("aggregation_method") or "mean"),
+        analyst_weights=weights,
+    )
+
+
 def _meta_labeler_config_from_runtime(runtime: dict[str, Any]) -> Any:
     config_cls = runtime["MetaLabelerConfig"]
     defaults = runtime["DEFAULT_META_LABELER_CONFIG"]
@@ -3358,6 +3425,115 @@ def _meta_labeler_config_from_runtime(runtime: dict[str, Any]) -> Any:
         min_training_samples=_int_setting("meta_min_training_samples", defaults.min_training_samples),
         walk_forward_gap=_int_setting("meta_walk_forward_gap", defaults.walk_forward_gap),
     )
+
+
+def _collect_meta_labeler_pairs(
+    runtime: dict[str, Any],
+    tickers: list[str],
+    *,
+    period: str,
+    training_window: int,
+    refit_step: int,
+) -> tuple[list[tuple[str, Any]], list[str]]:
+    pairs: list[tuple[str, Any]] = []
+    skipped: list[str] = []
+    for ticker in tickers:
+        try:
+            market_series = runtime["download_market_frame"](ticker=ticker, period=period)
+            market_frame = getattr(market_series, "frame", market_series)
+            regime_result = runtime["fit_regime_model"](
+                ticker=ticker,
+                market_frame=market_frame,
+                training_window=training_window,
+                refit_step=refit_step,
+            )
+            pairs.append((ticker, regime_result))
+        except Exception:
+            logger.warning("Unable to prepare meta-labeler training data for %s.", ticker, exc_info=True)
+            skipped.append(ticker)
+    return pairs, skipped
+
+
+def _train_meta_labeler_multi_sync(
+    runtime: dict[str, Any],
+    tickers: list[str],
+    *,
+    period: str = "3y",
+    training_window: int = 504,
+    refit_step: int = 21,
+    notes: str | None = None,
+) -> dict[str, Any]:
+    tickers = sorted(_parse_setting_tickers(tickers))
+    if not tickers:
+        raise DataValidationError("At least one ticker is required.")
+    pairs, skipped = _collect_meta_labeler_pairs(
+        runtime,
+        tickers,
+        period=period,
+        training_window=training_window,
+        refit_step=refit_step,
+    )
+    if not pairs:
+        raise DataValidationError("No tickers produced valid regime results.")
+    labeled_frame = runtime["build_multi_ticker_labeled_frame"](pairs)
+    config = _meta_labeler_config_from_runtime(runtime)
+    combined_samples = int(len(labeled_frame))
+    tickers_used = [ticker for ticker, _ in pairs]
+    if combined_samples < int(config.min_training_samples):
+        return {
+            "tickers": tickers,
+            "tickers_used": tickers_used,
+            "tickers_skipped": skipped,
+            "combined_samples": combined_samples,
+            "ready": False,
+            "status": "insufficient_data",
+        }
+    registry = runtime["get_registry"]()
+    engine = registry.get("xgboost_meta_labeler")
+    if engine is None:
+        engine = runtime["create_and_register_meta_labeler"](config)
+    metrics = engine.train(labeled_frame)
+    result: dict[str, Any] = {
+        "tickers": tickers,
+        "tickers_used": tickers_used,
+        "tickers_skipped": skipped,
+        "combined_samples": combined_samples,
+        "metrics": metrics,
+        "ready": bool(engine.is_ready()),
+        "status": "trained" if engine.is_ready() else "not_ready",
+    }
+    if engine.is_ready():
+        active_version_str = runtime["get_setting"]("meta_labeler_active_version")
+        if active_version_str:
+            try:
+                runtime["update_training_status"](int(active_version_str), "superseded")
+            except Exception:
+                pass
+        new_version = runtime["get_next_version"]()
+        model_path = runtime["_version_path"](new_version)
+        save_result = engine.save_model(model_path)
+        config_dict = {
+            "n_estimators": engine._config.n_estimators,
+            "learning_rate": engine._config.learning_rate,
+            "max_depth": engine._config.max_depth,
+            "subsample": engine._config.subsample,
+            "colsample_bytree": engine._config.colsample_bytree,
+            "min_training_samples": engine._config.min_training_samples,
+            "walk_forward_gap": engine._config.walk_forward_gap,
+        }
+        runtime["log_training_run"](
+            version=new_version,
+            ticker=",".join(sorted(tickers_used)),
+            model_path=model_path,
+            metrics=metrics,
+            config=config_dict,
+            notes=notes,
+        )
+        runtime["set_setting"]("meta_labeler_active_version", str(new_version))
+        runtime["set_setting"]("meta_labeler_last_trained_at", dt.datetime.now(dt.timezone.utc).isoformat())
+        result.update(save_result)
+        result["version"] = new_version
+    return result
 
 
 @router.get("/ensemble/settings")
@@ -3414,6 +3590,61 @@ def regime_ensemble_analysts_list(
             ]
         }
     )
+
+
+@router.get("/ensemble/weights")
+def regime_ensemble_weights_get(
+    session: Session = Depends(db_session),
+    actor: str = Depends(require_actor),
+):
+    del session, actor
+    runtime, runtime_error = _load_hmm_runtime()
+    if runtime is None:
+        raise HTTPException(status_code=503, detail=runtime_error or "Regime analytics are unavailable.")
+    return JSONResponse(content=_json_ready(_ensemble_weights_payload(runtime)))
+
+
+@router.put("/ensemble/weights")
+async def regime_ensemble_weights_put(
+    request: Request,
+    session: Session = Depends(db_session),
+    actor: str = Depends(require_actor),
+):
+    del session, actor
+    runtime, runtime_error = _load_hmm_runtime()
+    if runtime is None:
+        raise HTTPException(status_code=503, detail=runtime_error or "Regime analytics are unavailable.")
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="Request body must be a JSON object.")
+    aggregation_method = str(body.get("aggregation_method", "mean") or "mean").strip().lower()
+    if aggregation_method not in {"mean", "min", "weighted"}:
+        raise HTTPException(status_code=400, detail=f"Invalid aggregation method: {aggregation_method}")
+    registry = runtime["get_registry"]()
+    analysts_payload = body.get("analysts", {})
+    if not isinstance(analysts_payload, dict):
+        raise HTTPException(status_code=400, detail="analysts must be an object.")
+    for name, config in analysts_payload.items():
+        if registry.get(str(name)) is None:
+            raise HTTPException(status_code=400, detail=f"Unknown analyst: {name}")
+        if not isinstance(config, dict):
+            raise HTTPException(status_code=400, detail=f"Analyst config for {name} must be an object.")
+        enabled = config.get("enabled")
+        if not isinstance(enabled, bool):
+            raise HTTPException(status_code=400, detail=f"enabled must be boolean for {name}")
+        try:
+            weight = float(config.get("weight", 1.0))
+        except Exception:
+            raise HTTPException(status_code=400, detail=f"weight must be numeric for {name}") from None
+        if weight < 0.0 or weight > 5.0:
+            raise HTTPException(status_code=400, detail=f"weight out of range for {name}")
+        runtime["set_setting"](f"ensemble_analyst_{name}_enabled", str(enabled).lower())
+        runtime["set_setting"](f"ensemble_analyst_{name}_weight", str(weight))
+    runtime["set_setting"]("ensemble_aggregation_method", aggregation_method)
+    return JSONResponse(content=_json_ready(_ensemble_weights_payload(runtime)))
 
 
 @router.post("/ensemble/meta-labeler/train")
@@ -3482,6 +3713,38 @@ async def regime_meta_labeler_train(
         return {"ticker": ticker, "metrics": metrics, "ready": engine.is_ready(), **save_result}
 
     result = await asyncio.to_thread(_train_sync)
+    return JSONResponse(content=_json_ready(result))
+
+
+@router.post("/ensemble/meta-labeler/train-multi")
+async def regime_meta_labeler_train_multi(
+    request: Request,
+    session: Session = Depends(db_session),
+    actor: str = Depends(require_actor),
+):
+    del session, actor
+    runtime, runtime_error = _load_hmm_runtime()
+    if runtime is None:
+        raise HTTPException(status_code=503, detail=runtime_error or "Regime analytics unavailable.")
+    body = await request.json()
+    tickers = _parse_setting_tickers(body.get("tickers") or [])
+    if not tickers:
+        raise HTTPException(status_code=400, detail="Tickers are required.")
+    period = str(body.get("period", "3y") or "3y")
+    training_window = int(body.get("training_window", 504) or 504)
+    refit_step = int(body.get("refit_step", 21) or 21)
+
+    try:
+        result = await asyncio.to_thread(
+            _train_meta_labeler_multi_sync,
+            runtime,
+            tickers,
+            period=period,
+            training_window=training_window,
+            refit_step=refit_step,
+        )
+    except DataValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return JSONResponse(content=_json_ready(result))
 
 

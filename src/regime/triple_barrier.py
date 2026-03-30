@@ -197,3 +197,40 @@ def build_labeled_frame(
         low_col="low",
         config=config,
     )
+
+
+def build_multi_ticker_labeled_frame(
+    ticker_regime_pairs: list[tuple[str, Any]],
+    config: BarrierConfig | None = None,
+) -> pd.DataFrame:
+    """
+    Build a single labeled DataFrame from multiple tickers' regime results.
+    """
+
+    barrier_config = config or DEFAULT_BARRIER_CONFIG
+    expected_columns = [
+        "ticker",
+        "barrier_outcome",
+        "barrier_type",
+        "barrier_days",
+        "barrier_entry",
+        "barrier_target",
+        "barrier_stop",
+    ]
+    if not ticker_regime_pairs:
+        return pd.DataFrame(columns=expected_columns)
+
+    labeled_frames: list[pd.DataFrame] = []
+    for ticker, regime_result in ticker_regime_pairs:
+        labeled = build_labeled_frame(str(ticker), pd.DataFrame(), regime_result, config=barrier_config).copy()
+        labeled["ticker"] = str(ticker).upper()
+        labeled_frames.append(labeled)
+
+    combined = pd.concat(labeled_frames, ignore_index=True) if labeled_frames else pd.DataFrame(columns=expected_columns)
+    if "barrier_outcome" not in combined.columns:
+        return pd.DataFrame(columns=expected_columns)
+    combined = combined.loc[combined["barrier_outcome"].notna()].reset_index(drop=True)
+    if combined.empty:
+        all_columns = list(dict.fromkeys(expected_columns + list(combined.columns)))
+        return pd.DataFrame(columns=all_columns)
+    return combined

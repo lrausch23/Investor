@@ -176,6 +176,10 @@ class PassthroughAnalyst(AnalystBase):
 
 _registry = AnalystRegistry()
 _registry.register(PassthroughAnalyst())
+from .analysts import KalmanFilterAnalyst, LSTMSequenceAnalyst
+
+_registry.register(LSTMSequenceAnalyst())
+_registry.register(KalmanFilterAnalyst())
 
 
 def get_registry() -> AnalystRegistry:
