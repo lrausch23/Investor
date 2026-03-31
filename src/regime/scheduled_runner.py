@@ -216,11 +216,15 @@ def run_scheduled_paper_plans() -> dict[str, Any]:
 
 
 def run_end_of_day_processing() -> dict[str, Any]:
+    from .persistence import save_execution_quality_snapshot
+    from .slippage import backfill_execution_benchmarks, compute_execution_quality
+
     now = dt.datetime.now(dt.timezone.utc)
     set_setting("watchdog_heartbeat", now.isoformat())
     set_setting("heartbeat_epoch", str(now.timestamp()))
     snapshots: list[dict[str, Any]] = []
     outcomes: list[dict[str, Any]] = []
+    execution_quality: list[dict[str, Any]] = []
     for portfolio in list_paper_portfolios(include_closed=False):
         portfolio_id = int(portfolio["id"])
         snapshot = compute_daily_snapshot(portfolio_id)
@@ -260,6 +264,18 @@ def run_end_of_day_processing() -> dict[str, Any]:
         for position in get_paper_positions(portfolio_id, status="Closed"):
             if position.get("exit_date"):
                 outcomes.append(record_trade_outcome(portfolio_id, position, float(position.get("exit_price") or 0.0)))
+        benchmark_backfill = backfill_execution_benchmarks(portfolio_id)
+        report = compute_execution_quality(portfolio_id)
+        snapshot_id = save_execution_quality_snapshot(report)
+        execution_quality.append(
+            {
+                "portfolio_id": portfolio_id,
+                "backfill": benchmark_backfill,
+                "snapshot_id": snapshot_id,
+                "total_trades": report.total_trades,
+                "overall_avg_impl_shortfall_bps": report.overall_avg_impl_shortfall_bps,
+            }
+        )
     performance = run_performance_snapshot()
     for snapshot in snapshots:
         daily_pnl = float(snapshot.get("unrealized_pnl") or 0.0) + float(snapshot.get("realized_pnl") or 0.0)
@@ -283,6 +299,7 @@ def run_end_of_day_processing() -> dict[str, Any]:
         "snapshot_count": len(snapshots),
         "outcomes": outcomes,
         "performance": performance,
+        "execution_quality": execution_quality,
         "backup": backup,
         "digest_sent": digest_sent,
         "health": health,

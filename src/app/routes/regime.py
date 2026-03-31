@@ -175,6 +175,8 @@ def _load_hmm_runtime() -> tuple[dict[str, Any] | None, str | None]:
             get_calibration_data,
             get_daily_audit_summary,
             get_daily_snapshots,
+            get_execution_quality_history,
+            get_execution_quality_snapshot,
             get_performance_timeseries,
             get_paper_portfolio,
             get_paper_portfolio_summary,
@@ -226,6 +228,7 @@ def _load_hmm_runtime() -> tuple[dict[str, Any] | None, str | None]:
             save_alert,
             save_regime_change_with_price,
             save_daily_snapshot,
+            save_execution_quality_snapshot,
             save_regime_event,
             save_sentiment,
             save_signal_snapshot,
@@ -239,6 +242,7 @@ def _load_hmm_runtime() -> tuple[dict[str, Any] | None, str | None]:
             update_paper_portfolio,
             update_theme,
             update_trade_plan_status,
+            update_trade_plan_benchmarks,
             update_training_status,
             update_ticker_in_theme,
             update_watchlist_status,
@@ -347,6 +351,13 @@ def _load_hmm_runtime() -> tuple[dict[str, Any] | None, str | None]:
             get_routing_settings,
             set_routing_settings,
         )
+        from src.regime.slippage import (
+            backfill_execution_benchmarks,
+            compute_execution_quality,
+            estimate_execution_cost,
+            get_execution_quality_ticker_diagnostic,
+            get_execution_quality_trades,
+        )
     except ImportError:
         return None, (
             "Regime analytics are unavailable because hmm-market-regime-tool is not installed "
@@ -400,6 +411,7 @@ def _load_hmm_runtime() -> tuple[dict[str, Any] | None, str | None]:
         "update_theme": update_theme,
         "update_paper_portfolio": update_paper_portfolio,
         "update_trade_plan_status": update_trade_plan_status,
+        "update_trade_plan_benchmarks": update_trade_plan_benchmarks,
         "delete_theme": delete_theme,
         "delete_paper_portfolio": delete_paper_portfolio,
         "list_themes": list_themes,
@@ -442,6 +454,8 @@ def _load_hmm_runtime() -> tuple[dict[str, Any] | None, str | None]:
         "OPERATING_MODES": OPERATING_MODES,
         "get_daily_audit_summary": get_daily_audit_summary,
         "get_daily_snapshots": get_daily_snapshots,
+        "get_execution_quality_history": get_execution_quality_history,
+        "get_execution_quality_snapshot": get_execution_quality_snapshot,
         "get_performance_timeseries": get_performance_timeseries,
         "save_supply_chain_layers": save_supply_chain_layers,
         "get_supply_chain": get_supply_chain,
@@ -512,8 +526,14 @@ def _load_hmm_runtime() -> tuple[dict[str, Any] | None, str | None]:
         "compute_ml_accuracy": compute_ml_accuracy,
         "compute_attribution_summary": compute_attribution_summary,
         "compute_daily_snapshot": compute_daily_snapshot,
+        "backfill_execution_benchmarks": backfill_execution_benchmarks,
+        "compute_execution_quality": compute_execution_quality,
+        "estimate_execution_cost": estimate_execution_cost,
+        "get_execution_quality_trades": get_execution_quality_trades,
+        "get_execution_quality_ticker_diagnostic": get_execution_quality_ticker_diagnostic,
         "record_trade_outcome": record_trade_outcome,
         "save_daily_snapshot": save_daily_snapshot,
+        "save_execution_quality_snapshot": save_execution_quality_snapshot,
         "dispatch_notification": dispatch_notification,
         "notification_preferences_payload": notification_preferences_payload,
         "sweep_monitoring_alerts": sweep_monitoring_alerts,
@@ -3104,6 +3124,7 @@ def _build_shell_context(
             "anti_churn_diagnostic": "/regime/anti-churn/__TICKER__",
             "hurdle_settings": "/regime/hurdle/settings",
             "hurdle_diagnostic": "/regime/hurdle/__TICKER__",
+            "slippage_settings": "/regime/slippage/settings",
             "ltcg_override_settings": "/regime/ltcg-override/settings",
             "ltcg_override_diagnostic": "/regime/ltcg-override/__TICKER__",
             "order_routing_settings": "/regime/order-routing/settings",
@@ -3131,6 +3152,10 @@ def _build_shell_context(
             "paper_kill_switch": "/regime/paper-portfolio/__PORTFOLIO_ID__/kill-switch",
             "paper_performance": "/regime/paper-portfolio/__PORTFOLIO_ID__/performance",
             "paper_attribution_summary": "/regime/paper-portfolio/__PORTFOLIO_ID__/attribution/summary",
+            "paper_execution_quality": "/regime/execution-quality/__PORTFOLIO_ID__",
+            "paper_execution_quality_trades": "/regime/execution-quality/__PORTFOLIO_ID__/trades",
+            "paper_execution_quality_trend": "/regime/execution-quality/__PORTFOLIO_ID__/trend",
+            "execution_quality_ticker": "/regime/execution-quality/ticker/__TICKER__",
             "paper_audit": "/regime/paper-portfolio/__PORTFOLIO_ID__/audit",
             "paper_audit_summary": "/regime/paper-portfolio/__PORTFOLIO_ID__/audit/summary",
             "ibkr_settings": "/regime/ibkr/settings",
@@ -4880,6 +4905,40 @@ def _hurdle_settings_payload() -> dict[str, Any]:
     return _json_ready(get_hurdle_settings())
 
 
+def _default_execution_quality_portfolio_id(runtime: dict[str, Any]) -> int | None:
+    portfolios = runtime["list_paper_portfolios"](include_closed=False)
+    for portfolio in portfolios:
+        if str(portfolio.get("status") or "") == "Active":
+            return int(portfolio["id"])
+    return int(portfolios[0]["id"]) if portfolios else None
+
+
+def _execution_quality_payload(
+    runtime: dict[str, Any],
+    portfolio_id: int,
+    *,
+    lookback_days: int = 90,
+    refresh: bool = False,
+) -> dict[str, Any]:
+    if not refresh:
+        cached = runtime["get_execution_quality_snapshot"](portfolio_id)
+        if cached is not None:
+            return _json_ready(cached)
+    report = runtime["compute_execution_quality"](portfolio_id, lookback_days=lookback_days)
+    runtime["save_execution_quality_snapshot"](report)
+    if is_dataclass(report):
+        payload = asdict(report)
+    else:
+        payload = dict(vars(report))
+        if not payload:
+            payload = {
+                name: getattr(report, name)
+                for name in dir(report)
+                if not name.startswith("_") and not callable(getattr(report, name))
+            }
+    return _json_ready(payload)
+
+
 def _sizing_settings_payload() -> dict[str, Any]:
     from src.regime.paper_trading import get_sizing_settings
 
@@ -5059,6 +5118,59 @@ async def regime_hurdle_settings_put(
     return JSONResponse(content=_json_ready(updated))
 
 
+@router.get("/slippage/settings")
+def regime_slippage_settings_get(
+    actor: str = Depends(require_actor),
+):
+    del actor
+    from src.regime.hurdle_rate import get_hurdle_settings
+
+    settings = get_hurdle_settings()
+    return JSONResponse(
+        content=_json_ready(
+            {
+                "slippage_feedback_enabled": bool(settings.get("slippage_feedback_enabled", True)),
+                "slippage_min_sample_size": int(settings.get("slippage_min_sample_size", 10) or 10),
+                "slippage_lookback_days": int(settings.get("slippage_lookback_days", 90) or 90),
+            }
+        )
+    )
+
+
+@router.put("/slippage/settings")
+async def regime_slippage_settings_put(
+    request: Request,
+    actor: str = Depends(require_actor),
+):
+    del actor
+    from src.regime.hurdle_rate import set_hurdle_settings
+
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Request body must be a JSON object.")
+    subset = {
+        "slippage_feedback_enabled": bool(payload.get("slippage_feedback_enabled", True)),
+        "slippage_min_sample_size": int(payload.get("slippage_min_sample_size", 10) or 10),
+        "slippage_lookback_days": int(payload.get("slippage_lookback_days", 90) or 90),
+    }
+    try:
+        updated = set_hurdle_settings(subset)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return JSONResponse(
+        content=_json_ready(
+            {
+                "slippage_feedback_enabled": bool(updated.get("slippage_feedback_enabled", True)),
+                "slippage_min_sample_size": int(updated.get("slippage_min_sample_size", 10) or 10),
+                "slippage_lookback_days": int(updated.get("slippage_lookback_days", 90) or 90),
+            }
+        )
+    )
+
+
 @router.get("/hurdle/{ticker}")
 def regime_hurdle_diagnostic(
     ticker: str,
@@ -5086,6 +5198,96 @@ def regime_hurdle_diagnostic(
             "duration_gate": _json_ready(asdict(duration_gate)),
         }
     )
+
+
+@router.get("/execution-quality/{portfolio_id}")
+def regime_execution_quality_report(
+    portfolio_id: int,
+    lookback_days: int = 90,
+    refresh: bool = False,
+    session: Session = Depends(db_session),
+    actor: str = Depends(require_actor),
+):
+    del session, actor
+    runtime, runtime_error = _load_hmm_runtime()
+    if runtime is None:
+        raise HTTPException(status_code=503, detail=runtime_error or "Regime analytics are unavailable.")
+    _require_paper_portfolio(runtime, portfolio_id)
+    return JSONResponse(content=_execution_quality_payload(runtime, portfolio_id, lookback_days=lookback_days, refresh=refresh))
+
+
+@router.get("/execution-quality/{portfolio_id}/trades")
+def regime_execution_quality_trades(
+    portfolio_id: int,
+    limit: int = 50,
+    offset: int = 0,
+    ticker: str | None = None,
+    strategy: str | None = None,
+    session: Session = Depends(db_session),
+    actor: str = Depends(require_actor),
+):
+    del session, actor
+    runtime, runtime_error = _load_hmm_runtime()
+    if runtime is None:
+        raise HTTPException(status_code=503, detail=runtime_error or "Regime analytics are unavailable.")
+    _require_paper_portfolio(runtime, portfolio_id)
+    trades = runtime["get_execution_quality_trades"](
+        portfolio_id,
+        limit=limit,
+        offset=offset,
+        ticker=ticker,
+        strategy=strategy,
+    )
+    return JSONResponse(content=_json_ready({"trades": trades, "count": len(trades)}))
+
+
+@router.get("/execution-quality/{portfolio_id}/trend")
+def regime_execution_quality_trend(
+    portfolio_id: int,
+    days: int = 30,
+    session: Session = Depends(db_session),
+    actor: str = Depends(require_actor),
+):
+    del session, actor
+    runtime, runtime_error = _load_hmm_runtime()
+    if runtime is None:
+        raise HTTPException(status_code=503, detail=runtime_error or "Regime analytics are unavailable.")
+    _require_paper_portfolio(runtime, portfolio_id)
+    rows = list(reversed(runtime["get_execution_quality_history"](portfolio_id, limit=max(1, int(days)))))
+    trend = [
+        {
+            "date": row.get("analysis_date"),
+            "avg_impl_shortfall_bps": row.get("overall_avg_impl_shortfall_bps"),
+            "avg_vs_vwap_bps": row.get("overall_avg_vs_vwap_bps"),
+            "trade_count": row.get("total_trades"),
+        }
+        for row in rows
+    ]
+    return JSONResponse(content=_json_ready(trend))
+
+
+@router.get("/execution-quality/ticker/{ticker}")
+def regime_execution_quality_ticker(
+    ticker: str,
+    portfolio_id: int | None = None,
+    lookback_days: int = 90,
+    session: Session = Depends(db_session),
+    actor: str = Depends(require_actor),
+):
+    del session, actor
+    runtime, runtime_error = _load_hmm_runtime()
+    if runtime is None:
+        raise HTTPException(status_code=503, detail=runtime_error or "Regime analytics are unavailable.")
+    resolved_portfolio_id = int(portfolio_id) if portfolio_id is not None else _default_execution_quality_portfolio_id(runtime)
+    if resolved_portfolio_id is None:
+        raise HTTPException(status_code=404, detail="Paper portfolio not found.")
+    _require_paper_portfolio(runtime, resolved_portfolio_id)
+    payload = runtime["get_execution_quality_ticker_diagnostic"](
+        ticker,
+        portfolio_id=resolved_portfolio_id,
+        lookback_days=lookback_days,
+    )
+    return JSONResponse(content=_json_ready(payload))
 
 
 @router.get("/anti-churn/settings")

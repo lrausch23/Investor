@@ -47,6 +47,8 @@
     paperTaxEstimates: {},
     paperPerformance: null,
     paperAttribution: null,
+    paperExecutionQuality: null,
+    paperExecutionQualityTrend: [],
     autonomySettings: null,
     autonomyStatus: null,
     taxSettings: null,
@@ -2623,6 +2625,16 @@
     return `<span class="${plan.hurdle_passed ? "ui-badge ui-badge--safe" : "ui-badge ui-badge--bad"}" title="${escapeHtml(title)}">Hurdle ${plan.hurdle_passed ? "✓" : "✗"}</span>`;
   }
 
+  function renderSlippageBadge(plan) {
+    if (plan.arrival_price == null || plan.execution_price == null || !Number(plan.arrival_price)) return "";
+    const arrival = Number(plan.arrival_price);
+    const fill = Number(plan.execution_price);
+    const isSell = String(plan.action || "").toLowerCase() === "sell";
+    const bps = isSell ? ((arrival - fill) / arrival) * 10000 : ((fill - arrival) / arrival) * 10000;
+    const klass = bps > 0 ? "ui-badge ui-badge--bad" : bps < 0 ? "ui-badge ui-badge--safe" : "ui-badge ui-badge--neutral";
+    return `<span class="${klass}" title="${escapeHtml(`Arrival ${formatCurrency(arrival, 2)} · Fill ${formatCurrency(fill, 2)}`)}">Slip ${escapeHtml(`${bps >= 0 ? "+" : ""}${bps.toFixed(1)}bps`)}</span>`;
+  }
+
   function renderDurationGateBadge(plan) {
     if (plan.duration_gate_passed == null) return "";
     const title = plan.expected_regime_duration == null
@@ -3394,12 +3406,13 @@
                 ${plan.sizing_method === "risk_budget" ? `<span class="ui-badge ui-badge--neutral">Risk-Sized</span>` : ""}
                 ${renderAntiChurnBadge(plan)}
                 ${renderHurdleBadge(plan)}
+                ${renderSlippageBadge(plan)}
                 ${renderDurationGateBadge(plan)}
                 ${renderLtcgShieldBadge(plan)}
                 ${renderTaxImpactBadge(plan)}
               </div>
               <div class="ui-muted" style="margin-top:6px">${escapeHtml(plan.rationale || "")}</div>
-              ${(plan.hurdle_gross_return_pct != null || plan.hurdle_net_return_pct != null || plan.expected_regime_duration != null || plan.ltcg_override_active || plan.anti_churn_passed != null || plan.routing_strategy || plan.order_type || plan.algo_strategy) ? `<div class="ui-muted" style="margin-top:6px">Order ${escapeHtml(String(plan.order_type || "limit"))} · Routing ${escapeHtml(plan.routing_strategy || "—")} · Algo ${escapeHtml(plan.algo_strategy || "—")} · Churn ${escapeHtml(plan.anti_churn_passed == null ? "—" : plan.anti_churn_passed ? "Pass" : "Blocked")} · Gross ${escapeHtml(plan.hurdle_gross_return_pct == null ? "—" : `${Number(plan.hurdle_gross_return_pct).toFixed(2)}%`)} · Net ${escapeHtml(plan.hurdle_net_return_pct == null ? "—" : `${Number(plan.hurdle_net_return_pct).toFixed(2)}%`)} · Duration ${escapeHtml(plan.expected_regime_duration == null ? "—" : `${Number(plan.expected_regime_duration).toFixed(1)}d`)} · LTCG ${escapeHtml(plan.ltcg_override_active ? `${Number(plan.ltcg_protected_quantity || 0).toFixed(2)} sh / ${formatCurrency(plan.ltcg_tax_savings, 2)}` : "—")}</div>` : ""}
+              ${(plan.hurdle_gross_return_pct != null || plan.hurdle_net_return_pct != null || plan.expected_regime_duration != null || plan.ltcg_override_active || plan.anti_churn_passed != null || plan.routing_strategy || plan.order_type || plan.algo_strategy || plan.arrival_price != null || plan.execution_price != null) ? `<div class="ui-muted" style="margin-top:6px">Order ${escapeHtml(String(plan.order_type || "limit"))} · Routing ${escapeHtml(plan.routing_strategy || "—")} · Algo ${escapeHtml(plan.algo_strategy || "—")} · Arrival ${escapeHtml(plan.arrival_price == null ? "—" : formatCurrency(plan.arrival_price, 2))} · Fill ${escapeHtml(plan.execution_price == null ? "—" : formatCurrency(plan.execution_price, 2))} · Churn ${escapeHtml(plan.anti_churn_passed == null ? "—" : plan.anti_churn_passed ? "Pass" : "Blocked")} · Gross ${escapeHtml(plan.hurdle_gross_return_pct == null ? "—" : `${Number(plan.hurdle_gross_return_pct).toFixed(2)}%`)} · Net ${escapeHtml(plan.hurdle_net_return_pct == null ? "—" : `${Number(plan.hurdle_net_return_pct).toFixed(2)}%`)} · Duration ${escapeHtml(plan.expected_regime_duration == null ? "—" : `${Number(plan.expected_regime_duration).toFixed(1)}d`)} · LTCG ${escapeHtml(plan.ltcg_override_active ? `${Number(plan.ltcg_protected_quantity || 0).toFixed(2)} sh / ${formatCurrency(plan.ltcg_tax_savings, 2)}` : "—")}</div>` : ""}
               ${plan.execution_result ? `<div class="ui-muted" style="margin-top:6px">${escapeHtml(plan.execution_result)}</div>` : ""}
               <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:10px">
                 <button class="btn btn--secondary" type="button" data-paper-plan-action="Approved" data-paper-plan-id="${escapeHtml(plan.id)}" ${!((planPrecheck(plan.id) || {}).guardrail_passed) || paused || closed ? "disabled" : ""}>${(planPrecheck(plan.id) && !(planPrecheck(plan.id).guardrail_passed)) ? "Blocked" : "Approve"}</button>
@@ -3852,10 +3865,93 @@
     return "cell-bad";
   }
 
+  function renderExecutionQualitySection(report, trend) {
+    if (!report) {
+      return '<div class="ui-muted" style="margin-top:12px">Execution quality loads with the Performance Report.</div>';
+    }
+    const renderRows = (rows, mapper) => (Array.isArray(rows) ? rows.map(mapper).join("") : "");
+    const strategyRows = renderRows(report.by_strategy, (row) => `
+      <tr>
+        <td>${escapeHtml(row.bucket || "—")}</td>
+        <td class="num ui-tabular-nums">${escapeHtml(row.sample_count || 0)}</td>
+        <td class="num ui-tabular-nums ${Number(row.avg_impl_shortfall_bps || 0) <= 0 ? "cell-ok" : "cell-bad"}">${escapeHtml(Number(row.avg_impl_shortfall_bps || 0).toFixed(1))}</td>
+        <td class="num ui-tabular-nums">${escapeHtml(Number(row.std_impl_shortfall_bps || 0).toFixed(1))}</td>
+        <td class="num ui-tabular-nums">${escapeHtml(Number(row.min_impl_shortfall_bps || 0).toFixed(1))}</td>
+        <td class="num ui-tabular-nums">${escapeHtml(Number(row.max_impl_shortfall_bps || 0).toFixed(1))}</td>
+      </tr>
+    `);
+    const algoRows = renderRows(report.by_algo, (row) => `
+      <tr>
+        <td>${escapeHtml(row.bucket || "none")}</td>
+        <td class="num ui-tabular-nums">${escapeHtml(row.sample_count || 0)}</td>
+        <td class="num ui-tabular-nums ${Number(row.avg_impl_shortfall_bps || 0) <= 0 ? "cell-ok" : "cell-bad"}">${escapeHtml(Number(row.avg_impl_shortfall_bps || 0).toFixed(1))}</td>
+        <td class="num ui-tabular-nums">${escapeHtml(Number(row.avg_vs_vwap_bps || 0).toFixed(1))}</td>
+      </tr>
+    `);
+    const timeRows = renderRows(report.by_time_of_day, (row) => `
+      <tr>
+        <td>${escapeHtml(row.bucket || "other")}</td>
+        <td class="num ui-tabular-nums">${escapeHtml(row.sample_count || 0)}</td>
+        <td class="num ui-tabular-nums ${Number(row.avg_impl_shortfall_bps || 0) <= 0 ? "cell-ok" : "cell-bad"}">${escapeHtml(Number(row.avg_impl_shortfall_bps || 0).toFixed(1))}</td>
+        <td>${Array.isArray(report.patterns) && report.patterns.some((pattern) => pattern.dimension === "time_of_day" && pattern.bucket === row.bucket) ? "Yes" : "—"}</td>
+      </tr>
+    `);
+    const themeRows = renderRows(report.by_theme, (row) => `
+      <tr>
+        <td>${escapeHtml(row.bucket || "Unassigned")}</td>
+        <td class="num ui-tabular-nums">${escapeHtml(row.sample_count || 0)}</td>
+        <td class="num ui-tabular-nums ${Number(row.avg_impl_shortfall_bps || 0) <= 0 ? "cell-ok" : "cell-bad"}">${escapeHtml(Number(row.avg_impl_shortfall_bps || 0).toFixed(1))}</td>
+      </tr>
+    `);
+    const advRows = renderRows(report.by_adv_bucket, (row) => `
+      <tr>
+        <td>${escapeHtml(row.bucket || "unknown")}</td>
+        <td class="num ui-tabular-nums">${escapeHtml(row.sample_count || 0)}</td>
+        <td class="num ui-tabular-nums ${Number(row.avg_impl_shortfall_bps || 0) <= 0 ? "cell-ok" : "cell-bad"}">${escapeHtml(Number(row.avg_impl_shortfall_bps || 0).toFixed(1))}</td>
+      </tr>
+    `);
+    const patternRows = Array.isArray(report.patterns) ? report.patterns.map((pattern) => `
+      <div style="margin-top:8px">
+        <span class="${pattern.severity === "critical" ? "ui-badge ui-badge--bad" : pattern.severity === "warning" ? "ui-badge ui-badge--warn" : "ui-badge ui-badge--neutral"}">${escapeHtml(pattern.severity || "info")}</span>
+        <span class="ui-muted" style="margin-left:8px">${escapeHtml(pattern.description || "")} (${escapeHtml(Number(pattern.z_score || 0).toFixed(1))}σ, N=${escapeHtml(pattern.sample_count || 0)})</span>
+      </div>
+    `).join("") : "";
+    const trendPoints = Array.isArray(trend) ? trend : [];
+    const trendSummary = trendPoints.length
+      ? trendPoints.map((row) => `${escapeHtml(row.date || "")}: ${escapeHtml(Number(row.avg_impl_shortfall_bps || 0).toFixed(1))}bps`).join(" · ")
+      : "No recent trend data.";
+    return `
+      <details style="margin-top:12px"><summary style="cursor:pointer; font-weight:600">Execution Quality</summary>
+        <div style="margin-top:12px; display:grid; grid-template-columns:repeat(5, minmax(0, 1fr)); gap:10px">
+          <div class="ui-card" style="padding:10px"><div class="ui-muted">Trades</div><div style="font-weight:700">${escapeHtml(report.total_trades || 0)}</div></div>
+          <div class="ui-card" style="padding:10px"><div class="ui-muted">Avg Shortfall</div><div style="font-weight:700">${escapeHtml(Number(report.overall_avg_impl_shortfall_bps || 0).toFixed(1))} bps</div></div>
+          <div class="ui-card" style="padding:10px"><div class="ui-muted">Avg vs VWAP</div><div style="font-weight:700">${escapeHtml(Number(report.overall_avg_vs_vwap_bps || 0).toFixed(1))} bps</div></div>
+          <div class="ui-card" style="padding:10px"><div class="ui-muted">Best Strategy</div><div style="font-weight:700">${escapeHtml(report.best_strategy || "—")}</div></div>
+          <div class="ui-card" style="padding:10px"><div class="ui-muted">Worst Strategy</div><div style="font-weight:700">${escapeHtml(report.worst_strategy || "—")}</div></div>
+        </div>
+        <details style="margin-top:12px" open><summary style="cursor:pointer; font-weight:600">By Routing Strategy</summary>${renderAttributionTable(["Strategy", "Trades", "Avg Shortfall (bps)", "Std Dev", "Min", "Max"], strategyRows, "No routing slippage yet.")}</details>
+        <details style="margin-top:12px"><summary style="cursor:pointer; font-weight:600">By Algo Strategy</summary>${renderAttributionTable(["Algo", "Trades", "Avg Shortfall (bps)", "Avg vs VWAP"], algoRows, "No algo slippage yet.")}</details>
+        <details style="margin-top:12px"><summary style="cursor:pointer; font-weight:600">By Time of Day</summary>${renderAttributionTable(["Window", "Trades", "Avg Shortfall (bps)", "Pattern?"], timeRows, "No time-of-day slippage yet.")}</details>
+        <details style="margin-top:12px"><summary style="cursor:pointer; font-weight:600">By Theme</summary>${renderAttributionTable(["Theme", "Trades", "Avg Shortfall (bps)"], themeRows, "No theme slippage yet.")}</details>
+        <details style="margin-top:12px"><summary style="cursor:pointer; font-weight:600">By ADV Bucket</summary>${renderAttributionTable(["Liquidity", "Trades", "Avg Shortfall (bps)"], advRows, "No liquidity slippage yet.")}</details>
+        <div style="margin-top:12px">
+          <div style="font-weight:600">Pattern Alerts</div>
+          ${patternRows || '<div class="ui-muted" style="margin-top:8px">No systematic slippage patterns detected.</div>'}
+        </div>
+        <div style="margin-top:12px">
+          <div style="font-weight:600">Slippage Trend</div>
+          <div class="ui-muted" style="margin-top:6px">${trendSummary}</div>
+        </div>
+      </details>
+    `;
+  }
+
   function renderPerformanceAttribution(attribution, metrics) {
     if (!attribution) {
       return '<div class="ui-muted" style="margin-top:12px">Click Performance Report to load theme, source, regime, and ML attribution.</div>';
     }
+    const executionQuality = state.paperExecutionQuality || null;
+    const executionTrend = state.paperExecutionQualityTrend || [];
     const snapshots = Array.isArray(metrics.snapshots) ? metrics.snapshots : [];
     const maxDrawdown = snapshots.length ? Math.min(...snapshots.map((row) => Number(row.drawdown_pct || 0))) : 0;
     const themeRows = ((attribution.theme_attribution || {}).themes || []).map((row) => `
@@ -3922,6 +4018,7 @@
                ${renderAttributionTable(["Version", "Accuracy", "F1", "Ticker", "Status"], historyRows, "No model history yet.")}`
             : '<div class="ui-muted" style="margin-top:10px">ML accuracy tracking will appear after trades with ML confidence are closed.</div>'}
         </details>
+        ${renderExecutionQualitySection(executionQuality, executionTrend)}
       </div>
     `;
   }
@@ -3943,6 +4040,9 @@
       estimated_stcg_rate: 0.32,
       hurdle_min_net_return_pct: 3.0,
       min_regime_duration_days: 7.0,
+      slippage_feedback_enabled: true,
+      slippage_min_sample_size: 10,
+      slippage_lookback_days: 90,
     };
     const antiChurnSettings = state.antiChurnSettings || {
       anti_churn_enabled: true,
@@ -4093,6 +4193,18 @@
                   <label>
                     Min regime duration
                     <input id="regimeMinRegimeDurationDays" type="number" min="1" max="90" step="1" value="${escapeHtml(Number(hurdleSettings.min_regime_duration_days || 7).toFixed(0))}" />
+                  </label>
+                  <label style="display:flex; gap:8px; align-items:center; margin-top:22px">
+                    <input id="regimeSlippageFeedbackEnabled" type="checkbox" ${hurdleSettings.slippage_feedback_enabled !== false ? "checked" : ""} />
+                    <span>Slippage feedback enabled</span>
+                  </label>
+                  <label>
+                    Slippage min sample size
+                    <input id="regimeSlippageMinSampleSize" type="number" min="3" max="100" step="1" value="${escapeHtml(Number(hurdleSettings.slippage_min_sample_size || 10).toFixed(0))}" />
+                  </label>
+                  <label>
+                    Slippage lookback days
+                    <input id="regimeSlippageLookbackDays" type="number" min="7" max="365" step="1" value="${escapeHtml(Number(hurdleSettings.slippage_lookback_days || 90).toFixed(0))}" />
                   </label>
                   <div style="grid-column:1 / -1; font-weight:600; margin-top:6px">Anti-Churn Velocity</div>
                   <label style="display:flex; gap:8px; align-items:center; margin-top:22px">
@@ -4360,6 +4472,9 @@
         const estimatedStcgInput = byId("regimeEstimatedStcgRate");
         const minNetReturnInput = byId("regimeMinNetReturnPct");
         const minDurationInput = byId("regimeMinRegimeDurationDays");
+        const slippageFeedbackInput = byId("regimeSlippageFeedbackEnabled");
+        const slippageMinSamplesInput = byId("regimeSlippageMinSampleSize");
+        const slippageLookbackInput = byId("regimeSlippageLookbackDays");
         const antiChurnEnabledInput = byId("regimeAntiChurnEnabled");
         const antiChurnMaxTripsInput = byId("regimeAntiChurnMaxTrips");
         const antiChurnCooldownInput = byId("regimeAntiChurnCooldownDays");
@@ -4425,6 +4540,24 @@
             state.hurdleSettings = payload;
           } catch (error) {
             showToast(`Unable to save hurdle settings: ${error.message || error}`, "error");
+          }
+        }
+        if (state.config?.endpoints?.slippage_settings) {
+          try {
+            const response = await fetch(state.config.endpoints.slippage_settings, {
+              method: "PUT",
+              headers: { Accept: "application/json", "Content-Type": "application/json" },
+              body: JSON.stringify({
+                slippage_feedback_enabled: !!slippageFeedbackInput?.checked,
+                slippage_min_sample_size: Number(slippageMinSamplesInput?.value || 10),
+                slippage_lookback_days: Number(slippageLookbackInput?.value || 90),
+              }),
+            });
+            const payload = await response.json();
+            if (!response.ok) throw new Error(payload.detail || `Slippage settings failed (${response.status})`);
+            state.hurdleSettings = { ...(state.hurdleSettings || {}), ...payload };
+          } catch (error) {
+            showToast(`Unable to save slippage settings: ${error.message || error}`, "error");
           }
         }
         if (state.config?.endpoints?.anti_churn_settings) {
@@ -4740,6 +4873,8 @@
       state.paperTaxEstimates = {};
       state.paperPerformance = null;
       state.paperAttribution = null;
+      state.paperExecutionQuality = null;
+      state.paperExecutionQualityTrend = [];
       state.paperAudit = [];
       state.paperAuditSummary = null;
       state.paperMonitoring = null;
@@ -4919,6 +5054,8 @@
         warnPanel("Performance", performanceResponse, performance);
         state.paperPerformance = null;
         state.paperAttribution = null;
+        state.paperExecutionQuality = null;
+        state.paperExecutionQualityTrend = [];
       }
       if (auditResponse.ok) {
         state.paperAudit = Array.isArray(audit.audit) ? audit.audit : [];
@@ -5008,10 +5145,20 @@
     const portfolioId = currentPaperPortfolioId();
     if (!portfolioId) return;
     try {
-      const response = await fetch(paperEndpoint("paper_attribution_summary", portfolioId), { headers: { Accept: "application/json" } });
-      const payload = await response.json();
-      if (!response.ok) throw new Error(payload.detail || payload.error || `Attribution failed (${response.status})`);
-      state.paperAttribution = payload;
+      const [summaryResponse, executionResponse, trendResponse] = await Promise.all([
+        fetch(paperEndpoint("paper_attribution_summary", portfolioId), { headers: { Accept: "application/json" } }),
+        fetch(paperEndpoint("paper_execution_quality", portfolioId), { headers: { Accept: "application/json" } }),
+        fetch(paperEndpoint("paper_execution_quality_trend", portfolioId), { headers: { Accept: "application/json" } }),
+      ]);
+      const [summaryPayload, executionPayload, trendPayload] = await Promise.all([
+        summaryResponse.json(),
+        executionResponse.json(),
+        trendResponse.json(),
+      ]);
+      if (!summaryResponse.ok) throw new Error(summaryPayload.detail || summaryPayload.error || `Attribution failed (${summaryResponse.status})`);
+      state.paperAttribution = summaryPayload;
+      state.paperExecutionQuality = executionResponse.ok ? executionPayload : null;
+      state.paperExecutionQualityTrend = trendResponse.ok && Array.isArray(trendPayload) ? trendPayload : [];
       renderPaperPerformance();
     } catch (error) {
       showToast(`Unable to load performance report: ${error.message || error}`, "error");

@@ -44,6 +44,9 @@ _PAPER_TRADE_PLAN_COLUMNS: dict[str, str] = {
     "order_type": "TEXT NOT NULL DEFAULT 'limit'",
     "routing_strategy": "TEXT NOT NULL DEFAULT ''",
     "algo_strategy": "TEXT NOT NULL DEFAULT ''",
+    "arrival_price": "REAL",
+    "vwap_benchmark": "REAL",
+    "close_price": "REAL",
     "meta_labeler_score": "REAL",
     "agent_trace": "TEXT NOT NULL DEFAULT ''",
     "hurdle_gross_return_pct": "REAL",
@@ -243,6 +246,36 @@ def _create_stress_test_result_table(conn: sqlite3.Connection) -> None:
     )
 
 
+def _create_execution_quality_snapshot_table(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS execution_quality_snapshot (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            portfolio_id INTEGER NOT NULL REFERENCES paper_portfolio(id) ON DELETE CASCADE,
+            analysis_date TEXT NOT NULL,
+            total_trades INTEGER NOT NULL DEFAULT 0,
+            overall_avg_impl_shortfall_bps REAL,
+            overall_avg_vs_vwap_bps REAL,
+            by_strategy_json TEXT NOT NULL DEFAULT '[]',
+            by_algo_json TEXT NOT NULL DEFAULT '[]',
+            by_time_of_day_json TEXT NOT NULL DEFAULT '[]',
+            by_theme_json TEXT NOT NULL DEFAULT '[]',
+            by_adv_bucket_json TEXT NOT NULL DEFAULT '[]',
+            patterns_json TEXT NOT NULL DEFAULT '[]',
+            best_strategy TEXT,
+            worst_strategy TEXT,
+            created_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS ix_execution_quality_snapshot_portfolio_date
+        ON execution_quality_snapshot(portfolio_id, analysis_date DESC)
+        """
+    )
+
+
 def _create_paper_trade_plan_table(conn: sqlite3.Connection) -> None:
     conn.execute(
         """
@@ -271,6 +304,9 @@ def _create_paper_trade_plan_table(conn: sqlite3.Connection) -> None:
             order_type TEXT NOT NULL DEFAULT 'limit',
             routing_strategy TEXT NOT NULL DEFAULT '',
             algo_strategy TEXT NOT NULL DEFAULT '',
+            arrival_price REAL,
+            vwap_benchmark REAL,
+            close_price REAL,
             meta_labeler_score REAL,
             sizing_method TEXT NOT NULL DEFAULT 'equal_dollar',
             agent_trace TEXT NOT NULL DEFAULT '',
@@ -731,6 +767,7 @@ def _connect() -> sqlite3.Connection:
     _create_paper_tax_lot_table(conn)
     _create_wash_sale_restricted_table(conn)
     _create_stress_test_result_table(conn)
+    _create_execution_quality_snapshot_table(conn)
     conn.execute(
         """
         CREATE INDEX IF NOT EXISTS ix_alert_log_created
@@ -2424,6 +2461,9 @@ def create_trade_plan(
     rationale: str,
     theme_id: int | None = None,
     proposed_price: float | None = None,
+    arrival_price: float | None = None,
+    vwap_benchmark: float | None = None,
+    close_price: float | None = None,
     regime_label: str | None = None,
     regime_probability: float | None = None,
     crowd_score: int | None = None,
@@ -2450,12 +2490,13 @@ def create_trade_plan(
             """
             INSERT INTO paper_trade_plan (
                 portfolio_id, theme_id, ticker, action, quantity, proposed_price, rationale,
-                regime_label, regime_probability, crowd_score, source, status, order_type, routing_strategy, algo_strategy, meta_labeler_score, sizing_method, agent_trace,
+                regime_label, regime_probability, crowd_score, source, status, order_type, routing_strategy, algo_strategy,
+                arrival_price, vwap_benchmark, close_price, meta_labeler_score, sizing_method, agent_trace,
                 hurdle_gross_return_pct, hurdle_net_return_pct, hurdle_passed, duration_gate_passed, expected_regime_duration,
                 anti_churn_passed, ltcg_override_active, ltcg_protected_quantity, ltcg_tax_savings,
                 created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 int(portfolio_id),
@@ -2472,6 +2513,9 @@ def create_trade_plan(
                 str(order_type or "limit"),
                 str(routing_strategy or ""),
                 str(algo_strategy or ""),
+                float(arrival_price) if arrival_price is not None else None,
+                float(vwap_benchmark) if vwap_benchmark is not None else None,
+                float(close_price) if close_price is not None else None,
                 float(meta_labeler_score) if meta_labeler_score is not None else None,
                 str(sizing_method or "equal_dollar"),
                 str(agent_trace or ""),
@@ -2529,6 +2573,33 @@ def get_trade_plans(portfolio_id: int, status: str = "Pending") -> list[dict[str
     with _connect() as conn:
         rows = conn.execute(query, params).fetchall()
     return [dict(row) for row in rows]
+
+
+def update_trade_plan_benchmarks(
+    plan_id: int,
+    *,
+    vwap_benchmark: float | None = None,
+    close_price: float | None = None,
+) -> bool:
+    updates: list[str] = []
+    params: list[Any] = []
+    if vwap_benchmark is not None:
+        updates.append("vwap_benchmark = ?")
+        params.append(float(vwap_benchmark))
+    if close_price is not None:
+        updates.append("close_price = ?")
+        params.append(float(close_price))
+    if not updates:
+        return False
+    updates.append("updated_at = ?")
+    params.append(datetime.now(timezone.utc).isoformat())
+    params.append(int(plan_id))
+    with _connect() as conn:
+        cursor = conn.execute(
+            f"UPDATE paper_trade_plan SET {', '.join(updates)} WHERE id = ?",
+            params,
+        )
+        return bool(cursor.rowcount)
 
 
 def count_executed_sell_plans(portfolio_id: int, ticker: str, days: int = 30) -> int:
@@ -3223,6 +3294,92 @@ def save_signal_snapshot(
         )
     except Exception:
         logger.debug("Event bus publish failed for signal_snapshot %s — non-fatal", ticker, exc_info=True)
+
+
+def save_execution_quality_snapshot(report: Any) -> int:
+    now = datetime.now(timezone.utc).isoformat()
+    payload = asdict(report) if is_dataclass(report) else dict(report)
+    with _connect() as conn:
+        cursor = conn.execute(
+            """
+            INSERT INTO execution_quality_snapshot (
+                portfolio_id, analysis_date, total_trades, overall_avg_impl_shortfall_bps, overall_avg_vs_vwap_bps,
+                by_strategy_json, by_algo_json, by_time_of_day_json, by_theme_json, by_adv_bucket_json,
+                patterns_json, best_strategy, worst_strategy, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                int(payload.get("portfolio_id") or 0),
+                str(payload.get("analysis_date") or now[:10]),
+                int(payload.get("total_trades") or 0),
+                payload.get("overall_avg_impl_shortfall_bps"),
+                payload.get("overall_avg_vs_vwap_bps"),
+                json.dumps(payload.get("by_strategy") or []),
+                json.dumps(payload.get("by_algo") or []),
+                json.dumps(payload.get("by_time_of_day") or []),
+                json.dumps(payload.get("by_theme") or []),
+                json.dumps(payload.get("by_adv_bucket") or []),
+                json.dumps(payload.get("patterns") or []),
+                str(payload.get("best_strategy") or "") or None,
+                str(payload.get("worst_strategy") or "") or None,
+                now,
+            ),
+        )
+        return int(cursor.lastrowid)
+
+
+def get_execution_quality_snapshot(
+    portfolio_id: int,
+    date: str | None = None,
+) -> dict[str, Any] | None:
+    query = """
+        SELECT *
+        FROM execution_quality_snapshot
+        WHERE portfolio_id = ?
+    """
+    params: list[Any] = [int(portfolio_id)]
+    if date:
+        query += " AND analysis_date = ?"
+        params.append(str(date))
+    query += " ORDER BY analysis_date DESC, id DESC LIMIT 1"
+    with _connect() as conn:
+        row = conn.execute(query, params).fetchone()
+    if not row:
+        return None
+    payload = dict(row)
+    for key in (
+        "by_strategy_json",
+        "by_algo_json",
+        "by_time_of_day_json",
+        "by_theme_json",
+        "by_adv_bucket_json",
+        "patterns_json",
+    ):
+        try:
+            payload[key[:-5]] = json.loads(str(payload.get(key) or "[]"))
+        except Exception:
+            payload[key[:-5]] = []
+        payload.pop(key, None)
+    return payload
+
+
+def get_execution_quality_history(
+    portfolio_id: int,
+    limit: int = 30,
+) -> list[dict[str, Any]]:
+    with _connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT analysis_date, total_trades, overall_avg_impl_shortfall_bps, overall_avg_vs_vwap_bps
+            FROM execution_quality_snapshot
+            WHERE portfolio_id = ?
+            ORDER BY analysis_date DESC, id DESC
+            LIMIT ?
+            """,
+            (int(portfolio_id), max(1, int(limit))),
+        ).fetchall()
+    return [dict(row) for row in rows]
 
 
 def get_pending_outcomes(as_of: str | None = None) -> list[dict[str, int | str | float | None]]:

@@ -104,6 +104,7 @@ class ExecutionAgent(AgentBase):
                     routing_strategy=routing.strategy_name,
                     routing_rationale=routing.rationale,
                     algo_strategy=routing.algo_strategy,
+                    arrival_price=float(event.proposed_price or 0.0) if event.proposed_price is not None else None,
                 )
             return OrderExecutionEvent(
                 correlation_id=event.correlation_id,
@@ -116,6 +117,7 @@ class ExecutionAgent(AgentBase):
                 broker_type="paper",
                 trade_decision_id=event.correlation_id,
                 filled_price=float(getattr(order_result, "filled_price", 0.0) or 0.0) if getattr(order_result, "filled_price", None) is not None else None,
+                arrival_price=float(event.proposed_price or 0.0) if event.proposed_price is not None else None,
                 filled_at=str(getattr(order_result, "filled_at", "") or "") or None,
                 message=str(getattr(order_result, "message", "") or ""),
                 routing_strategy=routing.strategy_name,
@@ -135,4 +137,5 @@ class ExecutionAgent(AgentBase):
                 broker_type="paper",
                 trade_decision_id=event.correlation_id,
                 message=str(exc),
+                arrival_price=float(event.proposed_price or 0.0) if event.proposed_price is not None else None,
             )

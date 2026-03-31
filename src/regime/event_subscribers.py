@@ -79,6 +79,7 @@ async def trade_decision_subscriber(event: BaseEvent) -> None:
     order_type = "limit"
     routing_strategy = ""
     algo_strategy = ""
+    arrival_price = float(event.proposed_price) if event.proposed_price is not None else None
     if "[agents:" in rationale:
         trace_start = rationale.index("[agents:")
         agent_trace = rationale[trace_start:].strip()
@@ -126,6 +127,7 @@ async def trade_decision_subscriber(event: BaseEvent) -> None:
             order_type=order_type,
             routing_strategy=routing_strategy,
             algo_strategy=algo_strategy,
+            arrival_price=arrival_price,
             meta_labeler_score=event.meta_labeler_score,
             agent_trace=agent_trace,
             hurdle_gross_return_pct=hurdle_gross_return_pct,

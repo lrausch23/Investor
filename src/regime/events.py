@@ -168,6 +168,7 @@ class OrderExecutionEvent(BaseEvent):
     broker_type: str = ""
     trade_decision_id: str = ""
     filled_price: float | None = None
+    arrival_price: float | None = None
     filled_at: str | None = None
     message: str = ""
     routing_strategy: str = ""

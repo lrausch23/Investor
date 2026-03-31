@@ -172,9 +172,14 @@ class PortfolioTaxAgent(AgentBase):
         anti_churn_result = None
         hurdle_result = None
         duration_result = None
+        estimated_execution_cost_pct = 0.0
+        current_price = float(event.current_price or 0.0)
+        quantity = 0.0
         if trade_action == "Buy":
             from ..anti_churn import check_anti_churn, get_anti_churn_settings
             from ..hurdle_rate import check_duration_gate, check_hurdle_rate, get_hurdle_settings
+            from ..order_routing import decide_routing
+            from ..slippage import estimate_execution_cost
 
             anti_churn_settings = get_anti_churn_settings()
             if bool(anti_churn_settings.get("anti_churn_enabled", True)):
@@ -195,8 +200,46 @@ class PortfolioTaxAgent(AgentBase):
                         urgency="patient",
                     )
             hurdle_settings = get_hurdle_settings()
+            budget = float(portfolio.get("current_cash") or portfolio.get("starting_budget") or 0.0)
+            base_allocation = min(0.10, max(0.02, float(event.composite_strength or 0.0) * 0.15))
+            ml_multiplier = float(event.ensemble_sizing_multiplier or 1.0)
+            allocation = max(0.0, base_allocation * ml_multiplier)
+            position_value = budget * allocation
+            quantity = float(max(1, int(position_value / current_price))) if current_price > 0 and position_value > 0 else 0.0
+            if quantity <= 0:
+                return TradeDecisionEvent(
+                    correlation_id=event.correlation_id,
+                    ticker=ticker,
+                    portfolio_id=portfolio_id,
+                    action=trade_action,
+                    decision="vetoed",
+                    veto_reason="computed_quantity_zero",
+                    source=event.source,
+                    regime_label=event.regime_label,
+                    meta_labeler_score=event.meta_labeler_score,
+                    enriched_signal_id=event.correlation_id,
+                    urgency="patient",
+                )
+            routing = decide_routing(
+                ticker=ticker,
+                action=trade_action,
+                quantity=float(quantity),
+                last_price=float(current_price or 0.0),
+                urgency="patient",
+            )
+            estimated_execution_cost_pct = estimate_execution_cost(
+                ticker=ticker,
+                routing_strategy=routing.strategy_name,
+                algo_strategy=routing.algo_strategy,
+                portfolio_id=portfolio_id,
+            )
             if bool(hurdle_settings.get("hurdle_enabled", True)):
-                hurdle_result = check_hurdle_rate(ticker, event.entry_price, event.exit_price)
+                hurdle_result = check_hurdle_rate(
+                    ticker,
+                    event.entry_price,
+                    event.exit_price,
+                    estimated_execution_cost_pct=estimated_execution_cost_pct,
+                )
                 if not hurdle_result.passed:
                     logger.info("PortfolioTaxAgent hurdle gate blocked %s: %s", ticker, hurdle_result.reason)
                     return TradeDecisionEvent(
@@ -229,15 +272,13 @@ class PortfolioTaxAgent(AgentBase):
                         enriched_signal_id=event.correlation_id,
                         urgency="patient",
                     )
-
-        current_price = float(event.current_price or 0.0)
         if trade_action == "Sell":
             positions = runtime["get_paper_positions"](portfolio_id, status="Open")
             quantity = sum(
                 float(row.get("quantity") or 0.0)
                 for row in positions
                 if str(row.get("ticker") or "").upper() == ticker
-                )
+            )
             if quantity <= 0:
                 return TradeDecisionEvent(
                     correlation_id=event.correlation_id,
@@ -310,20 +351,6 @@ class PortfolioTaxAgent(AgentBase):
         allocation = max(0.0, base_allocation * ml_multiplier)
         position_value = budget * allocation
         quantity = max(1, int(position_value / current_price)) if current_price > 0 and position_value > 0 else 0
-        if quantity <= 0:
-            return TradeDecisionEvent(
-                correlation_id=event.correlation_id,
-                ticker=ticker,
-                portfolio_id=portfolio_id,
-                action=trade_action,
-                decision="vetoed",
-                veto_reason="computed_quantity_zero",
-                source=event.source,
-                regime_label=event.regime_label,
-                meta_labeler_score=event.meta_labeler_score,
-                enriched_signal_id=event.correlation_id,
-                urgency="patient",
-            )
         rationale = f"allocation={allocation:.3f} ml_mult={ml_multiplier:.2f} budget={budget:.0f}"
         if anti_churn_result:
             rationale = (
@@ -333,7 +360,7 @@ class PortfolioTaxAgent(AgentBase):
         if hurdle_result and hurdle_result.net_return_pct is not None and hurdle_result.gross_return_pct is not None:
             rationale = (
                 f"{rationale} hurdle={hurdle_result.net_return_pct:.1f}%net"
-                f"({hurdle_result.gross_return_pct:.1f}%gross@{hurdle_result.estimated_stcg_rate:.0%}tax)"
+                f"({hurdle_result.gross_return_pct:.1f}%gross-{hurdle_result.estimated_execution_cost_pct:.1f}%exec@{hurdle_result.estimated_stcg_rate:.0%}tax)"
             )
         if duration_result and duration_result.expected_regime_duration is not None:
             rationale = (

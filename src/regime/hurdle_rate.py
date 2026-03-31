@@ -10,6 +10,9 @@ DEFAULT_MIN_NET_RETURN_PCT = 3.0
 DEFAULT_MIN_REGIME_DURATION_DAYS = 7.0
 DEFAULT_HURDLE_ENABLED = True
 DEFAULT_DURATION_GATE_ENABLED = True
+DEFAULT_SLIPPAGE_FEEDBACK_ENABLED = True
+DEFAULT_SLIPPAGE_MIN_SAMPLE_SIZE = 10.0
+DEFAULT_SLIPPAGE_LOOKBACK_DAYS = 90.0
 
 
 @dataclass
@@ -17,6 +20,7 @@ class HurdleRateResult:
     ticker: str
     gross_return_pct: float | None
     estimated_stcg_rate: float
+    estimated_execution_cost_pct: float
     net_return_pct: float | None
     min_net_return_pct: float
     passed: bool
@@ -71,6 +75,23 @@ def get_hurdle_settings() -> dict[str, Any]:
             min_value=1.0,
             max_value=90.0,
         ),
+        "slippage_feedback_enabled": _bool_setting("slippage_feedback_enabled", DEFAULT_SLIPPAGE_FEEDBACK_ENABLED),
+        "slippage_min_sample_size": int(
+            _float_setting(
+                "slippage_min_sample_size",
+                DEFAULT_SLIPPAGE_MIN_SAMPLE_SIZE,
+                min_value=3.0,
+                max_value=100.0,
+            )
+        ),
+        "slippage_lookback_days": int(
+            _float_setting(
+                "slippage_lookback_days",
+                DEFAULT_SLIPPAGE_LOOKBACK_DAYS,
+                min_value=7.0,
+                max_value=365.0,
+            )
+        ),
     }
 
 
@@ -88,6 +109,14 @@ def set_hurdle_settings(settings: dict[str, Any]) -> dict[str, Any]:
     if "min_regime_duration_days" in settings:
         value = max(1.0, min(90.0, float(settings["min_regime_duration_days"])))
         set_setting("min_regime_duration_days", str(value))
+    if "slippage_feedback_enabled" in settings:
+        set_setting("slippage_feedback_enabled", "true" if settings["slippage_feedback_enabled"] else "false")
+    if "slippage_min_sample_size" in settings:
+        value = max(3, min(100, int(settings["slippage_min_sample_size"])))
+        set_setting("slippage_min_sample_size", str(value))
+    if "slippage_lookback_days" in settings:
+        value = max(7, min(365, int(settings["slippage_lookback_days"])))
+        set_setting("slippage_lookback_days", str(value))
     return get_hurdle_settings()
 
 
@@ -98,16 +127,19 @@ def check_hurdle_rate(
     *,
     estimated_stcg_rate: float | None = None,
     min_net_return_pct: float | None = None,
+    estimated_execution_cost_pct: float | None = None,
 ) -> HurdleRateResult:
     settings = get_hurdle_settings()
     tax_rate = settings["estimated_stcg_rate"] if estimated_stcg_rate is None else max(0.0, min(0.99, float(estimated_stcg_rate)))
     minimum = settings["hurdle_min_net_return_pct"] if min_net_return_pct is None else max(0.0, min(50.0, float(min_net_return_pct)))
+    execution_cost = max(0.0, float(estimated_execution_cost_pct or 0.0))
     normalized_ticker = str(ticker or "").upper()
     if entry_price is None or exit_price is None or float(entry_price) <= 0:
         return HurdleRateResult(
             ticker=normalized_ticker,
             gross_return_pct=None,
             estimated_stcg_rate=tax_rate,
+            estimated_execution_cost_pct=execution_cost,
             net_return_pct=None,
             min_net_return_pct=minimum,
             passed=True,
@@ -116,17 +148,21 @@ def check_hurdle_rate(
     entry_value = float(entry_price)
     exit_value = float(exit_price)
     gross_return_pct = ((exit_value - entry_value) / entry_value) * 100.0
-    net_return_pct = gross_return_pct * (1.0 - tax_rate)
+    net_return_pct = (gross_return_pct - execution_cost) * (1.0 - tax_rate)
     passed = net_return_pct >= minimum
     comparator = ">=" if passed else "<"
     return HurdleRateResult(
         ticker=normalized_ticker,
         gross_return_pct=gross_return_pct,
         estimated_stcg_rate=tax_rate,
+        estimated_execution_cost_pct=execution_cost,
         net_return_pct=net_return_pct,
         min_net_return_pct=minimum,
         passed=passed,
-        reason=f"Net return {net_return_pct:.2f}% {comparator} minimum {minimum:.2f}% (gross {gross_return_pct:.2f}% @ tax {tax_rate:.0%})",
+        reason=(
+            f"Net return {net_return_pct:.2f}% {comparator} minimum {minimum:.2f}% "
+            f"(gross {gross_return_pct:.2f}% - exec {execution_cost:.2f}% @ tax {tax_rate:.0%})"
+        ),
     )
 
 

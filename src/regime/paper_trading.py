@@ -401,6 +401,7 @@ def generate_buy_plans(
     config: PaperTradingConfig = DEFAULT_PAPER_TRADING_CONFIG,
 ) -> list[dict[str, Any]]:
     from .anti_churn import check_anti_churn, get_anti_churn_settings
+    from .slippage import estimate_execution_cost
     from .vix_freeze import is_vix_frozen
 
     portfolio = get_paper_portfolio(portfolio_id)
@@ -452,10 +453,43 @@ def generate_buy_plans(
             if not anti_churn_result.passed:
                 logger.info("Anti-churn gate blocked %s: %s", ticker, anti_churn_result.reason)
                 continue
+        atr_14 = _lookup_atr(ticker)
+        beta = _lookup_beta(ticker)
+        if sizing_method == "risk_budget":
+            quantity = _risk_adjusted_quantity(
+                role_budget,
+                proposed_price,
+                atr_14,
+                beta,
+                risk_per_share_multiplier=atr_multiplier,
+                base_risk_fraction=base_risk_fraction,
+            )
+        else:
+            quantity = math.floor(role_budget / proposed_price)
+        if quantity <= 0:
+            continue
+        routing = decide_routing(
+            ticker=ticker,
+            action="Buy",
+            quantity=quantity,
+            last_price=proposed_price,
+            urgency="patient",
+        )
+        exec_cost = estimate_execution_cost(
+            ticker=ticker,
+            routing_strategy=routing.strategy_name,
+            algo_strategy=routing.algo_strategy,
+            portfolio_id=portfolio_id,
+        )
         hurdle_result = None
         duration_result = None
         if bool(hurdle_settings.get("hurdle_enabled", True)):
-            hurdle_result = check_hurdle_rate(ticker, proposed_price, float(exit_price) if exit_price not in (None, "") else None)
+            hurdle_result = check_hurdle_rate(
+                ticker,
+                proposed_price,
+                float(exit_price) if exit_price not in (None, "") else None,
+                estimated_execution_cost_pct=exec_cost,
+            )
             if not hurdle_result.passed:
                 logger.info("Hurdle gate blocked %s: %s", ticker, hurdle_result.reason)
                 continue
@@ -472,29 +506,7 @@ def generate_buy_plans(
             if not duration_result.passed:
                 logger.info("Duration gate blocked %s: %s", ticker, duration_result.reason)
                 continue
-        atr_14 = _lookup_atr(ticker)
-        beta = _lookup_beta(ticker)
-        if sizing_method == "risk_budget":
-            quantity = _risk_adjusted_quantity(
-                role_budget,
-                proposed_price,
-                atr_14,
-                beta,
-                risk_per_share_multiplier=atr_multiplier,
-                base_risk_fraction=base_risk_fraction,
-            )
-        else:
-            quantity = math.floor(role_budget / proposed_price)
-        if quantity <= 0:
-            continue
         planned_keys.add(key)
-        routing = decide_routing(
-            ticker=ticker,
-            action="Buy",
-            quantity=quantity,
-            last_price=proposed_price,
-            urgency="patient",
-        )
         routed_price = float(routing.limit_price or proposed_price)
         if sizing_method == "risk_budget" and atr_14 is not None and atr_14 > 0:
             risk_per_share = float(atr_14) * atr_multiplier
@@ -517,7 +529,7 @@ def generate_buy_plans(
         if hurdle_result and hurdle_result.net_return_pct is not None and hurdle_result.gross_return_pct is not None:
             rationale = (
                 f"{rationale} Hurdle: {hurdle_result.net_return_pct:.2f}% net "
-                f"({hurdle_result.gross_return_pct:.2f}% gross @ {hurdle_result.estimated_stcg_rate:.0%} tax)."
+                f"({hurdle_result.gross_return_pct:.2f}% gross - {hurdle_result.estimated_execution_cost_pct:.2f}% exec @ {hurdle_result.estimated_stcg_rate:.0%} tax)."
             )
         if duration_result and duration_result.expected_regime_duration is not None:
             rationale = (
@@ -533,6 +545,7 @@ def generate_buy_plans(
                 rationale,
                 theme_id=theme_id or None,
                 proposed_price=routed_price,
+                arrival_price=proposed_price,
                 regime_label=str(item.get("regime_label") or ""),
                 regime_probability=float(item.get("regime_probability") or 0.0) if item.get("regime_probability") is not None else None,
                 crowd_score=int(item.get("crowd_score")) if item.get("crowd_score") is not None else None,
@@ -643,6 +656,7 @@ def generate_holdings_plans(
                 rationale,
                 theme_id=theme_id,
                 proposed_price=float(routing.limit_price or proposed_price),
+                arrival_price=proposed_price,
                 regime_label=str(row.get("regime") or ""),
                 regime_probability=float(row.get("probability") or 0.0) if row.get("probability") is not None else None,
                 source="holdings",
@@ -752,6 +766,7 @@ def generate_exit_plans(
                 trigger_reason,
                 theme_id=int(position["theme_id"]) if position.get("theme_id") is not None else None,
                 proposed_price=float(routing.limit_price or proposed_price) if proposed_price > 0 else None,
+                arrival_price=float(proposed_price) if proposed_price not in (None, "") else None,
                 regime_label=regime_label,
                 regime_probability=regime_probability,
                 source="exit_signal",
