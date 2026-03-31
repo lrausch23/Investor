@@ -3738,8 +3738,7 @@
                   <div style="font-weight:600; margin-bottom:8px">Macro Provider Test</div>
                   <div class="ui-muted">Validate VIX / 10Y fetch through the shared IBKR market-data path.</div>
                   <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:10px">
-                    <button class="btn btn--secondary" type="button" id="regimeTestMacroVix">Test ^VIX</button>
-                    <button class="btn btn--secondary" type="button" id="regimeTestMacroTnx">Test ^TNX</button>
+                    <button class="btn btn--secondary" type="button" id="regimeTestMacroData">Test Macro Data</button>
                   </div>
                 </div>
               </div>
@@ -3791,8 +3790,8 @@
                           <tr data-notify-alert-type="${escapeHtml(alertType)}">
                             <td>${escapeHtml(alertType)}</td>
                             <td><input type="checkbox" checked disabled /></td>
-                            <td><input type="checkbox" data-notify-channel="email" ${channels.email ? "checked" : ""} /></td>
-                            <td><input type="checkbox" data-notify-channel="slack" ${channels.slack ? "checked" : ""} /></td>
+                            <td><input type="checkbox" data-notify-channel="email" ${channels.email ? "checked" : ""} ${notificationPrefs.settings.email_configured ? "" : "disabled"} /></td>
+                            <td><input type="checkbox" data-notify-channel="slack" ${channels.slack ? "checked" : ""} ${notificationPrefs.settings.slack_configured ? "" : "disabled"} /></td>
                           </tr>
                         `).join("")
                       : '<tr><td colspan="4" class="ui-muted">Notification preferences unavailable.</td></tr>'}
@@ -3983,21 +3982,32 @@
         }
       });
     }
-    const macroTester = async (symbol) => {
+    const macroTester = async () => {
       if (!state.config?.endpoints?.market_data_test_macro) return;
       try {
-        const response = await fetch(`${state.config.endpoints.market_data_test_macro}?symbol=${encodeURIComponent(symbol)}`, { headers: { Accept: "application/json" } });
+        const response = await fetch(state.config.endpoints.market_data_test_macro, { headers: { Accept: "application/json" } });
         const payload = await response.json();
         if (!response.ok) throw new Error(payload.detail || `Macro test failed (${response.status})`);
-        showToast(payload.ok ? `${symbol} macro data ok (${payload.rows || 0} rows).` : `${symbol} unavailable: ${payload.error || "provider offline"}`, payload.ok ? "success" : "warning");
+        const formatEntry = (label, entry) => {
+          const ibkr = entry?.ibkr;
+          const yf = entry?.yfinance;
+          const active = ibkr?.available || yf?.available;
+          const source = ibkr?.available ? "IBKR" : yf?.available ? "yfinance" : "offline";
+          const value = ibkr?.available ? ibkr.value : yf?.available ? yf.value : null;
+          return `${label}: ${active ? `${source} ${value}` : "unavailable"}`;
+        };
+        const summary = [
+          formatEntry("VIX", payload.vix),
+          formatEntry("10Y", payload.yield_10y),
+        ].join(" · ");
+        const ok = Boolean(payload.vix?.ibkr?.available || payload.vix?.yfinance?.available || payload.yield_10y?.ibkr?.available || payload.yield_10y?.yfinance?.available);
+        showToast(summary, ok ? "success" : "warning");
       } catch (error) {
-        showToast(`Unable to test ${symbol}: ${error.message || error}`, "error");
+        showToast(`Unable to test macro data: ${error.message || error}`, "error");
       }
     };
-    const testVix = byId("regimeTestMacroVix");
-    if (testVix) testVix.addEventListener("click", () => macroTester("^VIX"));
-    const testTnx = byId("regimeTestMacroTnx");
-    if (testTnx) testTnx.addEventListener("click", () => macroTester("^TNX"));
+    const testMacro = byId("regimeTestMacroData");
+    if (testMacro) testMacro.addEventListener("click", () => macroTester());
     const notificationSave = byId("regimeNotificationSave");
     if (notificationSave && state.config?.endpoints?.notification_preferences) {
       notificationSave.addEventListener("click", async () => {

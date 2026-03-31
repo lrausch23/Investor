@@ -2,7 +2,12 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+import logging
+import os
+from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -178,13 +183,30 @@ _registry = AnalystRegistry()
 _registry.register(PassthroughAnalyst())
 
 
+def _try_load_lstm_model(lstm: Any) -> None:
+    """Attempt to load the latest saved LSTM model. Safe to call at startup."""
+    try:
+        base_dir = Path(os.getenv("HMM_DATA_DIR") or (Path(__file__).resolve().parents[2] / "data" / "regime"))
+        model_dir = base_dir / "models"
+        if not model_dir.exists():
+            return
+        lstm_files = sorted(model_dir.glob("lstm_analyst_v*.json"), reverse=True)
+        if lstm_files:
+            lstm.load_model(lstm_files[0])
+            logger.info("LSTM analyst loaded from %s (ready=%s)", lstm_files[0], lstm.is_ready())
+    except Exception as exc:
+        logger.warning("Failed to load LSTM model on startup: %s", exc)
+
+
 def get_registry() -> AnalystRegistry:
-    """Return the global analyst registry."""
+    """Return the global analyst registry, auto-loading saved models."""
     if _registry.get("lstm_sequence") is None or _registry.get("kalman_filter") is None:
         from .analysts import KalmanFilterAnalyst, LSTMSequenceAnalyst
 
         if _registry.get("lstm_sequence") is None:
-            _registry.register(LSTMSequenceAnalyst())
+            lstm = LSTMSequenceAnalyst()
+            _registry.register(lstm)
+            _try_load_lstm_model(lstm)
         if _registry.get("kalman_filter") is None:
             _registry.register(KalmanFilterAnalyst())
     return _registry

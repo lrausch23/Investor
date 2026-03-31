@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import datetime as dt
+import importlib
+import json
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -10,6 +12,8 @@ import pandas as pd
 import pytest
 
 from src.app.routes import regime as regime_route
+from src.regime import ensemble as ensemble_module
+from src.regime.analysts import lstm_analyst as lstm_module
 from src.regime.analysts import KalmanFilterAnalyst, LSTMConfig, LSTMSequenceAnalyst
 from src.regime.ensemble import get_registry
 from src.regime.meta_labeler import META_FEATURES
@@ -80,3 +84,45 @@ def test_lstm_training_route(monkeypatch, tmp_path: Path) -> None:
     payload = response.json()
     assert payload["ready"] is True
     assert payload["version"] == 1
+
+
+def test_lstm_torch_available_constant_matches_import_state() -> None:
+    assert lstm_module.TORCH_AVAILABLE is (lstm_module.torch is not None)
+
+
+def test_lstm_load_model_backwards_compatible_without_backend(tmp_path: Path) -> None:
+    path = tmp_path / "legacy_lstm.json"
+    payload = {
+        "config": {
+            "sequence_length": 5,
+            "epochs": 2,
+            "random_state": 42,
+        },
+        "feature_means": [0.0] * len(META_FEATURES),
+        "feature_stds": [1.0] * len(META_FEATURES),
+        "metrics": {"accuracy": 0.75},
+        "coef": [[0.1] * (5 * len(META_FEATURES))],
+        "intercept": [0.0],
+        "classes": [0, 1],
+    }
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    analyst = LSTMSequenceAnalyst()
+    analyst.load_model(path)
+    assert analyst.is_ready() is True
+    regime_result = type("RegimeResult", (), {"price_frame": _labeled_frame(20)[META_FEATURES]})()
+    result = analyst.analyze("NVDA", {}, regime_result)
+    assert result.details["backend"] == "sklearn_fallback"
+
+
+def test_registry_auto_loads_latest_lstm_model(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("HMM_DATA_DIR", str(tmp_path))
+    model_dir = tmp_path / "models"
+    model_dir.mkdir(parents=True, exist_ok=True)
+    trainer = LSTMSequenceAnalyst(LSTMConfig(sequence_length=5, prediction_horizon=5, epochs=1, min_training_samples=10))
+    trainer.train(_labeled_frame(80))
+    trainer.save_model(model_dir / "lstm_analyst_v2.json")
+    ensemble = importlib.reload(ensemble_module)
+    registry = ensemble.get_registry()
+    lstm = registry.get("lstm_sequence")
+    assert lstm is not None
+    assert lstm.is_ready() is True

@@ -4,7 +4,7 @@ import subprocess
 from pathlib import Path
 
 
-PROJECT_ROOT = Path("/Volumes/T9/Projects/Dev/Investor")
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_mypy_ini_keeps_only_expected_ignore_sections() -> None:
@@ -20,6 +20,12 @@ def test_mypy_ini_keeps_only_expected_ignore_sections() -> None:
     ):
         assert module in content
     assert "[mypy-src.regime.notifications]\nignore_errors = True" not in content
+
+
+def test_mypy_ini_documents_disable_error_sections() -> None:
+    content = (PROJECT_ROOT / "mypy.ini").read_text(encoding="utf-8")
+    assert "# Notification dispatch returns mixed bool/string delivery states by channel." in content
+    assert "# IBKR market data provider builds pandas frames from dynamic bar objects and settings dicts." in content
 
 
 def test_typecheck_script_exists_and_runs() -> None:

@@ -218,11 +218,12 @@ async def dispatch_notification_async(
     data: dict[str, Any] | None = None,
 ) -> dict[str, bool | str]:
     results: dict[str, bool | str] = {"in_app": True}
+    severity = str(severity or "info").lower()
     channels = get_channels_for_alert(alert_type)
     quiet_hours = _is_quiet_hours()
     digest_enabled = str(get_setting("notify_digest_enabled") or "false").lower() in {"true", "1", "yes", "on"}
 
-    if str(severity or "info").lower() == "info":
+    if severity == "info":
         return results
 
     if "email" in channels:

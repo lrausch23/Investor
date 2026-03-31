@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import datetime as dt
 import importlib
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -122,3 +123,55 @@ def test_market_data_settings_route_accepts_regime_keys(temp_modules, monkeypatc
     assert response.status_code == 200
     payload = client.get("/regime/market-data/settings").json()
     assert payload["settings"]["regime_provider_order"] == ["ibkr", "yfinance"]
+
+
+def test_market_data_test_macro_returns_combined_provider_payload(temp_modules, monkeypatch) -> None:
+    _store, ibkr_md, _data = temp_modules
+
+    class FakeProvider:
+        def is_available(self):
+            return True
+
+        def fetch_index(self, **kwargs):
+            symbol = kwargs["symbol"]
+            close_value = 22.5 if symbol == "VIX" else 4.3
+            frame = pd.DataFrame({"close": [close_value]}, index=pd.to_datetime(["2025-01-03"]))
+            return frame
+
+    monkeypatch.setattr(ibkr_md, "IBKRMarketDataProvider", FakeProvider)
+    monkeypatch.setattr(ibkr_md, "apply_regime_provider_settings", lambda default_order=None: (["ibkr", "yfinance"], {"ibkr": True, "yfinance": True}))
+    monkeypatch.setattr(regime_route, "_load_hmm_runtime", lambda: ({}, None))
+    monkeypatch.setattr("src.regime.market_data_client.download_daily_bars", lambda symbol, period="5d", auto_adjust=False: pd.DataFrame({"Close": [21.0]}, index=pd.to_datetime(["2025-01-02"])))
+    client = _route_client()
+    response = client.get("/regime/market-data/test-macro")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ibkr_connected"] is True
+    assert payload["active_provider_order"] == ["ibkr", "yfinance"]
+    assert payload["vix"]["ibkr"]["available"] is True
+    assert payload["yield_10y"]["ibkr"]["value"] == pytest.approx(4.3)
+    assert payload["vix"]["yfinance"]["available"] is True
+
+
+def test_market_data_test_macro_handles_ibkr_unavailable(temp_modules, monkeypatch) -> None:
+    _store, ibkr_md, _data = temp_modules
+
+    class OfflineProvider:
+        def is_available(self):
+            return False
+
+    monkeypatch.setattr(ibkr_md, "IBKRMarketDataProvider", OfflineProvider)
+    monkeypatch.setattr(ibkr_md, "apply_regime_provider_settings", lambda default_order=None: (["ibkr", "yfinance"], {"ibkr": True, "yfinance": True}))
+    monkeypatch.setattr("src.regime.market_data_client.download_daily_bars", lambda symbol, period="5d", auto_adjust=False: pd.DataFrame())
+    client = _route_client()
+    payload = client.get("/regime/market-data/test-macro").json()
+    assert payload["ibkr_connected"] is False
+    assert payload["vix"]["ibkr"]["available"] is False
+    assert payload["yield_10y"]["yfinance"]["available"] is False
+
+
+def test_market_data_ui_uses_single_macro_test_button() -> None:
+    content = (Path(__file__).resolve().parents[2] / "src" / "app" / "static" / "regime.js").read_text(encoding="utf-8")
+    assert 'id="regimeTestMacroData"' in content
+    assert 'id="regimeTestMacroVix"' not in content
+    assert 'id="regimeTestMacroTnx"' not in content

@@ -1789,7 +1789,7 @@ def _build_regime_dashboard_payload(
     payload["themes"] = _load_themes(runtime)
     registry = runtime["get_registry"]() if callable(runtime.get("get_registry")) else None
     kalman_analyst = registry.get("kalman_filter") if registry else None
-    if kalman_analyst is not None and callable(getattr(kalman_analyst, "reset", None)):
+    if force_refresh and kalman_analyst is not None and callable(getattr(kalman_analyst, "reset", None)):
         try:
             kalman_analyst.reset()
         except Exception as exc:
@@ -3288,68 +3288,86 @@ async def regime_market_data_settings_update(
 
 @router.get("/market-data/test-macro")
 def regime_market_data_test_macro(
-    symbol: str = "^VIX",
-    days: int = 365,
     actor: str = Depends(require_actor),
 ):
     del actor
-    from src.regime.ibkr_market_data import IBKRMarketDataProvider, _resolve_macro_contract
+    from src.regime.ibkr_market_data import (
+        IBKRMarketDataProvider,
+        _resolve_macro_contract,
+        apply_regime_provider_settings,
+    )
+    from src.regime.market_data_client import download_daily_bars
 
-    normalized_symbol = str(symbol or "^VIX").strip().upper()
-    contract_info = _resolve_macro_contract(normalized_symbol)
-    if contract_info is None:
-        raise HTTPException(status_code=422, detail=f"Unsupported macro symbol: {normalized_symbol}")
-    provider = IBKRMarketDataProvider()
-    available = False
-    try:
-        available = bool(provider.is_available())
-    except Exception:
-        available = False
-    if not available:
-        return JSONResponse(
-            content={
-                "symbol": normalized_symbol,
-                "provider": "ibkr",
-                "connected": False,
-                "ok": False,
-                "rows": 0,
-                "sample": [],
-            }
-        )
     end_date = dt.date.today()
-    start_date = end_date - dt.timedelta(days=max(5, int(days or 365)))
+    start_date = end_date - dt.timedelta(days=5)
+    ibkr = IBKRMarketDataProvider()
+    ibkr_available = False
     try:
-        frame = provider.fetch_index(
-            symbol=contract_info["symbol"],
-            start=start_date,
-            end=end_date,
-            exchange=contract_info["exchange"],
-            what_to_show=contract_info["what_to_show"],
-        )
-    except Exception as exc:
-        return JSONResponse(
-            content={
-                "symbol": normalized_symbol,
-                "provider": "ibkr",
-                "connected": True,
-                "ok": False,
-                "rows": 0,
-                "error": str(exc),
-                "sample": [],
+        ibkr_available = bool(ibkr.is_available())
+    except Exception:
+        ibkr_available = False
+
+    symbols = {"^VIX": "vix", "^TNX": "yield_10y"}
+    result: dict[str, Any] = {}
+
+    for yf_symbol, key in symbols.items():
+        provider_results: dict[str, Any] = {}
+        ibkr_entry: dict[str, Any] = {"available": False, "value": None, "date": None}
+        if ibkr_available:
+            try:
+                contract_info = _resolve_macro_contract(yf_symbol)
+                if contract_info:
+                    frame = ibkr.fetch_index(
+                        symbol=contract_info["symbol"],
+                        start=start_date,
+                        end=end_date,
+                        exchange=contract_info["exchange"],
+                        what_to_show=contract_info["what_to_show"],
+                    )
+                    if frame is not None and not frame.empty:
+                        last_index = frame.index[-1]
+                        last_row = frame.iloc[-1]
+                        ibkr_entry = {
+                            "available": True,
+                            "value": float(last_row.get("close", last_row.get("adj_close", 0.0)) or 0.0),
+                            "date": str(last_index.date() if hasattr(last_index, "date") else last_index),
+                        }
+            except Exception as exc:
+                ibkr_entry["error"] = str(exc)
+        provider_results["ibkr"] = ibkr_entry
+
+        yf_entry: dict[str, Any] = {"available": False, "value": None, "date": None}
+        try:
+            history = download_daily_bars(yf_symbol, period="5d", auto_adjust=False)
+            if history is not None and not history.empty:
+                if "Close" in history.columns:
+                    close_series = history["Close"]
+                elif "close" in history.columns:
+                    close_series = history["close"]
+                else:
+                    close_series = None
+                if close_series is not None and not close_series.dropna().empty:
+                    last_value = float(close_series.dropna().iloc[-1])
+                    last_index = close_series.dropna().index[-1]
+                    yf_entry = {
+                        "available": True,
+                        "value": last_value,
+                        "date": str(last_index.date() if hasattr(last_index, "date") else last_index),
+                    }
+        except Exception as exc:
+            yf_entry["error"] = str(exc)
+        provider_results["yfinance"] = yf_entry
+        result[key] = provider_results
+
+    order, _enabled = apply_regime_provider_settings()
+    return JSONResponse(
+        content=_json_ready(
+            {
+                **result,
+                "active_provider_order": order,
+                "ibkr_connected": ibkr_available,
             }
         )
-    sample = []
-    if frame is not None and not frame.empty:
-        sample = _json_ready(frame.tail(5).reset_index().to_dict(orient="records"))
-    return JSONResponse(
-        content={
-            "symbol": normalized_symbol,
-            "provider": "ibkr",
-            "connected": True,
-            "ok": bool(frame is not None and not frame.empty),
-            "rows": int(len(frame)) if frame is not None else 0,
-            "sample": sample,
-        }
     )
 
 
