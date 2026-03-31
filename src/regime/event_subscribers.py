@@ -10,6 +10,8 @@ logger = logging.getLogger(__name__)
 
 _HURDLE_RE = re.compile(r"hurdle=(?P<net>-?\d+(?:\.\d+)?)%net\((?P<gross>-?\d+(?:\.\d+)?)%gross@")
 _DURATION_RE = re.compile(r"duration=(?P<duration>-?\d+(?:\.\d+)?)d\(min=(?P<minimum>-?\d+(?:\.\d+)?)\)")
+_ANTI_CHURN_RE = re.compile(r"churn=pass\(count=(?P<count>\d+),max=(?P<max>\d+)\)")
+_LTCG_RE = re.compile(r"ltcg=shield\(protected=(?P<protected>-?\d+(?:\.\d+)?),tax=(?P<tax>-?\d+(?:\.\d+)?),lots=(?P<lots>\d+)\)")
 
 
 async def audit_log_subscriber(event: BaseEvent) -> None:
@@ -69,6 +71,10 @@ async def trade_decision_subscriber(event: BaseEvent) -> None:
     hurdle_net_return_pct = None
     duration_gate_passed = None
     expected_regime_duration = None
+    anti_churn_passed = None
+    ltcg_override_active = None
+    ltcg_protected_quantity = None
+    ltcg_tax_savings = None
     if "[agents:" in rationale:
         trace_start = rationale.index("[agents:")
         agent_trace = rationale[trace_start:].strip()
@@ -81,6 +87,14 @@ async def trade_decision_subscriber(event: BaseEvent) -> None:
     if duration_match:
         expected_regime_duration = float(duration_match.group("duration"))
         duration_gate_passed = True
+    anti_churn_match = _ANTI_CHURN_RE.search(rationale)
+    if anti_churn_match:
+        anti_churn_passed = True
+    ltcg_match = _LTCG_RE.search(rationale)
+    if ltcg_match:
+        ltcg_override_active = True
+        ltcg_protected_quantity = float(ltcg_match.group("protected"))
+        ltcg_tax_savings = float(ltcg_match.group("tax"))
     try:
         create_trade_plan(
             portfolio_id=event.portfolio_id,
@@ -98,6 +112,10 @@ async def trade_decision_subscriber(event: BaseEvent) -> None:
             hurdle_passed=True if hurdle_match else None,
             duration_gate_passed=duration_gate_passed,
             expected_regime_duration=expected_regime_duration,
+            anti_churn_passed=anti_churn_passed,
+            ltcg_override_active=ltcg_override_active,
+            ltcg_protected_quantity=ltcg_protected_quantity,
+            ltcg_tax_savings=ltcg_tax_savings,
         )
     except Exception as exc:
         logger.error("trade_decision_subscriber: persistence failed: %s", exc)

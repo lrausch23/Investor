@@ -557,6 +557,20 @@ def validate_guardrails(
                 )
             except Exception:
                 logger.debug("Unable to log wash-sale block for %s", order.ticker, exc_info=True)
+        from .anti_churn import is_churn_restricted
+
+        churn_restricted = is_churn_restricted(summary.portfolio_id, order.ticker)
+        checks.append(
+            GuardrailCheck(
+                name="anti_churn_velocity",
+                passed=not churn_restricted,
+                message=(
+                    "No anti-churn restriction."
+                    if not churn_restricted
+                    else f"Round-trip velocity limit reached for {order.ticker}. Cooldown active."
+                ),
+            )
+        )
 
     return GuardrailResult(
         allowed=all(check.passed for check in checks),

@@ -48,6 +48,10 @@ _PAPER_TRADE_PLAN_COLUMNS: dict[str, str] = {
     "hurdle_passed": "INTEGER",
     "duration_gate_passed": "INTEGER",
     "expected_regime_duration": "REAL",
+    "anti_churn_passed": "INTEGER",
+    "ltcg_override_active": "INTEGER",
+    "ltcg_protected_quantity": "REAL",
+    "ltcg_tax_savings": "REAL",
 }
 
 _SIGNAL_SNAPSHOT_COLUMNS: dict[str, str] = {
@@ -197,6 +201,29 @@ def _create_notification_preferences_table(conn: sqlite3.Connection) -> None:
     )
 
 
+def _create_barrier_override_log_table(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS barrier_override_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            portfolio_id INTEGER NOT NULL,
+            ticker TEXT NOT NULL,
+            lot_id INTEGER,
+            override_type TEXT NOT NULL DEFAULT 'ltcg_preservation',
+            original_stop REAL,
+            overridden_stop REAL,
+            days_to_ltcg INTEGER,
+            tax_savings_estimate REAL,
+            additional_risk REAL,
+            status TEXT NOT NULL DEFAULT 'active'
+                CHECK (status IN ('active', 'expired', 'cancelled')),
+            created_at TEXT NOT NULL,
+            expires_at TEXT NOT NULL
+        )
+        """
+    )
+
+
 def _create_paper_trade_plan_table(conn: sqlite3.Connection) -> None:
     conn.execute(
         """
@@ -230,6 +257,10 @@ def _create_paper_trade_plan_table(conn: sqlite3.Connection) -> None:
             hurdle_passed INTEGER,
             duration_gate_passed INTEGER,
             expected_regime_duration REAL,
+            anti_churn_passed INTEGER,
+            ltcg_override_active INTEGER,
+            ltcg_protected_quantity REAL,
+            ltcg_tax_savings REAL,
             notes TEXT NOT NULL DEFAULT '',
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
@@ -820,6 +851,7 @@ def _connect() -> sqlite3.Connection:
         """
     )
     _create_paper_trade_plan_table(conn)
+    _create_barrier_override_log_table(conn)
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS daily_snapshot (
@@ -2151,6 +2183,51 @@ def get_wash_sale_restrictions(
     return payload
 
 
+def log_barrier_override(
+    portfolio_id: int,
+    ticker: str,
+    *,
+    lot_id: int | None = None,
+    override_type: str = "ltcg_preservation",
+    original_stop: float | None = None,
+    overridden_stop: float | None = None,
+    days_to_ltcg: int | None = None,
+    tax_savings_estimate: float | None = None,
+    additional_risk: float | None = None,
+    status: str = "active",
+    expires_at: str | None = None,
+) -> dict[str, Any]:
+    now = datetime.now(timezone.utc).isoformat()
+    expiry_value = expires_at or now
+    with _connect() as conn:
+        cursor = conn.execute(
+            """
+            INSERT INTO barrier_override_log (
+                portfolio_id, ticker, lot_id, override_type, original_stop, overridden_stop,
+                days_to_ltcg, tax_savings_estimate, additional_risk, status, created_at, expires_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                int(portfolio_id),
+                str(ticker or "").upper(),
+                int(lot_id) if lot_id is not None else None,
+                str(override_type or "ltcg_preservation"),
+                float(original_stop) if original_stop is not None else None,
+                float(overridden_stop) if overridden_stop is not None else None,
+                int(days_to_ltcg) if days_to_ltcg is not None else None,
+                float(tax_savings_estimate) if tax_savings_estimate is not None else None,
+                float(additional_risk) if additional_risk is not None else None,
+                str(status or "active"),
+                now,
+                str(expiry_value),
+            ),
+        )
+        row_id = int(cursor.lastrowid)
+        row = conn.execute("SELECT * FROM barrier_override_log WHERE id = ?", (row_id,)).fetchone()
+    return dict(row) if row else {}
+
+
 def is_wash_sale_restricted(portfolio_id: int, ticker: str) -> bool:
     restrictions = get_wash_sale_restrictions(portfolio_id, ticker=ticker, active_only=True)
     return bool(restrictions)
@@ -2266,6 +2343,10 @@ def create_trade_plan(
     hurdle_passed: bool | None = None,
     duration_gate_passed: bool | None = None,
     expected_regime_duration: float | None = None,
+    anti_churn_passed: bool | None = None,
+    ltcg_override_active: bool | None = None,
+    ltcg_protected_quantity: float | None = None,
+    ltcg_tax_savings: float | None = None,
 ) -> dict[str, Any]:
     now = datetime.now(timezone.utc).isoformat()
     with _connect() as conn:
@@ -2275,9 +2356,10 @@ def create_trade_plan(
                 portfolio_id, theme_id, ticker, action, quantity, proposed_price, rationale,
                 regime_label, regime_probability, crowd_score, source, status, meta_labeler_score, sizing_method, agent_trace,
                 hurdle_gross_return_pct, hurdle_net_return_pct, hurdle_passed, duration_gate_passed, expected_regime_duration,
+                anti_churn_passed, ltcg_override_active, ltcg_protected_quantity, ltcg_tax_savings,
                 created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 int(portfolio_id),
@@ -2299,6 +2381,10 @@ def create_trade_plan(
                 None if hurdle_passed is None else (1 if hurdle_passed else 0),
                 None if duration_gate_passed is None else (1 if duration_gate_passed else 0),
                 float(expected_regime_duration) if expected_regime_duration is not None else None,
+                None if anti_churn_passed is None else (1 if anti_churn_passed else 0),
+                None if ltcg_override_active is None else (1 if ltcg_override_active else 0),
+                float(ltcg_protected_quantity) if ltcg_protected_quantity is not None else None,
+                float(ltcg_tax_savings) if ltcg_tax_savings is not None else None,
                 now,
                 now,
             ),
@@ -2344,6 +2430,46 @@ def get_trade_plans(portfolio_id: int, status: str = "Pending") -> list[dict[str
     with _connect() as conn:
         rows = conn.execute(query, params).fetchall()
     return [dict(row) for row in rows]
+
+
+def count_executed_sell_plans(portfolio_id: int, ticker: str, days: int = 30) -> int:
+    with _connect() as conn:
+        row = conn.execute(
+            """
+            SELECT COUNT(*) AS count
+            FROM paper_trade_plan
+            WHERE portfolio_id = ? AND ticker = ? AND action = 'Sell'
+              AND status = 'Executed'
+              AND executed_at >= ?
+            """,
+            (
+                int(portfolio_id),
+                str(ticker or "").upper(),
+                (datetime.now(timezone.utc) - timedelta(days=max(1, int(days)))).isoformat(),
+            ),
+        ).fetchone()
+    return int(row["count"] or 0) if row else 0
+
+
+def get_oldest_executed_sell_at(portfolio_id: int, ticker: str, days: int = 30) -> str | None:
+    with _connect() as conn:
+        row = conn.execute(
+            """
+            SELECT executed_at
+            FROM paper_trade_plan
+            WHERE portfolio_id = ? AND ticker = ? AND action = 'Sell'
+              AND status = 'Executed'
+              AND executed_at >= ?
+            ORDER BY executed_at ASC
+            LIMIT 1
+            """,
+            (
+                int(portfolio_id),
+                str(ticker or "").upper(),
+                (datetime.now(timezone.utc) - timedelta(days=max(1, int(days)))).isoformat(),
+            ),
+        ).fetchone()
+    return str(row["executed_at"]) if row and row["executed_at"] else None
 
 
 def update_trade_plan_status(plan_id: int, status: str, **kwargs: Any) -> dict[str, Any] | None:

@@ -39,6 +39,7 @@ from .persistence import (
     get_trade_plans,
     get_watchlist,
     get_watchlist_by_ticker,
+    log_barrier_override,
     log_audit_event,
     list_paper_portfolios,
     list_themes,
@@ -69,6 +70,59 @@ def _normalize_close_series(frame: pd.DataFrame | None) -> pd.Series:
     if getattr(close, "ndim", 1) > 1:
         close = close.iloc[:, 0]
     return pd.to_numeric(close, errors="coerce").dropna()
+
+
+def _publish_ltcg_override_events(
+    portfolio_id: int,
+    ticker: str,
+    original_stop: float | None,
+    ltcg_result: Any,
+) -> None:
+    if not getattr(ltcg_result, "override_active", False):
+        return
+    try:
+        from .event_bus import get_event_bus
+        from .events import BarrierOverrideEvent
+
+        bus = get_event_bus()
+    except Exception:
+        bus = None
+    for lot_detail in getattr(ltcg_result, "lot_details", []):
+        if not getattr(lot_detail, "override_active", False):
+            continue
+        expiry = (dt.datetime.now(dt.timezone.utc) + dt.timedelta(days=max(0, int(getattr(lot_detail, "days_to_ltcg", 0))))).isoformat()
+        try:
+            log_barrier_override(
+                portfolio_id,
+                ticker,
+                lot_id=int(getattr(lot_detail, "lot_id", 0) or 0),
+                original_stop=original_stop,
+                overridden_stop=getattr(lot_detail, "overridden_stop", None),
+                days_to_ltcg=int(getattr(lot_detail, "days_to_ltcg", 0) or 0),
+                tax_savings_estimate=float(getattr(lot_detail, "tax_savings_estimate", 0.0) or 0.0),
+                additional_risk=float(getattr(lot_detail, "additional_risk", 0.0) or 0.0),
+                expires_at=expiry,
+            )
+        except Exception:
+            logger.debug("Unable to persist barrier override log for %s", ticker, exc_info=True)
+        if bus is not None:
+            try:
+                bus.publish_sync(
+                    BarrierOverrideEvent(
+                        ticker=ticker,
+                        portfolio_id=int(portfolio_id),
+                        lot_id=int(getattr(lot_detail, "lot_id", 0) or 0),
+                        original_stop=original_stop,
+                        overridden_stop=getattr(lot_detail, "overridden_stop", None),
+                        reason="ltcg_preservation",
+                        days_to_ltcg=int(getattr(lot_detail, "days_to_ltcg", 0) or 0),
+                        tax_savings_estimate=float(getattr(lot_detail, "tax_savings_estimate", 0.0) or 0.0),
+                        max_additional_risk=float(getattr(lot_detail, "additional_risk", 0.0) or 0.0),
+                        expiry=expiry,
+                    )
+                )
+            except Exception:
+                logger.debug("Unable to publish barrier override event for %s", ticker, exc_info=True)
 
 
 def compute_theme_budget(
@@ -336,6 +390,7 @@ def generate_buy_plans(
     *,
     config: PaperTradingConfig = DEFAULT_PAPER_TRADING_CONFIG,
 ) -> list[dict[str, Any]]:
+    from .anti_churn import check_anti_churn, get_anti_churn_settings
     from .vix_freeze import is_vix_frozen
 
     portfolio = get_paper_portfolio(portfolio_id)
@@ -354,6 +409,7 @@ def generate_buy_plans(
     allocation = allocate_budget(portfolio_id, config=config)
     sizing_settings = get_sizing_settings()
     hurdle_settings = get_hurdle_settings()
+    anti_churn_settings = get_anti_churn_settings()
     sizing_method = str(sizing_settings.get("sizing_method") or DEFAULT_SIZING_METHOD)
     base_risk_fraction = float(sizing_settings.get("sizing_base_risk_fraction") or DEFAULT_SIZING_BASE_RISK_FRACTION)
     atr_multiplier = float(sizing_settings.get("sizing_atr_multiplier") or DEFAULT_SIZING_ATR_MULTIPLIER)
@@ -380,6 +436,12 @@ def generate_buy_plans(
         exit_price = item.get("suggested_exit_price")
         if exit_price in (None, ""):
             exit_price = snapshot.get("exit_price")
+        anti_churn_result = None
+        if bool(anti_churn_settings.get("anti_churn_enabled", True)):
+            anti_churn_result = check_anti_churn(portfolio_id, ticker)
+            if not anti_churn_result.passed:
+                logger.info("Anti-churn gate blocked %s: %s", ticker, anti_churn_result.reason)
+                continue
         hurdle_result = None
         duration_result = None
         if bool(hurdle_settings.get("hurdle_enabled", True)):
@@ -429,6 +491,11 @@ def generate_buy_plans(
                 f"Entry Signal from discovery watchlist. "
                 f"{item.get('discovery_rationale') or 'Candidate meets paper-trading entry criteria.'}"
             )
+        if anti_churn_result:
+            rationale = (
+                f"{rationale} Anti-churn: {anti_churn_result.round_trip_count}/"
+                f"{anti_churn_result.max_round_trips} completed round trips in lookback."
+            )
         if hurdle_result and hurdle_result.net_return_pct is not None and hurdle_result.gross_return_pct is not None:
             rationale = (
                 f"{rationale} Hurdle: {hurdle_result.net_return_pct:.2f}% net "
@@ -459,6 +526,7 @@ def generate_buy_plans(
                 hurdle_passed=hurdle_result.passed if hurdle_result else None,
                 duration_gate_passed=duration_result.passed if duration_result else None,
                 expected_regime_duration=duration_result.expected_regime_duration if duration_result else None,
+                anti_churn_passed=anti_churn_result.passed if anti_churn_result else None,
             )
         )
     return created
@@ -562,6 +630,8 @@ def generate_exit_plans(
     *,
     cached_regime: CachedRegimeMap | dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
+    from .ltcg_override import check_ltcg_override, get_ltcg_override_settings
+
     portfolio = get_paper_portfolio(portfolio_id)
     if portfolio is None:
         return []
@@ -571,6 +641,7 @@ def generate_exit_plans(
         return []
     prices = _batch_current_prices([str(row.get("ticker") or "") for row in open_positions])
     cached_rows = _cached_regime_map(cached_regime)
+    ltcg_settings = get_ltcg_override_settings()
     created: list[dict[str, Any]] = []
     for position in open_positions:
         ticker = str(position.get("ticker") or "").upper()
@@ -609,6 +680,27 @@ def generate_exit_plans(
         quantity = float(position.get("quantity") or 0.0)
         if quantity <= 0:
             continue
+        ltcg_result = None
+        if bool(ltcg_settings.get("ltcg_override_enabled", True)):
+            ltcg_result = check_ltcg_override(
+                portfolio_id,
+                ticker,
+                current_price=float(current_price or 0.0),
+                position_stop=stop_price if stop_price > 0 else None,
+                atr_14=_lookup_atr(ticker),
+            )
+            if ltcg_result.override_active:
+                _publish_ltcg_override_events(portfolio_id, ticker, stop_price if stop_price > 0 else None, ltcg_result)
+                if ltcg_result.sellable_quantity <= 0:
+                    logger.info("LTCG override suppressed exit for %s: %s", ticker, ltcg_result.reason)
+                    continue
+                quantity = float(ltcg_result.sellable_quantity)
+                trigger_reason = (
+                    f"{trigger_reason} LTCG override: protecting "
+                    f"{ltcg_result.protected_quantity:.0f} shares "
+                    f"({ltcg_result.lots_overridden} lots near LTCG). "
+                    f"Tax savings: ${ltcg_result.total_tax_savings:.2f}."
+                )
         proposed_price = current_price or float(position.get("entry_price") or 0.0)
         created.append(
             create_trade_plan(
@@ -622,6 +714,9 @@ def generate_exit_plans(
                 regime_label=regime_label,
                 regime_probability=regime_probability,
                 source="exit_signal",
+                ltcg_override_active=ltcg_result.override_active if ltcg_result else None,
+                ltcg_protected_quantity=ltcg_result.protected_quantity if ltcg_result else None,
+                ltcg_tax_savings=ltcg_result.total_tax_savings if ltcg_result else None,
             )
         )
     return created

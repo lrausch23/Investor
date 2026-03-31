@@ -171,6 +171,23 @@ class OrderExecutionEvent(BaseEvent):
     message: str = ""
 
 
+@dataclass(frozen=True)
+class BarrierOverrideEvent(BaseEvent):
+    """Published when a stop is widened or an exit is reduced to preserve LTCG status."""
+
+    event_type: str = field(default="barrier_override", init=False)
+    ticker: str = ""
+    portfolio_id: int = 0
+    lot_id: int = 0
+    original_stop: float | None = None
+    overridden_stop: float | None = None
+    reason: str = ""
+    days_to_ltcg: int = 0
+    tax_savings_estimate: float = 0.0
+    max_additional_risk: float = 0.0
+    expiry: str = ""
+
+
 def enriched_signal_from_payload(
     ticker: str,
     regime_result: Any,

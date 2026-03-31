@@ -3033,8 +3033,12 @@ def _build_shell_context(
             "watchlist_pass": "/regime/watchlist/__WATCHLIST_ID__/pass",
             "fundamental_gate": "/regime/fundamental-gate/__TICKER__",
             "fundamental_gate_settings": "/regime/fundamental-gate/settings",
+            "anti_churn_settings": "/regime/anti-churn/settings",
+            "anti_churn_diagnostic": "/regime/anti-churn/__TICKER__",
             "hurdle_settings": "/regime/hurdle/settings",
             "hurdle_diagnostic": "/regime/hurdle/__TICKER__",
+            "ltcg_override_settings": "/regime/ltcg-override/settings",
+            "ltcg_override_diagnostic": "/regime/ltcg-override/__TICKER__",
             "cross_sectional": "/regime/cross-sectional/__TICKER__",
             "sizing_settings": "/regime/sizing/settings",
             "paper_portfolios": "/regime/paper-portfolio",
@@ -4929,6 +4933,138 @@ def regime_hurdle_diagnostic(
             "duration_gate": _json_ready(asdict(duration_gate)),
         }
     )
+
+
+@router.get("/anti-churn/settings")
+def regime_anti_churn_settings_get(
+    actor: str = Depends(require_actor),
+):
+    del actor
+    from src.regime.anti_churn import get_anti_churn_settings
+
+    return JSONResponse(content=_json_ready(get_anti_churn_settings()))
+
+
+@router.put("/anti-churn/settings")
+async def regime_anti_churn_settings_put(
+    request: Request,
+    actor: str = Depends(require_actor),
+):
+    del actor
+    from src.regime.anti_churn import set_anti_churn_settings
+
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Request body must be a JSON object.")
+    try:
+        updated = set_anti_churn_settings(payload)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return JSONResponse(content=_json_ready(updated))
+
+
+@router.get("/anti-churn/{ticker}")
+def regime_anti_churn_diagnostic(
+    ticker: str,
+    actor: str = Depends(require_actor),
+):
+    del actor
+    from src.regime.anti_churn import check_anti_churn
+    from src.regime.persistence import list_paper_portfolios
+
+    ticker_key = str(ticker or "").upper()
+    portfolios: list[dict[str, Any]] = []
+    for portfolio in list_paper_portfolios(include_closed=False):
+        if str(portfolio.get("status") or "") != "Active":
+            continue
+        result = check_anti_churn(int(portfolio["id"]), ticker_key)
+        portfolios.append(
+            {
+                "portfolio_id": int(portfolio["id"]),
+                "round_trip_count": result.round_trip_count,
+                "max_round_trips": result.max_round_trips,
+                "restricted": not result.passed,
+                "cooldown_expires": result.cooldown_expires,
+                "reason": result.reason,
+            }
+        )
+    return JSONResponse(content=_json_ready({"ticker": ticker_key, "portfolios": portfolios}))
+
+
+@router.get("/ltcg-override/settings")
+def regime_ltcg_override_settings_get(
+    actor: str = Depends(require_actor),
+):
+    del actor
+    from src.regime.ltcg_override import get_ltcg_override_settings
+
+    return JSONResponse(content=_json_ready(get_ltcg_override_settings()))
+
+
+@router.put("/ltcg-override/settings")
+async def regime_ltcg_override_settings_put(
+    request: Request,
+    actor: str = Depends(require_actor),
+):
+    del actor
+    from src.regime.ltcg_override import set_ltcg_override_settings
+
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Request body must be a JSON object.")
+    try:
+        updated = set_ltcg_override_settings(payload)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return JSONResponse(content=_json_ready(updated))
+
+
+@router.get("/ltcg-override/{ticker}")
+def regime_ltcg_override_diagnostic(
+    ticker: str,
+    portfolio_id: int | None = None,
+    actor: str = Depends(require_actor),
+):
+    del actor
+    from src.regime.ltcg_override import check_ltcg_override
+    from src.regime.paper_trading import _batch_current_prices, _lookup_atr
+    from src.regime.persistence import get_paper_positions, list_paper_portfolios
+
+    ticker_key = str(ticker or "").upper()
+    target_portfolio_id = portfolio_id
+    if target_portfolio_id is None:
+        for portfolio in list_paper_portfolios(include_closed=False):
+            if str(portfolio.get("status") or "") == "Active":
+                target_portfolio_id = int(portfolio["id"])
+                break
+    if target_portfolio_id is None:
+        raise HTTPException(status_code=404, detail="No active paper portfolio available.")
+    positions = get_paper_positions(int(target_portfolio_id), status="Open")
+    matching_positions = [row for row in positions if str(row.get("ticker") or "").upper() == ticker_key]
+    position_stop = None
+    if matching_positions:
+        stops = [float(row.get("stop_price") or 0.0) for row in matching_positions if float(row.get("stop_price") or 0.0) > 0]
+        if stops:
+            position_stop = min(stops)
+    current_price = float((_batch_current_prices([ticker_key]).get(ticker_key) or 0.0))
+    result = check_ltcg_override(
+        int(target_portfolio_id),
+        ticker_key,
+        current_price=current_price,
+        position_stop=position_stop,
+        atr_14=_lookup_atr(ticker_key),
+    )
+    payload = result.to_dict()
+    payload["portfolio_id"] = int(target_portfolio_id)
+    payload["current_price"] = current_price
+    payload["position_stop"] = position_stop
+    return JSONResponse(content=_json_ready(payload))
 
 
 @router.get("/cross-sectional/{ticker}")

@@ -51,6 +51,8 @@
     autonomyStatus: null,
     taxSettings: null,
     hurdleSettings: null,
+    antiChurnSettings: null,
+    ltcgOverrideSettings: null,
     paperAudit: [],
     paperAuditSummary: null,
     paperMonitoring: null,
@@ -2618,6 +2620,17 @@
     return `<span class="${plan.duration_gate_passed ? "ui-badge ui-badge--safe" : "ui-badge ui-badge--bad"}" title="${escapeHtml(title)}">Dur ${plan.duration_gate_passed ? "✓" : "✗"}</span>`;
   }
 
+  function renderAntiChurnBadge(plan) {
+    if (plan.anti_churn_passed == null) return "";
+    return `<span class="${plan.anti_churn_passed ? "ui-badge ui-badge--safe" : "ui-badge ui-badge--bad"}">Churn ${plan.anti_churn_passed ? "✓" : "✗"}</span>`;
+  }
+
+  function renderLtcgShieldBadge(plan) {
+    if (!plan.ltcg_override_active) return "";
+    const title = `Protected ${Number(plan.ltcg_protected_quantity || 0).toFixed(2)} shares · Estimated tax savings ${formatCurrency(plan.ltcg_tax_savings, 2)}`;
+    return `<span class="ui-badge ui-badge--neutral" title="${escapeHtml(title)}">LTCG Shield</span>`;
+  }
+
   function renderAuditTrail() {
     const mount = byId("regimeAuditTrailMount");
     if (!mount) return;
@@ -3344,12 +3357,14 @@
                 ${plan.regime_label ? `<span class="${badgeClass(plan.regime_label)}">${escapeHtml(plan.regime_label)} ${plan.regime_probability != null ? `· ${(Number(plan.regime_probability) * 100).toFixed(0)}%` : ""}</span>` : ""}
                 ${plan.meta_labeler_score == null ? `<span class="ui-badge ui-badge--neutral">ML N/A</span>` : `<span class="${Number(plan.meta_labeler_score) >= 0.65 ? "ui-badge ui-badge--safe" : Number(plan.meta_labeler_score) >= 0.30 ? "ui-badge ui-badge--warn" : "ui-badge ui-badge--bad"}">ML ${(Number(plan.meta_labeler_score) * 100).toFixed(0)}%</span>`}
                 ${plan.sizing_method === "risk_budget" ? `<span class="ui-badge ui-badge--neutral">Risk-Sized</span>` : ""}
+                ${renderAntiChurnBadge(plan)}
                 ${renderHurdleBadge(plan)}
                 ${renderDurationGateBadge(plan)}
+                ${renderLtcgShieldBadge(plan)}
                 ${renderTaxImpactBadge(plan)}
               </div>
               <div class="ui-muted" style="margin-top:6px">${escapeHtml(plan.rationale || "")}</div>
-              ${(plan.hurdle_gross_return_pct != null || plan.hurdle_net_return_pct != null || plan.expected_regime_duration != null) ? `<div class="ui-muted" style="margin-top:6px">Gross ${escapeHtml(plan.hurdle_gross_return_pct == null ? "—" : `${Number(plan.hurdle_gross_return_pct).toFixed(2)}%`)} · Net ${escapeHtml(plan.hurdle_net_return_pct == null ? "—" : `${Number(plan.hurdle_net_return_pct).toFixed(2)}%`)} · Duration ${escapeHtml(plan.expected_regime_duration == null ? "—" : `${Number(plan.expected_regime_duration).toFixed(1)}d`)}</div>` : ""}
+              ${(plan.hurdle_gross_return_pct != null || plan.hurdle_net_return_pct != null || plan.expected_regime_duration != null || plan.ltcg_override_active || plan.anti_churn_passed != null) ? `<div class="ui-muted" style="margin-top:6px">Churn ${escapeHtml(plan.anti_churn_passed == null ? "—" : plan.anti_churn_passed ? "Pass" : "Blocked")} · Gross ${escapeHtml(plan.hurdle_gross_return_pct == null ? "—" : `${Number(plan.hurdle_gross_return_pct).toFixed(2)}%`)} · Net ${escapeHtml(plan.hurdle_net_return_pct == null ? "—" : `${Number(plan.hurdle_net_return_pct).toFixed(2)}%`)} · Duration ${escapeHtml(plan.expected_regime_duration == null ? "—" : `${Number(plan.expected_regime_duration).toFixed(1)}d`)} · LTCG ${escapeHtml(plan.ltcg_override_active ? `${Number(plan.ltcg_protected_quantity || 0).toFixed(2)} sh / ${formatCurrency(plan.ltcg_tax_savings, 2)}` : "—")}</div>` : ""}
               ${plan.execution_result ? `<div class="ui-muted" style="margin-top:6px">${escapeHtml(plan.execution_result)}</div>` : ""}
               <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:10px">
                 <button class="btn btn--secondary" type="button" data-paper-plan-action="Approved" data-paper-plan-id="${escapeHtml(plan.id)}" ${!((planPrecheck(plan.id) || {}).guardrail_passed) || paused || closed ? "disabled" : ""}>${(planPrecheck(plan.id) && !(planPrecheck(plan.id).guardrail_passed)) ? "Blocked" : "Approve"}</button>
@@ -3684,6 +3699,18 @@
       hurdle_min_net_return_pct: 3.0,
       min_regime_duration_days: 7.0,
     };
+    const antiChurnSettings = state.antiChurnSettings || {
+      anti_churn_enabled: true,
+      anti_churn_max_round_trips_30d: 2,
+      anti_churn_cooldown_days: 30,
+    };
+    const ltcgOverrideSettings = state.ltcgOverrideSettings || {
+      ltcg_override_enabled: true,
+      ltcg_trigger_days_to_threshold: 16,
+      ltcg_max_additional_risk_atr: 2.0,
+      ltcg_ordinary_rate: 0.32,
+      ltcg_rate: 0.15,
+    };
     const marketData = state.marketDataSettings || {
       settings: {
         benchmark_provider_order: ["cache", "ibkr", "stooq", "yahoo"],
@@ -3812,6 +3839,40 @@
                   <label>
                     Min regime duration
                     <input id="regimeMinRegimeDurationDays" type="number" min="1" max="90" step="1" value="${escapeHtml(Number(hurdleSettings.min_regime_duration_days || 7).toFixed(0))}" />
+                  </label>
+                  <div style="grid-column:1 / -1; font-weight:600; margin-top:6px">Anti-Churn Velocity</div>
+                  <label style="display:flex; gap:8px; align-items:center; margin-top:22px">
+                    <input id="regimeAntiChurnEnabled" type="checkbox" ${antiChurnSettings.anti_churn_enabled ? "checked" : ""} />
+                    <span>Anti-churn enabled</span>
+                  </label>
+                  <label>
+                    Max round trips / 30d
+                    <input id="regimeAntiChurnMaxTrips" type="number" min="1" max="20" step="1" value="${escapeHtml(Number(antiChurnSettings.anti_churn_max_round_trips_30d || 2).toFixed(0))}" />
+                  </label>
+                  <label>
+                    Cooldown days
+                    <input id="regimeAntiChurnCooldownDays" type="number" min="7" max="90" step="1" value="${escapeHtml(Number(antiChurnSettings.anti_churn_cooldown_days || 30).toFixed(0))}" />
+                  </label>
+                  <div style="grid-column:1 / -1; font-weight:600; margin-top:6px">LTCG Barrier Override</div>
+                  <label style="display:flex; gap:8px; align-items:center; margin-top:22px">
+                    <input id="regimeLtcgOverrideEnabled" type="checkbox" ${ltcgOverrideSettings.ltcg_override_enabled ? "checked" : ""} />
+                    <span>LTCG override enabled</span>
+                  </label>
+                  <label>
+                    Trigger days to LTCG
+                    <input id="regimeLtcgTriggerDays" type="number" min="1" max="60" step="1" value="${escapeHtml(Number(ltcgOverrideSettings.ltcg_trigger_days_to_threshold || 16).toFixed(0))}" />
+                  </label>
+                  <label>
+                    Max additional risk (ATR)
+                    <input id="regimeLtcgRiskAtr" type="number" min="0.5" max="5" step="0.1" value="${escapeHtml(Number(ltcgOverrideSettings.ltcg_max_additional_risk_atr || 2).toFixed(1))}" />
+                  </label>
+                  <label>
+                    Ordinary tax rate
+                    <input id="regimeLtcgOrdinaryRate" type="number" min="0" max="99" step="1" value="${escapeHtml(Number((ltcgOverrideSettings.ltcg_ordinary_rate || 0.32) * 100).toFixed(0))}" />
+                  </label>
+                  <label>
+                    LTCG tax rate
+                    <input id="regimeLtcgRate" type="number" min="0" max="99" step="1" value="${escapeHtml(Number((ltcgOverrideSettings.ltcg_rate || 0.15) * 100).toFixed(0))}" />
                   </label>
                   <button class="btn btn--secondary" type="button" id="regimeAutonomySave" style="align-self:end">Save</button>
                 </div>
@@ -4006,6 +4067,14 @@
         const estimatedStcgInput = byId("regimeEstimatedStcgRate");
         const minNetReturnInput = byId("regimeMinNetReturnPct");
         const minDurationInput = byId("regimeMinRegimeDurationDays");
+        const antiChurnEnabledInput = byId("regimeAntiChurnEnabled");
+        const antiChurnMaxTripsInput = byId("regimeAntiChurnMaxTrips");
+        const antiChurnCooldownInput = byId("regimeAntiChurnCooldownDays");
+        const ltcgOverrideEnabledInput = byId("regimeLtcgOverrideEnabled");
+        const ltcgTriggerDaysInput = byId("regimeLtcgTriggerDays");
+        const ltcgRiskAtrInput = byId("regimeLtcgRiskAtr");
+        const ltcgOrdinaryRateInput = byId("regimeLtcgOrdinaryRate");
+        const ltcgRateInput = byId("regimeLtcgRate");
         await saveAutonomySettings({
           auto_approve_threshold: thresholdInput ? Number(thresholdInput.value || autonomy.auto_approve_threshold || 0.65) : autonomy.auto_approve_threshold,
           daily_capital_ceiling_pct: ceilingInput ? Number(ceilingInput.value || 25) / 100 : autonomy.daily_capital_ceiling_pct,
@@ -4063,6 +4132,44 @@
             state.hurdleSettings = payload;
           } catch (error) {
             showToast(`Unable to save hurdle settings: ${error.message || error}`, "error");
+          }
+        }
+        if (state.config?.endpoints?.anti_churn_settings) {
+          try {
+            const response = await fetch(state.config.endpoints.anti_churn_settings, {
+              method: "PUT",
+              headers: { Accept: "application/json", "Content-Type": "application/json" },
+              body: JSON.stringify({
+                anti_churn_enabled: !!antiChurnEnabledInput?.checked,
+                anti_churn_max_round_trips_30d: Number(antiChurnMaxTripsInput?.value || 2),
+                anti_churn_cooldown_days: Number(antiChurnCooldownInput?.value || 30),
+              }),
+            });
+            const payload = await response.json();
+            if (!response.ok) throw new Error(payload.detail || `Anti-churn settings failed (${response.status})`);
+            state.antiChurnSettings = payload;
+          } catch (error) {
+            showToast(`Unable to save anti-churn settings: ${error.message || error}`, "error");
+          }
+        }
+        if (state.config?.endpoints?.ltcg_override_settings) {
+          try {
+            const response = await fetch(state.config.endpoints.ltcg_override_settings, {
+              method: "PUT",
+              headers: { Accept: "application/json", "Content-Type": "application/json" },
+              body: JSON.stringify({
+                ltcg_override_enabled: !!ltcgOverrideEnabledInput?.checked,
+                ltcg_trigger_days_to_threshold: Number(ltcgTriggerDaysInput?.value || 16),
+                ltcg_max_additional_risk_atr: Number(ltcgRiskAtrInput?.value || 2),
+                ltcg_ordinary_rate: Number(ltcgOrdinaryRateInput?.value || 32) / 100,
+                ltcg_rate: Number(ltcgRateInput?.value || 15) / 100,
+              }),
+            });
+            const payload = await response.json();
+            if (!response.ok) throw new Error(payload.detail || `LTCG override settings failed (${response.status})`);
+            state.ltcgOverrideSettings = payload;
+          } catch (error) {
+            showToast(`Unable to save LTCG override settings: ${error.message || error}`, "error");
           }
         }
       });
@@ -4228,10 +4335,12 @@
       return;
     }
     try {
-      const [detailResponse, autonomySettingsResponse, hurdleSettingsResponse, autonomyStatusResponse, marketDataSettingsResponse, notificationPreferencesResponse, budgetResponse, plansResponse, positionsResponse, taxLotsResponse, washSaleResponse, performanceResponse, auditResponse, precheckResponse, monitoringResponse, healthResponse, consensusResponse, validationResponse, alertsResponse, alertHistoryResponse, vixResponse] = await Promise.all([
+      const [detailResponse, autonomySettingsResponse, hurdleSettingsResponse, antiChurnSettingsResponse, ltcgOverrideSettingsResponse, autonomyStatusResponse, marketDataSettingsResponse, notificationPreferencesResponse, budgetResponse, plansResponse, positionsResponse, taxLotsResponse, washSaleResponse, performanceResponse, auditResponse, precheckResponse, monitoringResponse, healthResponse, consensusResponse, validationResponse, alertsResponse, alertHistoryResponse, vixResponse] = await Promise.all([
         fetch(paperEndpoint("paper_portfolio", portfolioId), { headers: { Accept: "application/json" } }),
         fetch(state.config.endpoints.autonomy_settings, { headers: { Accept: "application/json" } }),
         fetch(state.config.endpoints.hurdle_settings, { headers: { Accept: "application/json" } }),
+        fetch(state.config.endpoints.anti_churn_settings, { headers: { Accept: "application/json" } }),
+        fetch(state.config.endpoints.ltcg_override_settings, { headers: { Accept: "application/json" } }),
         fetch(paperEndpoint("paper_autonomy_status", portfolioId), { headers: { Accept: "application/json" } }),
         fetch(state.config.endpoints.market_data_settings, { headers: { Accept: "application/json" } }),
         fetch(state.config.endpoints.notification_preferences, { headers: { Accept: "application/json" } }),
@@ -4258,10 +4367,12 @@
           return {};
         }
       };
-      const [detail, autonomySettings, hurdleSettings, autonomyStatus, marketDataSettings, notificationPreferences, budget, plans, positions, taxLots, washSale, performance, audit, precheck, monitoring, health, consensus, validation, alerts, alertHistory, vixStatus] = await Promise.all([
+      const [detail, autonomySettings, hurdleSettings, antiChurnSettings, ltcgOverrideSettings, autonomyStatus, marketDataSettings, notificationPreferences, budget, plans, positions, taxLots, washSale, performance, audit, precheck, monitoring, health, consensus, validation, alerts, alertHistory, vixStatus] = await Promise.all([
         parseJson(detailResponse),
         parseJson(autonomySettingsResponse),
         parseJson(hurdleSettingsResponse),
+        parseJson(antiChurnSettingsResponse),
+        parseJson(ltcgOverrideSettingsResponse),
         parseJson(autonomyStatusResponse),
         parseJson(marketDataSettingsResponse),
         parseJson(notificationPreferencesResponse),
@@ -4301,6 +4412,18 @@
       } else {
         warnPanel("Hurdle settings", hurdleSettingsResponse, hurdleSettings);
         state.hurdleSettings = null;
+      }
+      if (antiChurnSettingsResponse.ok) {
+        state.antiChurnSettings = antiChurnSettings;
+      } else {
+        warnPanel("Anti-churn settings", antiChurnSettingsResponse, antiChurnSettings);
+        state.antiChurnSettings = null;
+      }
+      if (ltcgOverrideSettingsResponse.ok) {
+        state.ltcgOverrideSettings = ltcgOverrideSettings;
+      } else {
+        warnPanel("LTCG override settings", ltcgOverrideSettingsResponse, ltcgOverrideSettings);
+        state.ltcgOverrideSettings = null;
       }
       if (autonomyStatusResponse.ok) {
         state.autonomyStatus = autonomyStatus;
