@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
 from typing import Any
 
@@ -11,7 +12,7 @@ from .alerts import (
     check_transition_risk_spikes,
     format_alert_summary,
 )
-from .notifications import dispatch_notification
+from .notifications import dispatch_notification_sync, flush_digest
 from .monitoring import sweep_monitoring_alerts
 from .data_validator import check_database_health, run_pre_trade_validation
 from .discovery import check_entry_signals, expire_stale_candidates, run_full_discovery
@@ -115,7 +116,7 @@ def run_scheduled_regime_checks(tickers: list[str] | None = None) -> dict[str, A
                 data={"distance_pct": alert.distance_pct, "stop_price": alert.stop_price},
             )
         if payload and payload.get("severity") in {"warning", "critical"}:
-            dispatch_notification(str(payload.get("alert_type")), str(payload.get("title")), str(payload.get("message") or ""), str(payload.get("severity") or "info"))
+            dispatch_notification_sync(str(payload.get("alert_type")), str(payload.get("title")), str(payload.get("message") or ""), str(payload.get("severity") or "info"))
     set_setting("last_regime_check_at", dt.datetime.now(dt.timezone.utc).isoformat())
     return {"alerts": all_alerts, "summary": format_alert_summary(all_alerts)}
 
@@ -273,12 +274,17 @@ def run_end_of_day_processing() -> dict[str, Any]:
             data=health,
         )
     backup = run_daily_backup()
+    try:
+        digest_sent = asyncio.run(flush_digest())
+    except Exception:
+        digest_sent = False
     return {
         "snapshots": snapshots,
         "snapshot_count": len(snapshots),
         "outcomes": outcomes,
         "performance": performance,
         "backup": backup,
+        "digest_sent": digest_sent,
         "health": health,
         "history_counts": {str(row["portfolio_id"]): len(get_daily_snapshots(int(row["portfolio_id"]))) for row in snapshots if row.get("portfolio_id") is not None},
     }

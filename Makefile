@@ -1,4 +1,4 @@
-.PHONY: help venv install env db-reset load-fixtures run dev test check planner export-plan clean
+.PHONY: help venv install env db-reset load-fixtures run dev test typecheck check planner export-plan clean
 
 SHELL := /bin/bash
 
@@ -25,6 +25,7 @@ help:
 	@echo "  make planner        Run planner (rebalance BOTH) and save as DRAFT"
 	@echo "  make export-plan    Export plan $(PLAN_ID) to $(EXPORT_DIR)"
 	@echo "  make test           Run unit tests"
+	@echo "  make typecheck      Run mypy over src/regime"
 	@echo "  make check          Compile + tests"
 	@echo "  make clean          Remove venv + caches (keeps DB)"
 	@echo ""
@@ -69,8 +70,12 @@ export-plan: install env
 test: install
 	LOKY_MAX_CPU_COUNT=$${LOKY_MAX_CPU_COUNT:-8} $(PY) -m pytest -q
 
+typecheck: install
+	scripts/typecheck.sh
+
 check: install
 	$(PY) -m compileall -q src tests scripts
+	scripts/typecheck.sh
 	LOKY_MAX_CPU_COUNT=$${LOKY_MAX_CPU_COUNT:-8} $(PY) -m pytest -q
 
 clean:

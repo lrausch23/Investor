@@ -17,6 +17,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass, is_dataclass
 from typing import Any
 from urllib.parse import parse_qs
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -195,6 +196,7 @@ def _load_hmm_runtime() -> tuple[dict[str, Any] | None, str | None]:
             delete_setting,
             get_auto_approve_threshold,
             get_alerts,
+            get_notification_preferences,
             acknowledge_alert,
             acknowledge_all_alerts,
             get_daily_capital_ceiling_pct,
@@ -231,6 +233,7 @@ def _load_hmm_runtime() -> tuple[dict[str, Any] | None, str | None]:
             set_lot_selection_method,
             set_ltcg_defer_window_days,
             set_operating_mode,
+            set_notification_preference,
             set_setting,
             update_paper_portfolio,
             update_theme,
@@ -276,6 +279,7 @@ def _load_hmm_runtime() -> tuple[dict[str, Any] | None, str | None]:
             should_retrain,
             _version_path,
         )
+        from src.regime.analysts import KalmanConfig, KalmanFilterAnalyst, LSTMConfig, LSTMSequenceAnalyst
         from src.regime.attribution import (
             compute_attribution_summary,
             compute_ml_accuracy,
@@ -284,7 +288,7 @@ def _load_hmm_runtime() -> tuple[dict[str, Any] | None, str | None]:
             compute_theme_attribution,
         )
         from src.regime.alerts import format_alert_summary
-        from src.regime.notifications import dispatch_notification
+        from src.regime.notifications import dispatch_notification, notification_preferences_payload
         from src.regime.monitoring import sweep_monitoring_alerts
         from src.regime.paper_trading import (
             allocate_budget,
@@ -406,12 +410,14 @@ def _load_hmm_runtime() -> tuple[dict[str, Any] | None, str | None]:
         "set_setting": set_setting,
         "save_alert": save_alert,
         "get_alerts": get_alerts,
+        "get_notification_preferences": get_notification_preferences,
         "acknowledge_alert": acknowledge_alert,
         "acknowledge_all_alerts": acknowledge_all_alerts,
         "get_all_settings": get_all_settings,
         "delete_setting": delete_setting,
         "get_operating_mode": get_operating_mode,
         "set_operating_mode": set_operating_mode,
+        "set_notification_preference": set_notification_preference,
         "get_auto_approve_threshold": get_auto_approve_threshold,
         "set_auto_approve_threshold": set_auto_approve_threshold,
         "get_daily_capital_ceiling_pct": get_daily_capital_ceiling_pct,
@@ -463,6 +469,10 @@ def _load_hmm_runtime() -> tuple[dict[str, Any] | None, str | None]:
         "MetaLabelerEngine": MetaLabelerEngine,
         "MetaLabelerConfig": MetaLabelerConfig,
         "DEFAULT_META_LABELER_CONFIG": DEFAULT_META_LABELER_CONFIG,
+        "LSTMConfig": LSTMConfig,
+        "LSTMSequenceAnalyst": LSTMSequenceAnalyst,
+        "KalmanConfig": KalmanConfig,
+        "KalmanFilterAnalyst": KalmanFilterAnalyst,
         "extract_meta_features": extract_meta_features,
         "create_and_register_meta_labeler": create_and_register,
         "auto_load_active_model": auto_load_active_model,
@@ -497,6 +507,7 @@ def _load_hmm_runtime() -> tuple[dict[str, Any] | None, str | None]:
         "record_trade_outcome": record_trade_outcome,
         "save_daily_snapshot": save_daily_snapshot,
         "dispatch_notification": dispatch_notification,
+        "notification_preferences_payload": notification_preferences_payload,
         "sweep_monitoring_alerts": sweep_monitoring_alerts,
         "check_vix_freeze": check_vix_freeze,
         "manual_override_vix_freeze": manual_override_vix_freeze,
@@ -570,6 +581,14 @@ def _load_hmm_runtime() -> tuple[dict[str, Any] | None, str | None]:
                 logger.info("Auto-loaded meta-labeler model v%s on startup", load_result.get("version"))
             else:
                 logger.debug("No meta-labeler model auto-loaded: %s", load_result.get("status"))
+        lstm_engine = registry.get("lstm_sequence")
+        if lstm_engine is not None and not lstm_engine.is_ready():
+            active_lstm_version = runtime["get_setting"]("lstm_active_version")
+            if active_lstm_version:
+                lstm_path = _lstm_version_path(int(active_lstm_version))
+                if os.path.isfile(lstm_path):
+                    lstm_engine.load_model(lstm_path)
+                    logger.info("Auto-loaded LSTM analyst model v%s on startup", active_lstm_version)
     except Exception as exc:
         logger.debug("Meta-labeler auto-load skipped: %s", exc)
     return runtime, None
@@ -1769,6 +1788,12 @@ def _build_regime_dashboard_payload(
     previous_payload = load_previous_payload()
     payload["themes"] = _load_themes(runtime)
     registry = runtime["get_registry"]() if callable(runtime.get("get_registry")) else None
+    kalman_analyst = registry.get("kalman_filter") if registry else None
+    if kalman_analyst is not None and callable(getattr(kalman_analyst, "reset", None)):
+        try:
+            kalman_analyst.reset()
+        except Exception as exc:
+            logger.debug("Unable to reset kalman analyst.", exc_info=exc)
     get_setting_fn = runtime.get("get_setting")
     get_setting = get_setting_fn if callable(get_setting_fn) else None
     active_version_raw = get_setting("meta_labeler_active_version") if get_setting else None
@@ -1790,6 +1815,8 @@ def _build_regime_dashboard_payload(
     except Exception:
         payload["ensemble_status"]["aggregation_method"] = "mean"
         payload["ensemble_status"]["analyst_weights"] = {}
+    payload["ensemble_status"]["analysts"] = []
+    payload["ensemble_status"]["ready_count"] = 0
 
     investor_db_path, available_tickers = _portfolio_tickers(runtime, session, show_all, portfolio_scope, account_id)
     _refresh_transition_outcomes(runtime, investor_db_path)
@@ -2217,18 +2244,35 @@ def _build_regime_dashboard_payload(
                     logger.warning("Auto-retrain failed: %s", exc, exc_info=True)
     meta_scores: dict[str, float] = {}
     meta_results: dict[str, Any] = {}
-    if meta_labeler_active and callable(runtime.get("extract_meta_features")):
+    lstm_results: dict[str, Any] = {}
+    kalman_results: dict[str, Any] = {}
+    if callable(runtime.get("extract_meta_features")):
         for item in fitted_rows:
             try:
                 ticker_key = str(item["ticker"]).upper()
                 features = runtime["extract_meta_features"](item["regime_obj"].price_frame.iloc[-1])
-                ml_result = meta_labeler_engine.analyze(
-                    ticker=ticker_key,
-                    features=features,
-                    regime_result=item["regime_obj"],
-                )
-                meta_results[ticker_key] = ml_result
-                meta_scores[ticker_key] = float(getattr(ml_result, "confidence", 0.0) or 0.0)
+                if meta_labeler_active:
+                    ml_result = meta_labeler_engine.analyze(
+                        ticker=ticker_key,
+                        features=features,
+                        regime_result=item["regime_obj"],
+                    )
+                    meta_results[ticker_key] = ml_result
+                    meta_scores[ticker_key] = float(getattr(ml_result, "confidence", 0.0) or 0.0)
+                if registry:
+                    lstm_engine = registry.get("lstm_sequence")
+                    if lstm_engine is not None:
+                        lstm_results[ticker_key] = lstm_engine.analyze(
+                            ticker=ticker_key,
+                            features=features,
+                            regime_result=item["regime_obj"],
+                        )
+                    if kalman_analyst is not None:
+                        kalman_results[ticker_key] = kalman_analyst.analyze(
+                            ticker=ticker_key,
+                            features=features,
+                            regime_result=item["regime_obj"],
+                        )
             except Exception as exc:
                 logger.debug("Unable to compute meta-labeler score for %s.", item.get("ticker"), exc_info=exc)
     frontier_batch_size = max(1, int(frontier_batch_size or _DEFAULT_FRONTIER_BATCH_SIZE))
@@ -2317,6 +2361,8 @@ def _build_regime_dashboard_payload(
         qualitative, _fresh = frontier_results.get(ticker, (None, False))
         ticker_key = str(ticker).upper()
         ml_result = meta_results.get(ticker_key)
+        lstm_result = lstm_results.get(ticker_key)
+        kalman_result = kalman_results.get(ticker_key)
         meta_prob = meta_scores.get(ticker_key)
         frontier_panel = _frontier_panel(
             qualitative=qualitative,
@@ -2356,6 +2402,11 @@ def _build_regime_dashboard_payload(
             "meta_labeler_probability": round(float(meta_prob), 4) if meta_prob is not None else None,
             "meta_labeler_signal": str(getattr(ml_result, "signal", "") or "") if ml_result is not None else None,
             "meta_labeler_details": _json_ready(getattr(ml_result, "details", {}) or {}) if ml_result is not None else None,
+            "lstm_signal": str(getattr(lstm_result, "signal", "") or "") if lstm_result is not None else None,
+            "lstm_probability": round(float(getattr(lstm_result, "confidence", 0.0) or 0.0), 4) if lstm_result is not None else None,
+            "kalman_signal": str(getattr(kalman_result, "signal", "") or "") if kalman_result is not None else None,
+            "kalman_probability": round(float(getattr(kalman_result, "confidence", 0.0) or 0.0), 4) if kalman_result is not None else None,
+            "kalman_details": _json_ready(getattr(kalman_result, "details", {}) or {}) if kalman_result is not None else None,
             "thresholds_applied": _identify_threshold_path(
                 regime=regime.latest_label,
                 transition_risk=float(getattr(item["forward_signal"], "transition_risk", 0.0)),
@@ -2425,6 +2476,11 @@ def _build_regime_dashboard_payload(
                 "meta_labeler_probability": meta_prob,
                 "meta_labeler_signal": str(getattr(ml_result, "signal", "") or "") if ml_result is not None else None,
                 "meta_labeler_details": _json_ready(getattr(ml_result, "details", {}) or {}) if ml_result is not None else None,
+                "lstm_probability": float(getattr(lstm_result, "confidence", 0.0) or 0.0) if lstm_result is not None else None,
+                "lstm_signal": str(getattr(lstm_result, "signal", "") or "") if lstm_result is not None else None,
+                "kalman_probability": float(getattr(kalman_result, "confidence", 0.0) or 0.0) if kalman_result is not None else None,
+                "kalman_signal": str(getattr(kalman_result, "signal", "") or "") if kalman_result is not None else None,
+                "kalman_details": _json_ready(getattr(kalman_result, "details", {}) or {}) if kalman_result is not None else None,
                 "forward_curve_json": json.dumps(_json_ready(item["forward_curve"])),
                 "confidence_curve_json": json.dumps(item["confidence_points"]),
                 "sentiment_history_json": json.dumps(
@@ -2490,6 +2546,25 @@ def _build_regime_dashboard_payload(
 
     payload["recent_alerts"] = _fetch_recent_alerts(days=7)
     payload["unread_alert_count"] = len(payload["recent_alerts"])
+    if registry is not None:
+        analysts_payload: list[dict[str, Any]] = []
+        ready_count = 0
+        for analyst_name in ("xgboost_meta_labeler", "lstm_sequence", "kalman_filter"):
+            analyst = registry.get(analyst_name)
+            if analyst is None:
+                continue
+            ready = bool(callable(getattr(analyst, "is_ready", None)) and analyst.is_ready())
+            if ready:
+                ready_count += 1
+            analysts_payload.append(
+                {
+                    "name": analyst_name,
+                    "ready": ready,
+                    "status": "ready" if ready else "inactive",
+                }
+            )
+        payload["ensemble_status"]["analysts"] = analysts_payload
+        payload["ensemble_status"]["ready_count"] = ready_count
     payload["regime_exposure"], payload["total_market_value"] = _compute_regime_exposure(payload["rows"])
     payload["theme_health"] = _compute_theme_health(payload.get("themes") or [], payload["rows"])
     compute_position_size_fn = runtime.get("compute_position_size")
@@ -2955,6 +3030,7 @@ def _build_shell_context(
             "ibkr_status": "/regime/ibkr/status",
             "ibkr_live_unlock": "/regime/ibkr/live-unlock",
             "market_data_settings": "/regime/market-data/settings",
+            "market_data_test_macro": "/regime/market-data/test-macro",
             "frontier_models": "/regime/frontier/models",
             "frontier_settings": "/regime/frontier/settings",
             "ensemble_analysts": "/regime/ensemble/analysts",
@@ -2967,6 +3043,7 @@ def _build_shell_context(
             "backup_list": "/regime/backup/list",
             "recovery_run": "/regime/recovery/run",
             "data_validation": "/regime/data-validation",
+            "notification_preferences": "/regime/notifications/preferences",
         },
         "initial_payload": payload,
         "portfolio_scopes": get_available_portfolio_scopes(session) if session is not None else [],
@@ -3207,6 +3284,73 @@ async def regime_market_data_settings_update(
     except (ValueError, DataValidationError) as exc:
         raise HTTPException(status_code=422, detail=str(exc))
     return JSONResponse(content={"settings": settings, "saved": True})
+
+
+@router.get("/market-data/test-macro")
+def regime_market_data_test_macro(
+    symbol: str = "^VIX",
+    days: int = 365,
+    actor: str = Depends(require_actor),
+):
+    del actor
+    from src.regime.ibkr_market_data import IBKRMarketDataProvider, _resolve_macro_contract
+
+    normalized_symbol = str(symbol or "^VIX").strip().upper()
+    contract_info = _resolve_macro_contract(normalized_symbol)
+    if contract_info is None:
+        raise HTTPException(status_code=422, detail=f"Unsupported macro symbol: {normalized_symbol}")
+    provider = IBKRMarketDataProvider()
+    available = False
+    try:
+        available = bool(provider.is_available())
+    except Exception:
+        available = False
+    if not available:
+        return JSONResponse(
+            content={
+                "symbol": normalized_symbol,
+                "provider": "ibkr",
+                "connected": False,
+                "ok": False,
+                "rows": 0,
+                "sample": [],
+            }
+        )
+    end_date = dt.date.today()
+    start_date = end_date - dt.timedelta(days=max(5, int(days or 365)))
+    try:
+        frame = provider.fetch_index(
+            symbol=contract_info["symbol"],
+            start=start_date,
+            end=end_date,
+            exchange=contract_info["exchange"],
+            what_to_show=contract_info["what_to_show"],
+        )
+    except Exception as exc:
+        return JSONResponse(
+            content={
+                "symbol": normalized_symbol,
+                "provider": "ibkr",
+                "connected": True,
+                "ok": False,
+                "rows": 0,
+                "error": str(exc),
+                "sample": [],
+            }
+        )
+    sample = []
+    if frame is not None and not frame.empty:
+        sample = _json_ready(frame.tail(5).reset_index().to_dict(orient="records"))
+    return JSONResponse(
+        content={
+            "symbol": normalized_symbol,
+            "provider": "ibkr",
+            "connected": True,
+            "ok": bool(frame is not None and not frame.empty),
+            "rows": int(len(frame)) if frame is not None else 0,
+            "sample": sample,
+        }
+    )
 
 
 @router.get("/frontier/models")
@@ -3536,6 +3680,95 @@ def _train_meta_labeler_multi_sync(
     return result
 
 
+def _lstm_model_dir() -> Path:
+    base = Path(os.getenv("HMM_DATA_DIR") or (Path(__file__).resolve().parents[2] / "data" / "regime"))
+    target = base / "models"
+    target.mkdir(parents=True, exist_ok=True)
+    return target
+
+
+def _lstm_version_path(version: int) -> str:
+    return str(_lstm_model_dir() / f"lstm_analyst_v{int(version)}.json")
+
+
+def _next_lstm_version() -> int:
+    versions = []
+    for path in _lstm_model_dir().glob("lstm_analyst_v*.json"):
+        match = re.search(r"v(\d+)\.json$", path.name)
+        if match:
+            versions.append(int(match.group(1)))
+    return max(versions, default=0) + 1
+
+
+def _lstm_config_from_request(body: dict[str, Any]) -> Any:
+    from src.regime.analysts import LSTMConfig
+
+    base = LSTMConfig()
+    return LSTMConfig(
+        input_size=base.input_size,
+        hidden_size=int(body.get("hidden_size", base.hidden_size) or base.hidden_size),
+        num_layers=int(body.get("num_layers", base.num_layers) or base.num_layers),
+        dropout=float(body.get("dropout", base.dropout) or base.dropout),
+        sequence_length=int(body.get("sequence_length", base.sequence_length) or base.sequence_length),
+        prediction_horizon=int(body.get("prediction_horizon", base.prediction_horizon) or base.prediction_horizon),
+        learning_rate=float(body.get("learning_rate", base.learning_rate) or base.learning_rate),
+        epochs=int(body.get("epochs", base.epochs) or base.epochs),
+        batch_size=int(body.get("batch_size", base.batch_size) or base.batch_size),
+        min_training_samples=int(body.get("min_training_samples", base.min_training_samples) or base.min_training_samples),
+        random_state=int(body.get("random_state", base.random_state) or base.random_state),
+    )
+
+
+def _train_lstm_multi_sync(
+    runtime: dict[str, Any],
+    tickers: list[str],
+    *,
+    period: str = "3y",
+    training_window: int = 504,
+    refit_step: int = 21,
+    config: Any | None = None,
+) -> dict[str, Any]:
+    tickers = sorted(_parse_setting_tickers(tickers))
+    if not tickers:
+        raise DataValidationError("At least one ticker is required.")
+    pairs, skipped = _collect_meta_labeler_pairs(
+        runtime,
+        tickers,
+        period=period,
+        training_window=training_window,
+        refit_step=refit_step,
+    )
+    if not pairs:
+        raise DataValidationError("No tickers produced valid regime results.")
+    labeled_frame = runtime["build_multi_ticker_labeled_frame"](pairs)
+    registry = runtime["get_registry"]()
+    engine = registry.get("lstm_sequence")
+    if engine is None:
+        engine = runtime["LSTMSequenceAnalyst"](config or runtime["LSTMConfig"]())
+        registry.register(engine)
+    elif config is not None:
+        engine.__init__(config)
+    metrics = engine.train(labeled_frame)
+    result: dict[str, Any] = {
+        "tickers": tickers,
+        "tickers_used": [ticker for ticker, _ in pairs],
+        "tickers_skipped": skipped,
+        "combined_samples": int(len(labeled_frame)),
+        "metrics": metrics,
+        "ready": bool(engine.is_ready()),
+        "status": str(metrics.get("status") or ("trained" if engine.is_ready() else "not_ready")),
+    }
+    if engine.is_ready():
+        version = _next_lstm_version()
+        model_path = _lstm_version_path(version)
+        engine.save_model(model_path)
+        runtime["set_setting"]("lstm_active_version", str(version))
+        runtime["set_setting"]("lstm_last_trained_at", dt.datetime.now(dt.timezone.utc).isoformat())
+        result["version"] = version
+        result["model_path"] = model_path
+    return result
+
+
 @router.get("/ensemble/settings")
 def regime_ensemble_settings_get(
     session: Session = Depends(db_session),
@@ -3742,6 +3975,39 @@ async def regime_meta_labeler_train_multi(
             period=period,
             training_window=training_window,
             refit_step=refit_step,
+        )
+    except DataValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return JSONResponse(content=_json_ready(result))
+
+
+@router.post("/ensemble/lstm/train")
+async def regime_lstm_train(
+    request: Request,
+    session: Session = Depends(db_session),
+    actor: str = Depends(require_actor),
+):
+    del session, actor
+    runtime, runtime_error = _load_hmm_runtime()
+    if runtime is None:
+        raise HTTPException(status_code=503, detail=runtime_error or "Regime analytics unavailable.")
+    body = await request.json()
+    tickers = _parse_setting_tickers(body.get("tickers") or body.get("ticker") or [])
+    if not tickers:
+        raise HTTPException(status_code=400, detail="Tickers are required.")
+    period = str(body.get("period", "3y") or "3y")
+    training_window = int(body.get("training_window", 504) or 504)
+    refit_step = int(body.get("refit_step", 21) or 21)
+    config = _lstm_config_from_request(body)
+    try:
+        result = await asyncio.to_thread(
+            _train_lstm_multi_sync,
+            runtime,
+            tickers,
+            period=period,
+            training_window=training_window,
+            refit_step=refit_step,
+            config=config,
         )
     except DataValidationError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -5779,6 +6045,73 @@ def regime_alerts_acknowledge_all(
         raise HTTPException(status_code=503, detail=runtime_error or "Regime analytics are unavailable.")
     count = int(runtime["acknowledge_all_alerts"]())
     return JSONResponse(content={"acknowledged_count": count})
+
+
+@router.get("/notifications/preferences")
+def regime_notification_preferences_get(
+    session: Session = Depends(db_session),
+    actor: str = Depends(require_actor),
+):
+    del session, actor
+    runtime, runtime_error = _load_hmm_runtime()
+    if runtime is None:
+        raise HTTPException(status_code=503, detail=runtime_error or "Regime analytics are unavailable.")
+    return JSONResponse(content=_json_ready(runtime["notification_preferences_payload"]()))
+
+
+@router.put("/notifications/preferences")
+async def regime_notification_preferences_put(
+    request: Request,
+    session: Session = Depends(db_session),
+    actor: str = Depends(require_actor),
+):
+    del session, actor
+    runtime, runtime_error = _load_hmm_runtime()
+    if runtime is None:
+        raise HTTPException(status_code=503, detail=runtime_error or "Regime analytics are unavailable.")
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="Request body must be a JSON object.")
+    preferences = body.get("preferences", [])
+    settings = body.get("settings", {})
+    if not isinstance(preferences, list) or not isinstance(settings, dict):
+        raise HTTPException(status_code=400, detail="Invalid notification payload.")
+    for item in preferences:
+        if not isinstance(item, dict):
+            raise HTTPException(status_code=400, detail="Each preference must be an object.")
+        alert_type = str(item.get("alert_type") or "").strip()
+        channel = str(item.get("channel") or "").strip()
+        enabled = item.get("enabled")
+        if not isinstance(enabled, bool):
+            raise HTTPException(status_code=400, detail=f"enabled must be boolean for {alert_type}:{channel}")
+        if channel == "in_app" and enabled is False:
+            raise HTTPException(status_code=400, detail="in_app channel cannot be disabled.")
+        try:
+            runtime["set_notification_preference"](alert_type, channel, enabled)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    for key in ("quiet_hours_start", "quiet_hours_end"):
+        if key in settings and str(settings.get(key) or "").strip():
+            value = str(settings[key]).strip()
+            if not re.match(r"^\d{2}:\d{2}$", value):
+                raise HTTPException(status_code=400, detail=f"Invalid time format for {key}")
+            runtime["set_setting"](f"notify_{key}", value)
+    if "quiet_hours_tz" in settings:
+        tz_name = str(settings.get("quiet_hours_tz") or "").strip() or "America/New_York"
+        try:
+            ZoneInfo(tz_name)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail="Invalid timezone") from exc
+        runtime["set_setting"]("notify_quiet_hours_tz", tz_name)
+    if "digest_enabled" in settings:
+        digest_enabled = settings.get("digest_enabled")
+        if not isinstance(digest_enabled, bool):
+            raise HTTPException(status_code=400, detail="digest_enabled must be boolean")
+        runtime["set_setting"]("notify_digest_enabled", "true" if digest_enabled else "false")
+    return JSONResponse(content=_json_ready(runtime["notification_preferences_payload"]()))
 
 
 @router.get("/vix/status")

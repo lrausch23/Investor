@@ -79,6 +79,7 @@
     expandedDiagnosticsTicker: null,
     frontierSettings: null,
     marketDataSettings: null,
+    notificationPreferences: null,
     ensembleWeights: null,
   };
 
@@ -3605,8 +3606,21 @@
         benchmark_enabled: { cache: true, ibkr: true, stooq: true, yahoo: false },
         momentum_provider_order: ["ibkr", "stooq", "finnhub"],
         momentum_enabled: { ibkr: true, stooq: true, finnhub: true },
+        regime_provider_order: ["ibkr", "yfinance"],
+        regime_enabled: { ibkr: true, yfinance: true },
       },
       ibkr_connected: false,
+    };
+    const notificationPrefs = state.notificationPreferences || {
+      preferences: [],
+      settings: {
+        quiet_hours_start: "",
+        quiet_hours_end: "",
+        quiet_hours_tz: "America/New_York",
+        digest_enabled: false,
+        email_configured: false,
+        slack_configured: false,
+      },
     };
     const mode = String(autonomy.operating_mode || "manual");
     const modeBadge = mode === "autonomous" ? "ui-badge ui-badge--safe" : mode === "semi_auto" ? "ui-badge ui-badge--warn" : "ui-badge ui-badge--neutral";
@@ -3716,9 +3730,76 @@
                   <div style="font-weight:600; margin-bottom:8px">Momentum</div>
                   ${renderProviderRows("momentum", marketData.settings.momentum_provider_order || ["ibkr", "stooq", "finnhub"], marketData.settings.momentum_enabled || {})}
                 </div>
+                <div>
+                  <div style="font-weight:600; margin-bottom:8px">Regime Pipeline</div>
+                  ${renderProviderRows("regime", marketData.settings.regime_provider_order || ["ibkr", "yfinance"], marketData.settings.regime_enabled || {})}
+                </div>
+                <div>
+                  <div style="font-weight:600; margin-bottom:8px">Macro Provider Test</div>
+                  <div class="ui-muted">Validate VIX / 10Y fetch through the shared IBKR market-data path.</div>
+                  <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:10px">
+                    <button class="btn btn--secondary" type="button" id="regimeTestMacroVix">Test ^VIX</button>
+                    <button class="btn btn--secondary" type="button" id="regimeTestMacroTnx">Test ^TNX</button>
+                  </div>
+                </div>
               </div>
               <div class="ui-muted" style="margin-top:8px">Benchmark order must keep CACHE first.</div>
               <button class="btn btn--secondary" type="button" id="regimeMarketDataSave" style="margin-top:10px">Save Market Data Settings</button>
+            </div>
+            <div style="border:1px solid ${COLORS.border}; border-radius:10px; padding:10px; margin-top:10px">
+              <div class="table-toolbar">
+                <div>
+                  <div style="font-weight:600">Notifications</div>
+                  <div class="ui-muted">Configure per-alert email/slack routing, quiet hours, and digest mode.</div>
+                </div>
+                <div style="display:flex; gap:8px; flex-wrap:wrap">
+                  <span class="${notificationPrefs.settings.email_configured ? "ui-badge ui-badge--safe" : "ui-badge ui-badge--neutral"}">Email ${notificationPrefs.settings.email_configured ? "ready" : "not configured"}</span>
+                  <span class="${notificationPrefs.settings.slack_configured ? "ui-badge ui-badge--safe" : "ui-badge ui-badge--neutral"}">Slack ${notificationPrefs.settings.slack_configured ? "ready" : "not configured"}</span>
+                </div>
+              </div>
+              <div style="display:grid; grid-template-columns:repeat(4, minmax(0, 1fr)); gap:8px; margin-top:10px">
+                <label>
+                  Quiet start
+                  <input id="regimeNotifyQuietStart" type="time" value="${escapeHtml(notificationPrefs.settings.quiet_hours_start || "")}" />
+                </label>
+                <label>
+                  Quiet end
+                  <input id="regimeNotifyQuietEnd" type="time" value="${escapeHtml(notificationPrefs.settings.quiet_hours_end || "")}" />
+                </label>
+                <label>
+                  Timezone
+                  <input id="regimeNotifyQuietTz" type="text" value="${escapeHtml(notificationPrefs.settings.quiet_hours_tz || "America/New_York")}" />
+                </label>
+                <label style="display:flex; gap:8px; align-items:center; margin-top:22px">
+                  <input id="regimeNotifyDigestEnabled" type="checkbox" ${notificationPrefs.settings.digest_enabled ? "checked" : ""} />
+                  <span>Digest non-critical email alerts</span>
+                </label>
+              </div>
+              <div style="margin-top:12px; overflow:auto">
+                <table class="report-table">
+                  <thead>
+                    <tr><th>Alert Type</th><th>In-App</th><th>Email</th><th>Slack</th></tr>
+                  </thead>
+                  <tbody>
+                    ${Array.isArray(notificationPrefs.preferences) && notificationPrefs.preferences.length
+                      ? Object.entries((notificationPrefs.preferences || []).reduce((acc, row) => {
+                          const key = String(row.alert_type || "");
+                          if (!acc[key]) acc[key] = {};
+                          acc[key][String(row.channel || "")] = !!row.enabled;
+                          return acc;
+                        }, {})).map(([alertType, channels]) => `
+                          <tr data-notify-alert-type="${escapeHtml(alertType)}">
+                            <td>${escapeHtml(alertType)}</td>
+                            <td><input type="checkbox" checked disabled /></td>
+                            <td><input type="checkbox" data-notify-channel="email" ${channels.email ? "checked" : ""} /></td>
+                            <td><input type="checkbox" data-notify-channel="slack" ${channels.slack ? "checked" : ""} /></td>
+                          </tr>
+                        `).join("")
+                      : '<tr><td colspan="4" class="ui-muted">Notification preferences unavailable.</td></tr>'}
+                  </tbody>
+                </table>
+              </div>
+              <button class="btn btn--secondary" type="button" id="regimeNotificationSave" style="margin-top:10px">Save Notification Settings</button>
             </div>
           ` : ""}
         </div>
@@ -3861,7 +3942,7 @@
       button.addEventListener("click", () => {
         const [scope, provider, direction] = String(button.getAttribute("data-provider-move") || "").split(":");
         const settings = JSON.parse(JSON.stringify((state.marketDataSettings && state.marketDataSettings.settings) || marketData.settings));
-        const key = scope === "benchmark" ? "benchmark_provider_order" : "momentum_provider_order";
+        const key = scope === "benchmark" ? "benchmark_provider_order" : scope === "momentum" ? "momentum_provider_order" : "regime_provider_order";
         const order = Array.isArray(settings[key]) ? settings[key].slice() : [];
         const index = order.indexOf(provider);
         if (index < 0) return;
@@ -3877,7 +3958,7 @@
       checkbox.addEventListener("change", () => {
         const [scope, provider] = String(checkbox.getAttribute("data-provider-toggle") || "").split(":");
         const settings = JSON.parse(JSON.stringify((state.marketDataSettings && state.marketDataSettings.settings) || marketData.settings));
-        const key = scope === "benchmark" ? "benchmark_enabled" : "momentum_enabled";
+        const key = scope === "benchmark" ? "benchmark_enabled" : scope === "momentum" ? "momentum_enabled" : "regime_enabled";
         settings[key] = { ...(settings[key] || {}), [provider]: checkbox.checked };
         if (provider === "cache") settings[key][provider] = true;
         state.marketDataSettings = { ...(state.marketDataSettings || marketData), settings };
@@ -3899,6 +3980,54 @@
           renderPaperPortfolioSection();
         } catch (error) {
           showToast(`Unable to save market data settings: ${error.message || error}`, "error");
+        }
+      });
+    }
+    const macroTester = async (symbol) => {
+      if (!state.config?.endpoints?.market_data_test_macro) return;
+      try {
+        const response = await fetch(`${state.config.endpoints.market_data_test_macro}?symbol=${encodeURIComponent(symbol)}`, { headers: { Accept: "application/json" } });
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.detail || `Macro test failed (${response.status})`);
+        showToast(payload.ok ? `${symbol} macro data ok (${payload.rows || 0} rows).` : `${symbol} unavailable: ${payload.error || "provider offline"}`, payload.ok ? "success" : "warning");
+      } catch (error) {
+        showToast(`Unable to test ${symbol}: ${error.message || error}`, "error");
+      }
+    };
+    const testVix = byId("regimeTestMacroVix");
+    if (testVix) testVix.addEventListener("click", () => macroTester("^VIX"));
+    const testTnx = byId("regimeTestMacroTnx");
+    if (testTnx) testTnx.addEventListener("click", () => macroTester("^TNX"));
+    const notificationSave = byId("regimeNotificationSave");
+    if (notificationSave && state.config?.endpoints?.notification_preferences) {
+      notificationSave.addEventListener("click", async () => {
+        try {
+          const preferences = [];
+          mount.querySelectorAll("[data-notify-alert-type]").forEach((row) => {
+            const alertType = String(row.getAttribute("data-notify-alert-type") || "");
+            preferences.push({ alert_type: alertType, channel: "email", enabled: !!row.querySelector('[data-notify-channel="email"]')?.checked });
+            preferences.push({ alert_type: alertType, channel: "slack", enabled: !!row.querySelector('[data-notify-channel="slack"]')?.checked });
+          });
+          const response = await fetch(state.config.endpoints.notification_preferences, {
+            method: "PUT",
+            headers: { Accept: "application/json", "Content-Type": "application/json" },
+            body: JSON.stringify({
+              preferences,
+              settings: {
+                quiet_hours_start: byId("regimeNotifyQuietStart")?.value || "",
+                quiet_hours_end: byId("regimeNotifyQuietEnd")?.value || "",
+                quiet_hours_tz: byId("regimeNotifyQuietTz")?.value || "America/New_York",
+                digest_enabled: !!byId("regimeNotifyDigestEnabled")?.checked,
+              },
+            }),
+          });
+          const payload = await response.json();
+          if (!response.ok) throw new Error(payload.detail || `Notification settings failed (${response.status})`);
+          state.notificationPreferences = payload;
+          showToast("Saved notification settings.");
+          renderPaperPortfolioSection();
+        } catch (error) {
+          showToast(`Unable to save notification settings: ${error.message || error}`, "error");
         }
       });
     }
@@ -3958,11 +4087,12 @@
       return;
     }
     try {
-      const [detailResponse, autonomySettingsResponse, autonomyStatusResponse, marketDataSettingsResponse, budgetResponse, plansResponse, positionsResponse, taxLotsResponse, washSaleResponse, performanceResponse, auditResponse, precheckResponse, monitoringResponse, healthResponse, validationResponse, alertsResponse, alertHistoryResponse, vixResponse] = await Promise.all([
+      const [detailResponse, autonomySettingsResponse, autonomyStatusResponse, marketDataSettingsResponse, notificationPreferencesResponse, budgetResponse, plansResponse, positionsResponse, taxLotsResponse, washSaleResponse, performanceResponse, auditResponse, precheckResponse, monitoringResponse, healthResponse, validationResponse, alertsResponse, alertHistoryResponse, vixResponse] = await Promise.all([
         fetch(paperEndpoint("paper_portfolio", portfolioId), { headers: { Accept: "application/json" } }),
         fetch(state.config.endpoints.autonomy_settings, { headers: { Accept: "application/json" } }),
         fetch(paperEndpoint("paper_autonomy_status", portfolioId), { headers: { Accept: "application/json" } }),
         fetch(state.config.endpoints.market_data_settings, { headers: { Accept: "application/json" } }),
+        fetch(state.config.endpoints.notification_preferences, { headers: { Accept: "application/json" } }),
         fetch(paperEndpoint("paper_budget", portfolioId), { headers: { Accept: "application/json" } }),
         fetch(`${paperEndpoint("paper_plans", portfolioId)}?status=all`, { headers: { Accept: "application/json" } }),
         fetch(`${paperEndpoint("paper_positions", portfolioId)}?status=Open`, { headers: { Accept: "application/json" } }),
@@ -3985,11 +4115,12 @@
           return {};
         }
       };
-      const [detail, autonomySettings, autonomyStatus, marketDataSettings, budget, plans, positions, taxLots, washSale, performance, audit, precheck, monitoring, health, validation, alerts, alertHistory, vixStatus] = await Promise.all([
+      const [detail, autonomySettings, autonomyStatus, marketDataSettings, notificationPreferences, budget, plans, positions, taxLots, washSale, performance, audit, precheck, monitoring, health, validation, alerts, alertHistory, vixStatus] = await Promise.all([
         parseJson(detailResponse),
         parseJson(autonomySettingsResponse),
         parseJson(autonomyStatusResponse),
         parseJson(marketDataSettingsResponse),
+        parseJson(notificationPreferencesResponse),
         parseJson(budgetResponse),
         parseJson(plansResponse),
         parseJson(positionsResponse),
@@ -4030,6 +4161,11 @@
         state.marketDataSettings = marketDataSettings;
       } else {
         warnPanel("Market data settings", marketDataSettingsResponse, marketDataSettings);
+      }
+      if (notificationPreferencesResponse.ok) {
+        state.notificationPreferences = notificationPreferences;
+      } else {
+        warnPanel("Notification settings", notificationPreferencesResponse, notificationPreferences);
       }
       if (budgetResponse.ok) {
         state.paperBudget = budget;

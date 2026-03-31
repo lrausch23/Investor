@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import datetime as dt
 from datetime import datetime, timezone
 import logging
 
@@ -80,14 +81,60 @@ def _download_price_history(ticker: str, period: str, interval: str) -> tuple[st
     raise DataFetchError(f"No price history returned for {ticker}.")
 
 
+def _period_to_start_date(period: str, end_date: dt.date) -> dt.date:
+    normalized = str(period or "3y").strip().lower()
+    if normalized.endswith("y") and normalized[:-1].isdigit():
+        return end_date - dt.timedelta(days=int(normalized[:-1]) * 365)
+    if normalized.endswith("mo") and normalized[:-2].isdigit():
+        return end_date - dt.timedelta(days=int(normalized[:-2]) * 30)
+    if normalized.endswith("m") and normalized[:-1].isdigit():
+        return end_date - dt.timedelta(days=int(normalized[:-1]) * 30)
+    if normalized.endswith("d") and normalized[:-1].isdigit():
+        return end_date - dt.timedelta(days=int(normalized[:-1]))
+    return end_date - dt.timedelta(days=365 * 3)
+
+
 def _download_macro_inputs(index: pd.Index, period: str, interval: str) -> pd.DataFrame:
+    del interval
+    from .ibkr_market_data import IBKRMarketDataProvider, _resolve_macro_contract, apply_regime_provider_settings
+
+    provider_order, enabled = apply_regime_provider_settings()
     macro_columns = {"^VIX": "vix", "^TNX": "yield_10y"}
     series_map: dict[str, pd.Series] = {}
+    end_date = dt.date.today()
+    start_date = _period_to_start_date(period, end_date)
 
-    for symbol, series_name in macro_columns.items():
-        logger.debug("Downloading macro input %s for %s", symbol, series_name)
-        history = download_daily_bars(symbol, period=period, auto_adjust=False)
-        extracted = _extract_close_series(history, symbol, series_name)
+    for yf_symbol, series_name in macro_columns.items():
+        extracted = None
+        for provider_name in provider_order:
+            if not enabled.get(provider_name, False):
+                continue
+            try:
+                if provider_name == "ibkr":
+                    contract_info = _resolve_macro_contract(yf_symbol)
+                    if contract_info is None:
+                        continue
+                    provider = IBKRMarketDataProvider()
+                    if not provider.is_available():
+                        continue
+                    history = provider.fetch_index(
+                        symbol=contract_info["symbol"],
+                        start=start_date,
+                        end=end_date,
+                        exchange=contract_info["exchange"],
+                        what_to_show=contract_info["what_to_show"],
+                    )
+                    if history is not None and not history.empty:
+                        extracted = pd.Series(history["close"], copy=True).rename(series_name).astype(float)
+                elif provider_name == "yfinance":
+                    history = download_daily_bars(yf_symbol, period=period, auto_adjust=False)
+                    extracted = _extract_close_series(history, yf_symbol, series_name)
+                if extracted is not None:
+                    logger.info("Macro %s fetched from %s", series_name, provider_name)
+                    break
+            except Exception as exc:
+                logger.warning("Macro %s fetch from %s failed: %s", series_name, provider_name, exc)
+                continue
         if extracted is None:
             extracted = _empty_series(index, series_name, _DEFAULT_MACRO_VALUES[series_name])
         series_map[series_name] = extracted.reindex(index).ffill().bfill()

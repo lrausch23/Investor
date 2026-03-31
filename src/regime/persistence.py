@@ -56,6 +56,49 @@ DEFAULT_OPERATING_MODE = "manual"
 DEFAULT_AUTO_APPROVE_THRESHOLD = 0.65
 DEFAULT_DAILY_CAPITAL_CEILING_PCT = 0.25
 
+ALERT_TYPES = (
+    "regime_change",
+    "risk_spike",
+    "signal_change",
+    "stop_proximity",
+    "daily_loss_breach",
+    "meta_labeler_veto",
+    "vix_freeze",
+    "vix_resume",
+    "execution_error",
+    "connection_lost",
+    "connection_restored",
+    "drawdown_breach",
+    "concentration_breach",
+    "ml_accuracy_drift",
+    "capital_ceiling_breach",
+    "wash_sale_block",
+    "data_validation_failed",
+    "test",
+)
+
+NOTIFICATION_CHANNELS = ("in_app", "email", "slack")
+_NOTIFICATION_DEFAULT_MATRIX: dict[str, tuple[str, ...]] = {
+    "regime_change": ("in_app", "email", "slack"),
+    "risk_spike": ("in_app", "email", "slack"),
+    "daily_loss_breach": ("in_app", "email", "slack"),
+    "vix_freeze": ("in_app", "email", "slack"),
+    "vix_resume": ("in_app", "email", "slack"),
+    "execution_error": ("in_app", "email"),
+    "connection_lost": ("in_app", "email", "slack"),
+    "connection_restored": ("in_app",),
+    "meta_labeler_veto": ("in_app",),
+    "signal_change": ("in_app",),
+    "stop_proximity": ("in_app",),
+    "drawdown_breach": ("in_app", "email", "slack"),
+    "concentration_breach": ("in_app", "email"),
+    "ml_accuracy_drift": ("in_app", "email"),
+    "capital_ceiling_breach": ("in_app", "email"),
+    "wash_sale_block": ("in_app",),
+    "data_validation_failed": ("in_app", "email"),
+    "test": ("in_app", "email", "slack"),
+}
+
 
 def _ensure_column(conn: sqlite3.Connection, table: str, column: str, ddl: str) -> None:
     columns = {
@@ -110,6 +153,20 @@ def _create_alert_log_table(conn: sqlite3.Connection) -> None:
             acknowledged INTEGER NOT NULL DEFAULT 0,
             acknowledged_at TEXT,
             created_at TEXT NOT NULL
+        )
+        """
+    )
+
+
+def _create_notification_preferences_table(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS notification_preferences (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            alert_type TEXT NOT NULL,
+            channel TEXT NOT NULL CHECK (channel IN ('in_app', 'email', 'slack')),
+            enabled INTEGER NOT NULL DEFAULT 1,
+            UNIQUE(alert_type, channel)
         )
         """
     )
@@ -536,6 +593,7 @@ def _connect() -> sqlite3.Connection:
         """
     )
     _create_alert_log_table(conn)
+    _create_notification_preferences_table(conn)
     _create_paper_tax_lot_table(conn)
     _create_wash_sale_restricted_table(conn)
     conn.execute(
@@ -885,6 +943,81 @@ def delete_setting(key: str) -> bool:
     with _connect() as conn:
         cursor = conn.execute("DELETE FROM regime_settings WHERE key = ?", (str(key),))
         return bool(cursor.rowcount)
+
+
+def _seed_notification_preferences(conn: sqlite3.Connection) -> None:
+    existing = int(conn.execute("SELECT COUNT(*) FROM notification_preferences").fetchone()[0] or 0)
+    if existing:
+        return
+    rows: list[tuple[str, str, int]] = []
+    for alert_type in ALERT_TYPES:
+        enabled_channels = set(_NOTIFICATION_DEFAULT_MATRIX.get(alert_type, ("in_app",)))
+        for channel in NOTIFICATION_CHANNELS:
+            rows.append((alert_type, channel, 1 if channel in enabled_channels else 0))
+    conn.executemany(
+        """
+        INSERT INTO notification_preferences (alert_type, channel, enabled)
+        VALUES (?, ?, ?)
+        """,
+        rows,
+    )
+
+
+def get_notification_preferences() -> list[dict[str, Any]]:
+    with _connect() as conn:
+        _create_notification_preferences_table(conn)
+        _seed_notification_preferences(conn)
+        rows = conn.execute(
+            """
+            SELECT alert_type, channel, enabled
+            FROM notification_preferences
+            ORDER BY alert_type ASC, channel ASC
+            """
+        ).fetchall()
+    return [
+        {
+            "alert_type": str(row["alert_type"]),
+            "channel": str(row["channel"]),
+            "enabled": bool(int(row["enabled"] or 0)),
+        }
+        for row in rows
+    ]
+
+
+def set_notification_preference(alert_type: str, channel: str, enabled: bool) -> None:
+    normalized_type = str(alert_type or "").strip()
+    normalized_channel = str(channel or "").strip()
+    if normalized_type not in ALERT_TYPES:
+        raise ValueError(f"Unknown alert_type: {normalized_type}")
+    if normalized_channel not in NOTIFICATION_CHANNELS:
+        raise ValueError(f"Unknown channel: {normalized_channel}")
+    with _connect() as conn:
+        _create_notification_preferences_table(conn)
+        _seed_notification_preferences(conn)
+        conn.execute(
+            """
+            INSERT INTO notification_preferences (alert_type, channel, enabled)
+            VALUES (?, ?, ?)
+            ON CONFLICT(alert_type, channel) DO UPDATE SET
+                enabled = excluded.enabled
+            """,
+            (normalized_type, normalized_channel, 1 if enabled else 0),
+        )
+
+
+def get_channels_for_alert(alert_type: str) -> list[str]:
+    normalized_type = str(alert_type or "").strip()
+    if normalized_type not in ALERT_TYPES:
+        return ["in_app"]
+    rows = [
+        row
+        for row in get_notification_preferences()
+        if str(row["alert_type"]) == normalized_type and bool(row["enabled"])
+    ]
+    channels = [str(row["channel"]) for row in rows]
+    if "in_app" not in channels:
+        channels.insert(0, "in_app")
+    return channels
 
 
 def save_alert(

@@ -176,13 +176,15 @@ class PassthroughAnalyst(AnalystBase):
 
 _registry = AnalystRegistry()
 _registry.register(PassthroughAnalyst())
-from .analysts import KalmanFilterAnalyst, LSTMSequenceAnalyst
-
-_registry.register(LSTMSequenceAnalyst())
-_registry.register(KalmanFilterAnalyst())
 
 
 def get_registry() -> AnalystRegistry:
     """Return the global analyst registry."""
+    if _registry.get("lstm_sequence") is None or _registry.get("kalman_filter") is None:
+        from .analysts import KalmanFilterAnalyst, LSTMSequenceAnalyst
 
+        if _registry.get("lstm_sequence") is None:
+            _registry.register(LSTMSequenceAnalyst())
+        if _registry.get("kalman_filter") is None:
+            _registry.register(KalmanFilterAnalyst())
     return _registry
