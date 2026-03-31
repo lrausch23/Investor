@@ -85,6 +85,13 @@
     marketDataSettings: null,
     notificationPreferences: null,
     ensembleWeights: null,
+    stressTestScenarios: [],
+    stressTestHistory: [],
+    stressTestCurrent: null,
+    stressTestCalibrationCurrent: null,
+    stressTestActiveResultId: null,
+    stressTestActiveMode: null,
+    stressTestPollTimer: null,
   };
 
   function byId(id) {
@@ -1878,8 +1885,11 @@
     });
     savePref("activeTab", target);
     window.history.replaceState(null, "", `#${target}`);
-    if (target === "trading") loadIBKRSettings();
-    if (target === "analysis") loadEnsembleWeights().catch?.(() => {});
+    if (target === "trading") {
+      loadIBKRSettings();
+      loadStressTestBootstrap().catch(() => {});
+    }
+    if (target === "analysis") loadEnsembleWeights().catch(() => {});
   }
 
   function initTabs() {
@@ -3589,6 +3599,216 @@
     }
   }
 
+  function stopStressTestPolling() {
+    if (state.stressTestPollTimer) {
+      window.clearTimeout(state.stressTestPollTimer);
+      state.stressTestPollTimer = null;
+    }
+  }
+
+  function renderStressTickerTable(rows) {
+    const items = Array.isArray(rows) ? rows : [];
+    if (!items.length) {
+      return '<div class="ui-muted" style="margin-top:10px">No ticker-level results yet.</div>';
+    }
+    return `
+      <div class="table-wrap" style="margin-top:10px">
+        <table>
+          <thead>
+            <tr>
+              <th scope="col">Ticker</th>
+              <th scope="col" class="num">Return</th>
+              <th scope="col" class="num">Drawdown</th>
+              <th scope="col" class="num">Win Rate</th>
+              <th scope="col" class="num">Trades</th>
+              <th scope="col" class="num">Stop-Outs</th>
+              <th scope="col" class="num">Round Trips</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${items.map((row) => `
+              <tr>
+                <td>${escapeHtml(row.ticker || "")}</td>
+                <td class="num ui-tabular-nums ${Number(row.total_return || 0) >= 0 ? "cell-ok" : "cell-bad"}">${escapeHtml(formatSignedPct(row.total_return, 1))}</td>
+                <td class="num ui-tabular-nums cell-bad">${escapeHtml(formatSignedPct(row.max_drawdown, 1))}</td>
+                <td class="num ui-tabular-nums">${row.win_rate == null ? "—" : escapeHtml(formatSignedPct(row.win_rate, 1))}</td>
+                <td class="num ui-tabular-nums">${escapeHtml((row.trades || []).length)}</td>
+                <td class="num ui-tabular-nums">${escapeHtml(row.stop_outs || 0)}</td>
+                <td class="num ui-tabular-nums">${escapeHtml(row.round_trip_count || 0)}</td>
+              </tr>
+            `).join("")}
+          </tbody>
+        </table>
+      </div>
+    `;
+  }
+
+  function renderStressGuardrailTable(result) {
+    if (!result) return "";
+    const rows = [
+      ["Fundamental Gate", result.total_fundamental_vetoes || 0, "vetoes"],
+      ["Hurdle Rate", result.total_hurdle_vetoes || 0, "vetoes"],
+      ["Duration Gate", result.total_duration_vetoes || 0, "vetoes"],
+      ["Anti-Churn", result.total_churn_vetoes || 0, "vetoes"],
+      ["LTCG Override", result.total_ltcg_overrides || 0, "overrides"],
+    ];
+    return `
+      <div class="table-wrap" style="margin-top:10px">
+        <table>
+          <thead><tr><th scope="col">Guardrail</th><th scope="col" class="num">Count</th><th scope="col">Type</th></tr></thead>
+          <tbody>
+            ${rows.map((row) => `<tr><td>${escapeHtml(row[0])}</td><td class="num ui-tabular-nums">${escapeHtml(row[1])}</td><td>${escapeHtml(row[2])}</td></tr>`).join("")}
+          </tbody>
+        </table>
+      </div>
+    `;
+  }
+
+  function renderStressCalibrationTable(rows) {
+    const items = Array.isArray(rows) ? rows : [];
+    if (!items.length) {
+      return '<div class="ui-muted" style="margin-top:10px">No calibration results yet.</div>';
+    }
+    return `
+      <div class="table-wrap" style="margin-top:10px">
+        <table>
+          <thead>
+            <tr>
+              <th scope="col">Guardrail</th>
+              <th scope="col" class="num">Enabled Return</th>
+              <th scope="col" class="num">Disabled Return</th>
+              <th scope="col" class="num">Impact</th>
+              <th scope="col" class="num">Enabled DD</th>
+              <th scope="col" class="num">Disabled DD</th>
+              <th scope="col">Recommendation</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${items.map((row) => `
+              <tr>
+                <td>${escapeHtml(row.guardrail_name || "")}</td>
+                <td class="num ui-tabular-nums">${escapeHtml(formatSignedPct(row.enabled_return, 1))}</td>
+                <td class="num ui-tabular-nums">${escapeHtml(formatSignedPct(row.disabled_return, 1))}</td>
+                <td class="num ui-tabular-nums ${Number(row.impact_pct || 0) >= 0 ? "cell-ok" : "cell-bad"}">${escapeHtml(formatSignedPct(Number(row.impact_pct || 0) / 100, 1))}</td>
+                <td class="num ui-tabular-nums cell-bad">${escapeHtml(formatSignedPct(row.enabled_drawdown, 1))}</td>
+                <td class="num ui-tabular-nums cell-bad">${escapeHtml(formatSignedPct(row.disabled_drawdown, 1))}</td>
+                <td>${row.recommendation === "keep" ? '<span class="ui-badge ui-badge--safe">Keep</span>' : row.recommendation === "reduce" ? '<span class="ui-badge ui-badge--warn">Reduce</span>' : '<span class="ui-badge ui-badge--bad">Disable</span>'}</td>
+              </tr>
+            `).join("")}
+          </tbody>
+        </table>
+      </div>
+    `;
+  }
+
+  function renderStressHistory(rows) {
+    const items = Array.isArray(rows) ? rows : [];
+    if (!items.length) {
+      return '<div class="ui-muted" style="margin-top:10px">No prior stress-test runs saved.</div>';
+    }
+    return `
+      <details style="margin-top:12px">
+        <summary style="cursor:pointer; font-weight:600">History</summary>
+        <div class="table-wrap" style="margin-top:10px">
+          <table>
+            <thead><tr><th scope="col">Scenario</th><th scope="col">Run At</th><th scope="col">Status</th><th scope="col" class="num">Return</th></tr></thead>
+            <tbody>
+              ${items.map((row) => {
+                const result = row.result || {};
+                const label = String(row.scenario_id || "").replace("calibration__", "Calibration: ");
+                return `<tr>
+                  <td>${escapeHtml(label)}</td>
+                  <td>${escapeHtml(String(row.created_at || "").replace("T", " ").slice(0, 19))}</td>
+                  <td>${escapeHtml(row.status || "")}</td>
+                  <td class="num ui-tabular-nums">${result.portfolio_total_return == null ? "—" : escapeHtml(formatSignedPct(result.portfolio_total_return, 1))}</td>
+                </tr>`;
+              }).join("")}
+            </tbody>
+          </table>
+        </div>
+      </details>
+    `;
+  }
+
+  function renderStressTestingSection() {
+    const mount = byId("regimeStressTestMount");
+    if (!mount) return;
+    const scenarios = Array.isArray(state.stressTestScenarios) ? state.stressTestScenarios : [];
+    const selectedId = String((state.stressTestSelection && state.stressTestSelection.scenario_id) || (scenarios[0] && scenarios[0].scenario_id) || "");
+    const selected = scenarios.find((row) => String(row.scenario_id) === selectedId) || scenarios[0] || null;
+    const result = state.stressTestCurrent;
+    const calibration = state.stressTestCalibrationCurrent;
+    const running = state.stressTestActiveResultId != null;
+    mount.innerHTML = `
+      <div class="ui-card" style="padding:12px">
+        <div class="table-toolbar">
+          <div>
+            <div class="ui-section-title">Stress Testing</div>
+            <div class="ui-muted" style="margin-top:6px">Replay guardrail-gated behavior across crisis scenarios and calibrate the Phase 8-9 defaults.</div>
+          </div>
+          ${running ? `<span class="ui-badge ui-badge--warn">Running ${escapeHtml(state.stressTestActiveMode || "stress test")}…</span>` : ""}
+        </div>
+        <div style="display:grid; gap:10px; margin-top:12px">
+          <div style="display:grid; grid-template-columns:minmax(240px, 320px) 1fr; gap:10px">
+            <label style="display:grid; gap:4px">
+              <span class="ui-muted">Scenario</span>
+              <select id="regimeStressScenario">
+                ${scenarios.map((row) => `<option value="${escapeHtml(row.scenario_id)}" ${String(row.scenario_id) === selectedId ? "selected" : ""}>${escapeHtml(row.name)}</option>`).join("")}
+              </select>
+            </label>
+            <label style="display:grid; gap:4px">
+              <span class="ui-muted">Ticker Override</span>
+              <input id="regimeStressTickers" placeholder="Optional comma-separated tickers" value="${escapeHtml((state.stressTestSelection && state.stressTestSelection.tickers) || "")}">
+            </label>
+          </div>
+          ${selected ? `<div class="ui-muted">${escapeHtml(selected.description || "")} · ${escapeHtml(selected.start_date || "")} → ${escapeHtml(selected.end_date || "")} · default tickers ${escapeHtml((selected.tickers || []).join(", "))}</div>` : ""}
+          <div style="display:flex; gap:12px; flex-wrap:wrap">
+            <label><input type="checkbox" id="regimeStressFundamental" checked> Fundamental Gate</label>
+            <label><input type="checkbox" id="regimeStressHurdle" checked> Hurdle Rate</label>
+            <label><input type="checkbox" id="regimeStressDuration" checked> Duration Gate</label>
+            <label><input type="checkbox" id="regimeStressAntiChurn" checked> Anti-Churn</label>
+            <label><input type="checkbox" id="regimeStressLTCG" checked> LTCG Override</label>
+          </div>
+          <div style="display:flex; gap:8px; flex-wrap:wrap">
+            <button class="btn btn--secondary" type="button" id="regimeStressRun" ${running || !selected ? "disabled" : ""}>Run Stress Test</button>
+            <button class="btn btn--secondary" type="button" id="regimeStressCalibrate" ${running || !selected ? "disabled" : ""}>Run Calibration</button>
+          </div>
+          ${result ? `
+            <div style="display:grid; grid-template-columns:repeat(5, minmax(0, 1fr)); gap:10px; margin-top:4px">
+              <div class="ui-card" style="padding:10px"><div class="ui-muted">Portfolio Return</div><div style="font-weight:700">${escapeHtml(formatSignedPct(result.portfolio_total_return, 1))}</div></div>
+              <div class="ui-card" style="padding:10px"><div class="ui-muted">Max Drawdown</div><div style="font-weight:700">${escapeHtml(formatSignedPct(result.portfolio_max_drawdown, 1))}</div></div>
+              <div class="ui-card" style="padding:10px"><div class="ui-muted">Sharpe</div><div style="font-weight:700">${result.portfolio_sharpe == null ? "—" : escapeHtml(formatFixed(result.portfolio_sharpe, 2))}</div></div>
+              <div class="ui-card" style="padding:10px"><div class="ui-muted">Alpha vs Benchmark</div><div style="font-weight:700">${escapeHtml(formatSignedPct(result.alpha, 1))}</div></div>
+              <div class="ui-card" style="padding:10px"><div class="ui-muted">Net Return After Tax</div><div style="font-weight:700">${escapeHtml(formatSignedPct(result.net_portfolio_return_after_tax, 1))}</div></div>
+            </div>
+            ${renderStressTickerTable(result.ticker_results)}
+            ${renderStressGuardrailTable(result)}
+            <div class="ui-muted" style="margin-top:10px">LTCG shield: ${escapeHtml(result.total_ltcg_overrides || 0)} overrides · ${escapeHtml(result.total_ltcg_tax_savings == null ? "—" : formatCurrency(result.total_ltcg_tax_savings, 2))} estimated tax savings.</div>
+          ` : '<div class="ui-muted" style="margin-top:10px">No stress-test result loaded yet.</div>'}
+          ${calibration ? renderStressCalibrationTable(calibration) : ""}
+          ${renderStressHistory(state.stressTestHistory)}
+        </div>
+      </div>
+    `;
+    const scenarioSelect = byId("regimeStressScenario");
+    if (scenarioSelect) {
+      scenarioSelect.addEventListener("change", () => {
+        state.stressTestSelection = { ...(state.stressTestSelection || {}), scenario_id: String(scenarioSelect.value || "") };
+        renderStressTestingSection();
+      });
+    }
+    const tickerInput = byId("regimeStressTickers");
+    if (tickerInput) {
+      tickerInput.addEventListener("change", () => {
+        state.stressTestSelection = { ...(state.stressTestSelection || {}), tickers: String(tickerInput.value || "") };
+      });
+    }
+    const runBtn = byId("regimeStressRun");
+    if (runBtn) runBtn.addEventListener("click", () => startStressTestRun(false));
+    const calibrateBtn = byId("regimeStressCalibrate");
+    if (calibrateBtn) calibrateBtn.addEventListener("click", () => startStressTestRun(true));
+  }
+
   function renderAttributionTable(headers, rowsHtml, emptyText) {
     return `
       <div class="table-wrap" style="margin-top:10px">
@@ -4296,6 +4516,112 @@
     }
   }
 
+  async function loadStressTestBootstrap() {
+    if (!state.config || !state.config.endpoints || !state.config.endpoints.stress_test_scenarios) return;
+    try {
+      const [scenarioResponse, historyResponse] = await Promise.all([
+        fetch(state.config.endpoints.stress_test_scenarios, { headers: { Accept: "application/json" } }),
+        fetch(`${state.config.endpoints.stress_test_results}?limit=10`, { headers: { Accept: "application/json" } }),
+      ]);
+      const [scenarioPayload, historyPayload] = await Promise.all([scenarioResponse.json(), historyResponse.json()]);
+      if (scenarioResponse.ok) {
+        state.stressTestScenarios = Array.isArray(scenarioPayload.scenarios) ? scenarioPayload.scenarios : [];
+        if (!state.stressTestSelection && state.stressTestScenarios.length) {
+          state.stressTestSelection = { scenario_id: String(state.stressTestScenarios[0].scenario_id || ""), tickers: "" };
+        }
+      }
+      if (historyResponse.ok) {
+        state.stressTestHistory = Array.isArray(historyPayload.results) ? historyPayload.results : [];
+      }
+      renderStressTestingSection();
+    } catch (error) {
+      console.warn("Unable to load stress test bootstrap:", error);
+    }
+  }
+
+  async function pollStressTestResult(resultId, calibration = false) {
+    const endpoint = calibration
+      ? state.config.endpoints.stress_test_calibration.replace("__RESULT_ID__", encodeURIComponent(String(resultId)))
+      : state.config.endpoints.stress_test_result.replace("__RESULT_ID__", encodeURIComponent(String(resultId)));
+    try {
+      const response = await fetch(endpoint, { headers: { Accept: "application/json" } });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.detail || payload.error || `Stress test failed (${response.status})`);
+      if (String(payload.status || "") === "running") {
+        state.stressTestPollTimer = window.setTimeout(() => pollStressTestResult(resultId, calibration), 3000);
+        return;
+      }
+      stopStressTestPolling();
+      state.stressTestActiveResultId = null;
+      state.stressTestActiveMode = null;
+      if (String(payload.status || "") === "completed") {
+        if (calibration) {
+          state.stressTestCalibrationCurrent = Array.isArray(payload.result) ? payload.result : [];
+        } else {
+          state.stressTestCurrent = payload.result || null;
+        }
+        await loadStressTestBootstrap();
+        renderStressTestingSection();
+        return;
+      }
+      showToast(payload.error || "Stress test failed.", "error");
+      renderStressTestingSection();
+    } catch (error) {
+      stopStressTestPolling();
+      state.stressTestActiveResultId = null;
+      state.stressTestActiveMode = null;
+      showToast(`Unable to poll stress test: ${error.message || error}`, "error");
+      renderStressTestingSection();
+    }
+  }
+
+  async function startStressTestRun(calibration = false) {
+    if (!state.config || !state.config.endpoints) return;
+    const scenarioId = String((state.stressTestSelection && state.stressTestSelection.scenario_id) || "");
+    if (!scenarioId) {
+      showToast("Select a scenario first.", "error");
+      return;
+    }
+    const tickersRaw = String((state.stressTestSelection && state.stressTestSelection.tickers) || "");
+    const tickers = tickersRaw
+      .split(",")
+      .map((item) => item.trim().toUpperCase())
+      .filter(Boolean);
+    const endpoint = calibration ? state.config.endpoints.stress_test_calibrate : state.config.endpoints.stress_test_run;
+    const body = calibration
+      ? { scenario_id: scenarioId, ticker: tickers[0] || null }
+      : {
+        scenario_id: scenarioId,
+        tickers: tickers.length ? tickers : null,
+        fundamental_gate_enabled: !!(byId("regimeStressFundamental") && byId("regimeStressFundamental").checked),
+        hurdle_rate_enabled: !!(byId("regimeStressHurdle") && byId("regimeStressHurdle").checked),
+        duration_gate_enabled: !!(byId("regimeStressDuration") && byId("regimeStressDuration").checked),
+        anti_churn_enabled: !!(byId("regimeStressAntiChurn") && byId("regimeStressAntiChurn").checked),
+        ltcg_override_enabled: !!(byId("regimeStressLTCG") && byId("regimeStressLTCG").checked),
+      };
+    try {
+      const response = await fetch(endpoint, {
+        method: "POST",
+        headers: { Accept: "application/json", "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.detail || payload.error || `Stress test failed (${response.status})`);
+      state.stressTestActiveResultId = payload.result_id;
+      state.stressTestActiveMode = calibration ? "calibration" : "stress test";
+      if (calibration) {
+        state.stressTestCalibrationCurrent = null;
+      } else {
+        state.stressTestCurrent = null;
+      }
+      renderStressTestingSection();
+      stopStressTestPolling();
+      await pollStressTestResult(payload.result_id, calibration);
+    } catch (error) {
+      showToast(`Unable to start stress test: ${error.message || error}`, "error");
+    }
+  }
+
   async function refreshPaperPortfolio() {
     const portfolioId = currentPaperPortfolioId();
     renderPaperPortfolioSection();
@@ -4331,7 +4657,9 @@
       renderAlertHistory();
       renderVixStatus();
       renderMonitoringDashboard(null);
+      renderStressTestingSection();
       stopMonitoringPolling();
+      await loadStressTestBootstrap();
       return;
     }
     try {
@@ -4553,6 +4881,7 @@
       renderPaperPlans();
       renderPaperPositions();
       renderPaperPerformance();
+      renderStressTestingSection();
       renderAuditTrail();
       renderAlertToasts();
       renderAlertHistory();
@@ -4560,6 +4889,7 @@
       renderMonitoringDashboard(monitoring);
       maybeStartPaperOrderPolling();
       startMonitoringPolling();
+      await loadStressTestBootstrap();
     } catch (error) {
       showToast(`Unable to refresh paper trading data: ${error.message || error}`, "error");
     }

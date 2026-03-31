@@ -224,6 +224,22 @@ def _create_barrier_override_log_table(conn: sqlite3.Connection) -> None:
     )
 
 
+def _create_stress_test_result_table(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS stress_test_result (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            scenario_id TEXT NOT NULL,
+            config_json TEXT NOT NULL,
+            result_json TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            status TEXT NOT NULL DEFAULT 'completed'
+                CHECK(status IN ('running', 'completed', 'failed'))
+        )
+        """
+    )
+
+
 def _create_paper_trade_plan_table(conn: sqlite3.Connection) -> None:
     conn.execute(
         """
@@ -708,6 +724,7 @@ def _connect() -> sqlite3.Connection:
     _create_notification_preferences_table(conn)
     _create_paper_tax_lot_table(conn)
     _create_wash_sale_restricted_table(conn)
+    _create_stress_test_result_table(conn)
     conn.execute(
         """
         CREATE INDEX IF NOT EXISTS ix_alert_log_created
@@ -961,6 +978,76 @@ def get_setting(key: str) -> str | None:
         if row is None:
             return None
         return str(row["value"])
+
+
+def save_stress_test_result(
+    scenario_id: str,
+    config_json: str,
+    result_json: str,
+    status: str = "completed",
+) -> int:
+    normalized_status = str(status or "completed").strip().lower()
+    if normalized_status not in {"running", "completed", "failed"}:
+        raise DataValidationError("Invalid stress test status.")
+    with _connect() as conn:
+        cursor = conn.execute(
+            """
+            INSERT INTO stress_test_result (scenario_id, config_json, result_json, status)
+            VALUES (?, ?, ?, ?)
+            """,
+            (
+                str(scenario_id or ""),
+                str(config_json or "{}"),
+                str(result_json or "{}"),
+                normalized_status,
+            ),
+        )
+        return int(cursor.lastrowid)
+
+
+def get_stress_test_results(scenario_id: str | None = None, limit: int = 20) -> list[dict[str, Any]]:
+    query = "SELECT * FROM stress_test_result"
+    params: list[Any] = []
+    if scenario_id:
+        query += " WHERE scenario_id = ?"
+        params.append(str(scenario_id))
+    query += " ORDER BY id DESC LIMIT ?"
+    params.append(max(1, int(limit)))
+    with _connect() as conn:
+        rows = conn.execute(query, params).fetchall()
+    return [dict(row) for row in rows]
+
+
+def get_stress_test_result_by_id(result_id: int) -> dict[str, Any] | None:
+    with _connect() as conn:
+        row = conn.execute("SELECT * FROM stress_test_result WHERE id = ?", (int(result_id),)).fetchone()
+    return dict(row) if row else None
+
+
+def mark_stress_test_status(
+    result_id: int,
+    status: str,
+    *,
+    result_json: str | None = None,
+    config_json: str | None = None,
+) -> None:
+    normalized_status = str(status or "").strip().lower()
+    if normalized_status not in {"running", "completed", "failed"}:
+        raise DataValidationError("Invalid stress test status.")
+    updates = ["status = ?"]
+    params: list[Any] = [normalized_status]
+    if result_json is not None:
+        updates.append("result_json = ?")
+        params.append(str(result_json))
+    if config_json is not None:
+        updates.append("config_json = ?")
+        params.append(str(config_json))
+    params.append(int(result_id))
+    with _connect() as conn:
+        conn.execute(
+            f"UPDATE stress_test_result SET {', '.join(updates)} WHERE id = ?",
+            params,
+        )
 
 
 def get_operating_mode() -> str:

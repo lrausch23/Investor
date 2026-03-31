@@ -56,6 +56,7 @@ _JOBS_LOCK = threading.Lock()
 _DISCOVERY_JOBS: dict[str, "DiscoveryJob"] = {}
 _DISCOVERY_JOBS_LOCK = threading.Lock()
 _EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="regime-analysis")
+_STRESS_TEST_TASKS: dict[int, asyncio.Task[Any]] = {}
 _APP_STARTED_AT = time.time()
 
 
@@ -638,6 +639,54 @@ def _signal_class(action: str) -> str:
     if action in {"Strong Sell", "Sell"}:
         return "cell-bad"
     return ""
+
+
+def _stress_result_payload(row: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not row:
+        return None
+    payload = dict(row)
+    for key in ("config_json", "result_json"):
+        raw = payload.get(key)
+        if isinstance(raw, str) and raw.strip():
+            try:
+                payload[key[:-5]] = json.loads(raw)
+            except json.JSONDecodeError:
+                payload[key[:-5]] = {}
+        else:
+            payload[key[:-5]] = {}
+    return payload
+
+
+async def _run_stress_test_job(result_id: int, *, config: dict[str, Any], calibration: bool = False) -> None:
+    from src.regime.calibration import run_guardrail_calibration
+    from src.regime.persistence import mark_stress_test_status
+    from src.regime.stress_test import StressTestConfig, run_stress_test
+
+    try:
+        if calibration:
+            result = await asyncio.to_thread(
+                run_guardrail_calibration,
+                str(config.get("scenario_id") or ""),
+                str(config.get("ticker")) if config.get("ticker") else None,
+            )
+        else:
+            result = await asyncio.to_thread(run_stress_test, StressTestConfig(**config))
+        mark_stress_test_status(
+            int(result_id),
+            "completed",
+            result_json=json.dumps(_json_ready(result)),
+            config_json=json.dumps(_json_ready(config)),
+        )
+    except Exception as exc:
+        logger.exception("Stress test job %s failed", result_id)
+        mark_stress_test_status(
+            int(result_id),
+            "failed",
+            result_json=json.dumps({"error": str(exc)}),
+            config_json=json.dumps(_json_ready(config)),
+        )
+    finally:
+        _STRESS_TEST_TASKS.pop(int(result_id), None)
 
 
 def _regime_class(label: str) -> str:
@@ -3011,6 +3060,12 @@ def _build_shell_context(
             "digest": "/regime/digest",
             "effectiveness": "/regime/effectiveness",
             "backtest": "/regime/backtest/__TICKER__",
+            "stress_test_scenarios": "/regime/stress-test/scenarios",
+            "stress_test_run": "/regime/stress-test/run",
+            "stress_test_result": "/regime/stress-test/result/__RESULT_ID__",
+            "stress_test_results": "/regime/stress-test/results",
+            "stress_test_calibrate": "/regime/stress-test/calibrate",
+            "stress_test_calibration": "/regime/stress-test/calibration/__RESULT_ID__",
             "alerts": "/regime/alerts",
             "alert_acknowledge": "/regime/alerts/__ALERT_ID__/acknowledge",
             "alerts_acknowledge_all": "/regime/alerts/acknowledge-all",
@@ -6596,6 +6651,182 @@ def regime_backtest(
     payload = {"ticker": ticker.upper(), "period": period, "result": result, "comparison": comparison}
     save_backtest_cache(ticker, period, payload)
     return JSONResponse(content={"ticker": ticker.upper(), "period": period, "cached": False, **payload})
+
+
+@router.get("/stress-test/scenarios")
+def regime_stress_test_scenarios(
+    session: Session = Depends(db_session),
+    actor: str = Depends(require_actor),
+):
+    del session, actor
+    from src.regime.scenarios import list_scenarios
+
+    return JSONResponse(content={"scenarios": _json_ready(list_scenarios())})
+
+
+@router.post("/stress-test/run")
+async def regime_stress_test_run(
+    request: Request,
+    session: Session = Depends(db_session),
+    actor: str = Depends(require_actor),
+):
+    del session, actor
+    from src.regime.persistence import save_stress_test_result
+    from src.regime.scenarios import get_scenario
+    from src.regime.stress_test import StressTestConfig
+
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="Request body must be a JSON object.")
+    scenario_id = str(body.get("scenario_id") or "").strip()
+    if not scenario_id:
+        raise HTTPException(status_code=400, detail="scenario_id is required.")
+    try:
+        scenario = get_scenario(scenario_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    tickers = body.get("tickers")
+    if tickers is not None and not isinstance(tickers, list):
+        raise HTTPException(status_code=400, detail="tickers must be null or a list.")
+    config = StressTestConfig(
+        scenario_id=scenario.scenario_id,
+        tickers=[str(item).upper() for item in tickers] if isinstance(tickers, list) and tickers else None,
+        fundamental_gate_enabled=bool(body.get("fundamental_gate_enabled", True)),
+        hurdle_rate_enabled=bool(body.get("hurdle_rate_enabled", True)),
+        duration_gate_enabled=bool(body.get("duration_gate_enabled", True)),
+        anti_churn_enabled=bool(body.get("anti_churn_enabled", True)),
+        ltcg_override_enabled=bool(body.get("ltcg_override_enabled", True)),
+    )
+    config_payload = _json_ready(config)
+    result_id = save_stress_test_result(
+        scenario.scenario_id,
+        json.dumps(config_payload),
+        json.dumps({}),
+        status="running",
+    )
+    task = asyncio.create_task(_run_stress_test_job(result_id, config=config_payload, calibration=False))
+    _STRESS_TEST_TASKS[result_id] = task
+    return JSONResponse(content={"result_id": int(result_id), "status": "running"})
+
+
+@router.get("/stress-test/result/{result_id}")
+def regime_stress_test_result(
+    result_id: int,
+    session: Session = Depends(db_session),
+    actor: str = Depends(require_actor),
+):
+    del session, actor
+    from src.regime.persistence import get_stress_test_result_by_id
+
+    row = _stress_result_payload(get_stress_test_result_by_id(int(result_id)))
+    if row is None:
+        raise HTTPException(status_code=404, detail="Stress test result not found.")
+    status = str(row.get("status") or "")
+    if status == "running":
+        return JSONResponse(content={"result_id": int(result_id), "status": "running"})
+    if status == "failed":
+        result_payload = row.get("result") if isinstance(row.get("result"), dict) else {}
+        return JSONResponse(
+            content={
+                "result_id": int(result_id),
+                "status": "failed",
+                "error": str(result_payload.get("error") or "Stress test failed."),
+            }
+        )
+    return JSONResponse(
+        content={
+            "result_id": int(result_id),
+            "status": "completed",
+            "result": _json_ready(row.get("result") or {}),
+        }
+    )
+
+
+@router.get("/stress-test/results")
+def regime_stress_test_results(
+    scenario_id: str | None = None,
+    limit: int = 20,
+    session: Session = Depends(db_session),
+    actor: str = Depends(require_actor),
+):
+    del session, actor
+    from src.regime.persistence import get_stress_test_results
+
+    rows = [_stress_result_payload(row) for row in get_stress_test_results(scenario_id=scenario_id, limit=max(1, min(int(limit), 100)))]
+    return JSONResponse(content={"results": _json_ready([row for row in rows if row is not None])})
+
+
+@router.post("/stress-test/calibrate")
+async def regime_stress_test_calibrate(
+    request: Request,
+    session: Session = Depends(db_session),
+    actor: str = Depends(require_actor),
+):
+    del session, actor
+    from src.regime.persistence import save_stress_test_result
+    from src.regime.scenarios import get_scenario
+
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="Request body must be a JSON object.")
+    scenario_id = str(body.get("scenario_id") or "").strip()
+    if not scenario_id:
+        raise HTTPException(status_code=400, detail="scenario_id is required.")
+    try:
+        scenario = get_scenario(scenario_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    ticker = str(body.get("ticker") or "").strip().upper() or None
+    config_payload = {"scenario_id": scenario.scenario_id, "ticker": ticker}
+    storage_scenario_id = f"calibration__{scenario.scenario_id}"
+    result_id = save_stress_test_result(
+        storage_scenario_id,
+        json.dumps(config_payload),
+        json.dumps({}),
+        status="running",
+    )
+    task = asyncio.create_task(_run_stress_test_job(result_id, config=config_payload, calibration=True))
+    _STRESS_TEST_TASKS[result_id] = task
+    return JSONResponse(content={"result_id": int(result_id), "status": "running"})
+
+
+@router.get("/stress-test/calibration/{result_id}")
+def regime_stress_test_calibration_result(
+    result_id: int,
+    session: Session = Depends(db_session),
+    actor: str = Depends(require_actor),
+):
+    del session, actor
+    from src.regime.persistence import get_stress_test_result_by_id
+
+    row = _stress_result_payload(get_stress_test_result_by_id(int(result_id)))
+    if row is None:
+        raise HTTPException(status_code=404, detail="Calibration result not found.")
+    status = str(row.get("status") or "")
+    if status == "running":
+        return JSONResponse(content={"result_id": int(result_id), "status": "running"})
+    if status == "failed":
+        result_payload = row.get("result") if isinstance(row.get("result"), dict) else {}
+        return JSONResponse(
+            content={
+                "result_id": int(result_id),
+                "status": "failed",
+                "error": str(result_payload.get("error") or "Calibration failed."),
+            }
+        )
+    return JSONResponse(
+        content={
+            "result_id": int(result_id),
+            "status": "completed",
+            "result": _json_ready(row.get("result") or []),
+        }
+    )
 
 
 @router.get("/alerts")
