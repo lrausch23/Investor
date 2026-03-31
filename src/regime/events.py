@@ -97,6 +97,78 @@ class SignalSnapshotEvent(BaseEvent):
     current_price: float = 0.0
 
 
+@dataclass(frozen=True)
+class AnalysisRequestEvent(BaseEvent):
+    """Trigger event for the agent topology analysis path."""
+
+    event_type: str = field(default="analysis_request", init=False)
+    tickers: tuple[str, ...] = ()
+    benchmark: str = ""
+    period: str = "3y"
+    requested_by: str = ""
+    source: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        payload = asdict(self)
+        payload["tickers"] = list(self.tickers)
+        return payload
+
+
+@dataclass(frozen=True)
+class FundamentalAssessmentEvent(BaseEvent):
+    """LLM qualitative assessment emitted from the fundamental agent."""
+
+    event_type: str = field(default="fundamental_assessment", init=False)
+    ticker: str = ""
+    regime_label: str = ""
+    verdict: str = ""
+    confidence_score: int | None = None
+    catalyst_sentiment: str = ""
+    vetoed: bool = False
+    veto_reason: str | None = None
+    source: str = ""
+    enriched_signal_id: str = ""
+    meta_labeler_score: float | None = None
+    details: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class TradeDecisionEvent(BaseEvent):
+    """Sizing and approval/veto decision from the portfolio agent."""
+
+    event_type: str = field(default="trade_decision", init=False)
+    ticker: str = ""
+    portfolio_id: int = 0
+    action: str = ""
+    decision: str = ""
+    quantity: float = 0.0
+    proposed_price: float | None = None
+    veto_reason: str | None = None
+    source: str = ""
+    regime_label: str = ""
+    meta_labeler_score: float | None = None
+    sizing_rationale: str | None = None
+    enriched_signal_id: str = ""
+
+
+@dataclass(frozen=True)
+class OrderExecutionEvent(BaseEvent):
+    """Fill or rejection result from the execution agent."""
+
+    event_type: str = field(default="order_execution", init=False)
+    ticker: str = ""
+    portfolio_id: int = 0
+    order_id: str = ""
+    action: str = ""
+    quantity: float = 0.0
+    status: str = ""
+    broker_type: str = ""
+    trade_decision_id: str = ""
+    filled_price: float | None = None
+    filled_at: str | None = None
+    message: str = ""
+
+
 def enriched_signal_from_payload(
     ticker: str,
     regime_result: Any,
@@ -110,6 +182,7 @@ def enriched_signal_from_payload(
     source: str = "regime_analysis",
     meta_labeler_score: float | None = None,
     volume: float | None = None,
+    correlation_id: str | None = None,
 ) -> EnrichedSignalEvent:
     """Bridge the existing signal pipeline dataclasses into an enriched event."""
 
@@ -124,6 +197,7 @@ def enriched_signal_from_payload(
     state_source = getattr(regime_result, "latest_state_vector", None)
     state_vector = tuple(float(value) for value in tuple(state_source)) if state_source is not None else ()
     return EnrichedSignalEvent(
+        correlation_id=str(correlation_id) if correlation_id else str(uuid.uuid4()),
         ticker=str(ticker or "").upper(),
         benchmark=str(benchmark or ""),
         snapshot_date=snapshot_date or dt.date.today().isoformat(),

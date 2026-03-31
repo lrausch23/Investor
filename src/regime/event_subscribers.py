@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 
-from .events import BaseEvent, EnrichedSignalEvent, TradeIntentEvent
+from .events import BaseEvent, EnrichedSignalEvent, OrderExecutionEvent, TradeDecisionEvent, TradeIntentEvent
 from .persistence import save_alert
 
 logger = logging.getLogger(__name__)
@@ -47,5 +47,43 @@ async def trade_intent_logger(event: BaseEvent) -> None:
         event.action,
         event.portfolio_id,
         event.source,
+        event.correlation_id[:8],
+    )
+
+
+async def trade_decision_subscriber(event: BaseEvent) -> None:
+    """Persist approved agent decisions as trade plans."""
+    from .persistence import create_trade_plan
+
+    if not isinstance(event, TradeDecisionEvent):
+        return
+    if event.decision != "approved":
+        return
+    try:
+        create_trade_plan(
+            portfolio_id=event.portfolio_id,
+            ticker=event.ticker,
+            action=event.action,
+            quantity=float(event.quantity or 0.0),
+            rationale=event.sizing_rationale or f"Agent decision: {event.decision}",
+            proposed_price=event.proposed_price,
+            regime_label=event.regime_label or None,
+            source="discovery" if str(event.action).lower() == "buy" else "exit_signal",
+            meta_labeler_score=event.meta_labeler_score,
+        )
+    except Exception as exc:
+        logger.error("trade_decision_subscriber: persistence failed: %s", exc)
+
+
+async def order_execution_logger(event: BaseEvent) -> None:
+    """Log execution outcomes for the agent pipeline."""
+    if not isinstance(event, OrderExecutionEvent):
+        return
+    logger.info(
+        "OrderExecutionEvent: ticker=%s action=%s status=%s price=%s corr=%s",
+        event.ticker,
+        event.action,
+        event.status,
+        event.filled_price,
         event.correlation_id[:8],
     )

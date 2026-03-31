@@ -110,9 +110,17 @@ def reset_event_bus() -> None:
 
 def register_default_subscribers(bus: AsyncEventBus | None = None) -> None:
     """Wire the built-in audit and logging subscribers."""
-    from .event_subscribers import audit_log_subscriber, enriched_signal_logger, trade_intent_logger
+    from .event_subscribers import (
+        audit_log_subscriber,
+        enriched_signal_logger,
+        order_execution_logger,
+        trade_decision_subscriber,
+        trade_intent_logger,
+    )
 
     active_bus = bus or get_event_bus()
     active_bus.subscribe("*", audit_log_subscriber)
     active_bus.subscribe("enriched_signal", enriched_signal_logger)
     active_bus.subscribe("trade_intent", trade_intent_logger)
+    active_bus.subscribe("trade_decision", trade_decision_subscriber)
+    active_bus.subscribe("order_execution", order_execution_logger)

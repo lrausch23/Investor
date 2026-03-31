@@ -2696,6 +2696,7 @@
     const validation = state.dataValidation || {};
     const model = health.model || {};
     const eventBus = health.event_bus || {};
+    const agentData = health.agents || {};
     const heartbeatAge = Number(health.heartbeat_age_seconds || 0);
     const heartbeatBadge = heartbeatAge <= 60
       ? "ui-badge ui-badge--safe"
@@ -2707,6 +2708,8 @@
       : connection.connected === false
         ? "Disconnected"
         : (connection.connection || "n/a");
+    const agentList = Array.isArray(agentData.agents) ? agentData.agents : [];
+    const enabledAgents = agentList.filter((agent) => agent && agent.enabled).length;
     if (badge) {
       badge.textContent = connection.market_hours || connectionText || "ready";
       badge.className = `ui-badge ${connection.connected === true || String(connection.market_hours || "").toLowerCase() === "regular" ? "ui-badge--safe" : "ui-badge--neutral"}`;
@@ -2746,6 +2749,7 @@
         <div class="ui-muted" style="margin-top:6px">Database size ${escapeHtml(formatFixed(Number(health.db_size_bytes || 0) / 1024 / 1024, 2))} MB · Model ${escapeHtml(model.active_version ? `ML Active v${model.active_version}` : "No model")}${model.last_trained_at ? ` · Trained ${escapeHtml(relativeTime(model.last_trained_at))}` : ""}</div>
         <div class="ui-muted" style="margin-top:6px">Last regime check ${escapeHtml(relativeTime(health.last_regime_check) || "never")} · Last plan generation ${escapeHtml(relativeTime(health.last_paper_plans) || "never")} · Heartbeat <span class="${heartbeatBadge}">${escapeHtml(health.heartbeat ? relativeTime(health.heartbeat) : "missing")}</span></div>
         <div class="ui-muted" style="margin-top:6px">Event Bus <span class="${eventBus.running ? "ui-badge ui-badge--safe" : "ui-badge ui-badge--bad"}">${escapeHtml(eventBus.running ? `Active (${eventBus.subscriber_count || 0} subscribers)` : "Stopped")}</span> · History ${escapeHtml(eventBus.history_size || 0)}</div>
+        <div class="ui-muted" style="margin-top:6px">Agents <span class="${agentList.length && enabledAgents === agentList.length ? "ui-badge ui-badge--safe" : agentList.length ? "ui-badge ui-badge--warn" : "ui-badge ui-badge--neutral"}">${escapeHtml(`${agentData.count || 0} registered · ${enabledAgents} enabled`)}</span>${agentList.length ? ` · ${escapeHtml(agentList.map((agent) => `${agent.name}${agent.enabled ? "" : " (disabled)"}`).join(", "))}` : ""}</div>
         <div class="ui-muted" style="margin-top:6px">Out-of-band watchdog: configure manually</div>
         ${Array.isArray((validation || {}).issues) && validation.issues.length ? `<div class="ui-muted" style="margin-top:8px">${escapeHtml(validation.issues.join(" | "))}</div>` : ""}
         <details style="margin-top:10px">

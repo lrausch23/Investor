@@ -75,6 +75,10 @@ ALERT_TYPES = (
     "wash_sale_block",
     "data_validation_failed",
     "bus_event",
+    "analysis_request",
+    "fundamental_assessment",
+    "trade_decision",
+    "order_execution",
     "test",
 )
 
@@ -98,6 +102,10 @@ _NOTIFICATION_DEFAULT_MATRIX: dict[str, tuple[str, ...]] = {
     "wash_sale_block": ("in_app",),
     "data_validation_failed": ("in_app", "email"),
     "bus_event": ("in_app",),
+    "analysis_request": ("in_app",),
+    "fundamental_assessment": ("in_app",),
+    "trade_decision": ("in_app",),
+    "order_execution": ("in_app",),
     "test": ("in_app", "email", "slack"),
 }
 

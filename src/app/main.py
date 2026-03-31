@@ -62,12 +62,25 @@ async def lifespan(app: FastAPI):
     init_db()
     try:
         from src.regime.event_bus import get_event_bus, register_default_subscribers
+        from src.regime.agents import get_agent_registry
+        from src.regime.agents.execution_agent import ExecutionAgent
+        from src.regime.agents.fundamental_agent import FundamentalAgent
+        from src.regime.agents.portfolio_agent import PortfolioTaxAgent
+        from src.regime.agents.quant_agent import QuantAgent
+        from src.app.routes.regime import _load_hmm_runtime
 
         bus = get_event_bus()
         register_default_subscribers(bus)
         logger.info("Event bus initialized with %d subscribers", bus.subscriber_count())
+        agent_registry = get_agent_registry()
+        runtime_loader = lambda: _load_hmm_runtime()
+        agent_registry.register(QuantAgent(bus, runtime_loader=runtime_loader))
+        agent_registry.register(FundamentalAgent(bus, runtime_loader=runtime_loader))
+        agent_registry.register(PortfolioTaxAgent(bus, runtime_loader=runtime_loader))
+        agent_registry.register(ExecutionAgent(bus, runtime_loader=runtime_loader))
+        logger.info("Agent topology initialized with %d agents", len(agent_registry.all_agents()))
     except Exception as exc:
-        logger.warning("Event bus startup skipped: %s", exc)
+        logger.warning("Event bus / agent startup skipped: %s", exc)
     try:
         from src.app.startup_checks import run_all_checks
 

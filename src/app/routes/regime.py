@@ -3063,6 +3063,7 @@ def _build_shell_context(
             "frontier_settings": "/regime/frontier/settings",
             "ensemble_analysts": "/regime/ensemble/analysts",
             "ensemble_weights": "/regime/ensemble/weights",
+            "agents_status": "/regime/agents/status",
             "autonomy_settings": "/regime/autonomy/settings",
             "tax_settings": "/regime/tax-settings",
             "health": "/regime/health",
@@ -5710,6 +5711,7 @@ def regime_health(
         raise HTTPException(status_code=503, detail=runtime_error or "Regime analytics are unavailable.")
     from src.regime.backup import get_backup_status
     from src.regime.data_validator import check_database_health
+    from src.regime.agents import get_agent_registry
     from src.regime.event_bus import get_event_bus
     from src.regime.meta_labeler import list_saved_versions
     from src.regime.persistence import DB_PATH
@@ -5719,6 +5721,7 @@ def regime_health(
     db = check_database_health()
     backup = get_backup_status()
     bus = get_event_bus()
+    agent_registry = get_agent_registry()
     watchdog = get_watchdog()
     ibkr = None
     if "validate_ibkr_readiness" in runtime:
@@ -5798,10 +5801,30 @@ def regime_health(
                     "subscriber_count": bus.subscriber_count(),
                     "history_size": len(bus._history),
                 },
+                "agents": {
+                    "count": len(agent_registry.all_agents()),
+                    "agents": agent_registry.status(),
+                },
                 "active_alerts": active_alerts,
                 "stuck_orders": len(stuck_orders),
             }
         )
+    )
+
+
+@router.get("/agents/status")
+def regime_agents_status(
+    actor: str = Depends(require_actor),
+):
+    del actor
+    from src.regime.agents import get_agent_registry
+
+    registry = get_agent_registry()
+    return JSONResponse(
+        content={
+            "agent_count": len(registry.all_agents()),
+            "agents": registry.status(),
+        }
     )
 
 
