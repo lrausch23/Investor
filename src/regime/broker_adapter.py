@@ -41,6 +41,8 @@ class OrderRequest:
     stop_price: float | None = None
     time_in_force: str = "DAY"
     routing_strategy: str = ""
+    algo_strategy: str = ""
+    algo_params: dict[str, str] = field(default_factory=dict)
     theme_id: int | None = None
     role: str | None = None
     source: str = "manual"
@@ -203,6 +205,17 @@ class PaperBrokerAdapter(BrokerAdapter):
                 fill_price = limit_value
             elif str(order.action or "").lower() == "sell" and fill_price < limit_value:
                 fill_price = limit_value
+        if str(order.algo_strategy or "").strip():
+            if str(order.action or "").lower() == "buy":
+                fill_price *= 1.0005
+            else:
+                fill_price *= 0.9995
+            if normalized_order_type in {"limit", "marketable_limit"} and order.limit_price is not None:
+                limit_value = float(order.limit_price)
+                if str(order.action or "").lower() == "buy":
+                    fill_price = min(fill_price, limit_value)
+                else:
+                    fill_price = max(fill_price, limit_value)
 
         if str(order.action or "").lower() == "buy":
             total_cost = quantity * fill_price

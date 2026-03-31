@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -37,6 +37,19 @@ class RoutingDecision:
     adv: float | None
     adv_bucket: str
     urgency: str
+    algo_strategy: str = ""
+    algo_params: dict[str, str] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class AlgoDecision:
+    algo_strategy: str
+    algo_params: dict[str, str]
+    rationale: str
+    adv_pct: float
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -61,6 +74,9 @@ def get_routing_settings() -> dict[str, Any]:
         "adv_low_threshold": _float_setting("routing_adv_low_threshold", DEFAULT_ADV_LOW_THRESHOLD, min_value=1_000.0, max_value=100_000_000.0),
         "adv_lookback_days": int(_float_setting("routing_adv_lookback_days", float(DEFAULT_ADV_LOOKBACK_DAYS), min_value=5.0, max_value=90.0)),
         "price_improvement_pct": _float_setting("routing_price_improvement_pct", DEFAULT_PRICE_IMPROVEMENT_PCT, min_value=0.0, max_value=0.05),
+        "algo_adv_pct_threshold": _float_setting("routing_algo_adv_pct_threshold", 0.01, min_value=0.001, max_value=0.10),
+        "algo_max_volume_rate": _float_setting("routing_algo_max_volume_rate", 0.20, min_value=0.01, max_value=0.50),
+        "algo_enabled": str(get_setting("routing_algo_enabled") or "true").strip().lower() not in {"false", "0", "no", "off"},
     }
 
 
@@ -85,6 +101,18 @@ def set_routing_settings(settings: dict[str, Any]) -> dict[str, Any]:
         if value < 0:
             raise ValueError("price_improvement_pct must be non-negative")
         set_setting("routing_price_improvement_pct", str(value))
+    if "algo_adv_pct_threshold" in settings:
+        value = float(settings["algo_adv_pct_threshold"])
+        if value <= 0:
+            raise ValueError("algo_adv_pct_threshold must be positive")
+        set_setting("routing_algo_adv_pct_threshold", str(value))
+    if "algo_max_volume_rate" in settings:
+        value = float(settings["algo_max_volume_rate"])
+        if value <= 0:
+            raise ValueError("algo_max_volume_rate must be positive")
+        set_setting("routing_algo_max_volume_rate", str(value))
+    if "algo_enabled" in settings:
+        set_setting("routing_algo_enabled", "true" if settings["algo_enabled"] else "false")
     return get_routing_settings()
 
 
@@ -107,7 +135,7 @@ def compute_adv(ticker: str, lookback_days: int = 20) -> float | None:
         else:
             volumes = frame["Volume"].dropna().tail(max(1, int(lookback_days)))
             mean_value = volumes.mean() if not volumes.empty else None
-            if hasattr(mean_value, "iloc"):
+            if mean_value is not None and hasattr(mean_value, "iloc"):
                 mean_value = mean_value.iloc[0]
             value = float(mean_value) if mean_value is not None else None
     except Exception:
@@ -153,6 +181,107 @@ def _adv_bucket(adv: float | None, settings: dict[str, Any]) -> str:
     return "low_liquidity"
 
 
+def needs_algo_execution(
+    quantity: float,
+    adv: float | None,
+    *,
+    adv_pct_threshold: float = 0.01,
+) -> bool:
+    if adv is None or adv <= 0:
+        return False
+    return float(quantity or 0.0) > (float(adv) * float(adv_pct_threshold))
+
+
+def select_algo(
+    ticker: str,
+    action: str,
+    quantity: float,
+    adv: float | None,
+    *,
+    urgency: str = "normal",
+    adv_bucket: str = "unknown",
+    max_volume_rate: float = 0.20,
+    adv_pct_threshold: float = 0.01,
+) -> AlgoDecision:
+    del ticker, action
+    if not needs_algo_execution(quantity, adv, adv_pct_threshold=adv_pct_threshold):
+        return AlgoDecision(algo_strategy="", algo_params={}, rationale="Order below ADV threshold for algo execution", adv_pct=0.0 if not adv else float(quantity) / float(adv))
+    assert adv is not None
+    adv_pct = float(quantity) / float(adv)
+    capped_rate = float(max_volume_rate)
+    if adv_pct > 0.10:
+        capped_rate = min(capped_rate, 0.05)
+    elif adv_pct > 0.05:
+        capped_rate = min(capped_rate, 0.10)
+    normalized_urgency = str(urgency or "normal").lower()
+    if adv_bucket == "high_liquidity" and normalized_urgency in {"patient", "normal"}:
+        return AlgoDecision(
+            algo_strategy="VWAP",
+            algo_params={
+                "maxPctVol": f"{capped_rate:.2f}",
+                "startTime": "09:30:00 US/Eastern",
+                "endTime": "16:00:00 US/Eastern",
+                "allowPastEndTime": "1",
+                "noTakeLiq": "0",
+            },
+            rationale="Volume-weighted distribution for better average price in liquid name",
+            adv_pct=adv_pct,
+        )
+    return AlgoDecision(
+        algo_strategy="TWAP",
+        algo_params={
+            "strategyType": "Twap",
+            "startTime": "09:30:00 US/Eastern",
+            "endTime": "16:00:00 US/Eastern",
+            "allowPastEndTime": "1",
+            "maxPctVol": f"{capped_rate:.2f}",
+        },
+        rationale=(
+            "Uniform time distribution for minimal information leakage on urgent exit"
+            if adv_bucket == "high_liquidity" and normalized_urgency == "urgent"
+            else "Time-weighted distribution to minimize footprint"
+        ),
+        adv_pct=adv_pct,
+    )
+
+
+def _attach_algo(
+    decision: RoutingDecision,
+    *,
+    ticker: str,
+    action: str,
+    quantity: float,
+    adv: float | None,
+    settings: dict[str, Any],
+) -> RoutingDecision:
+    if not bool(settings.get("algo_enabled", True)):
+        return decision
+    algo = select_algo(
+        ticker=ticker,
+        action=action,
+        quantity=quantity,
+        adv=adv,
+        urgency=decision.urgency,
+        adv_bucket=decision.adv_bucket,
+        max_volume_rate=float(settings.get("algo_max_volume_rate", 0.20)),
+        adv_pct_threshold=float(settings.get("algo_adv_pct_threshold", 0.01)),
+    )
+    if not algo.algo_strategy:
+        return decision
+    return RoutingDecision(
+        order_type=decision.order_type,
+        time_in_force=decision.time_in_force,
+        limit_price=decision.limit_price,
+        strategy_name=f"{algo.algo_strategy} Algo ({decision.strategy_name})",
+        rationale=f"{decision.rationale}; {algo.rationale}",
+        adv=decision.adv,
+        adv_bucket=decision.adv_bucket,
+        urgency=decision.urgency,
+        algo_strategy=algo.algo_strategy,
+        algo_params=algo.algo_params,
+    )
+
+
 def decide_routing(
     ticker: str,
     action: str,
@@ -164,7 +293,6 @@ def decide_routing(
     adv_override: float | None = None,
     nbbo_override: NBBOEstimate | None = None,
 ) -> RoutingDecision:
-    del quantity
     settings = get_routing_settings()
     normalized_action = "Buy" if str(action or "").lower() == "buy" else "Sell"
     normalized_urgency = str(urgency or "normal").strip().lower()
@@ -179,7 +307,7 @@ def decide_routing(
 
     if bucket == "high_liquidity":
         if normalized_action == "Buy" and normalized_urgency == "patient":
-            return RoutingDecision(
+            return _attach_algo(RoutingDecision(
                 order_type="limit",
                 time_in_force="GTC",
                 limit_price=round(nbbo.mid, 4),
@@ -188,9 +316,9 @@ def decide_routing(
                 adv=adv,
                 adv_bucket=adv_bucket,
                 urgency=normalized_urgency,
-            )
+            ), ticker=ticker, action=normalized_action, quantity=quantity, adv=adv, settings=settings)
         if normalized_action == "Buy":
-            return RoutingDecision(
+            return _attach_algo(RoutingDecision(
                 order_type="limit",
                 time_in_force="DAY",
                 limit_price=round(max(nbbo.ask, nbbo.mid + tick), 4),
@@ -199,9 +327,9 @@ def decide_routing(
                 adv=adv,
                 adv_bucket=adv_bucket,
                 urgency=normalized_urgency,
-            )
+            ), ticker=ticker, action=normalized_action, quantity=quantity, adv=adv, settings=settings)
         if is_stop_triggered or normalized_urgency == "urgent":
-            return RoutingDecision(
+            return _attach_algo(RoutingDecision(
                 order_type="marketable_limit",
                 time_in_force="IOC",
                 limit_price=round(max(nbbo.bid - tick, 0.01), 4),
@@ -210,8 +338,8 @@ def decide_routing(
                 adv=adv,
                 adv_bucket=adv_bucket,
                 urgency="urgent",
-            )
-        return RoutingDecision(
+            ), ticker=ticker, action=normalized_action, quantity=quantity, adv=adv, settings=settings)
+        return _attach_algo(RoutingDecision(
             order_type="limit",
             time_in_force="DAY",
             limit_price=round(nbbo.bid, 4),
@@ -220,11 +348,11 @@ def decide_routing(
             adv=adv,
             adv_bucket=adv_bucket,
             urgency=normalized_urgency,
-        )
+        ), ticker=ticker, action=normalized_action, quantity=quantity, adv=adv, settings=settings)
 
     if bucket == "medium_liquidity":
         if normalized_action == "Buy":
-            return RoutingDecision(
+            return _attach_algo(RoutingDecision(
                 order_type="limit",
                 time_in_force="DAY",
                 limit_price=round(nbbo.mid, 4),
@@ -233,8 +361,8 @@ def decide_routing(
                 adv=adv,
                 adv_bucket=adv_bucket,
                 urgency=normalized_urgency,
-            )
-        return RoutingDecision(
+            ), ticker=ticker, action=normalized_action, quantity=quantity, adv=adv, settings=settings)
+        return _attach_algo(RoutingDecision(
             order_type="limit",
             time_in_force="IOC" if normalized_urgency == "urgent" or is_stop_triggered else "DAY",
             limit_price=round(nbbo.bid, 4),
@@ -243,11 +371,11 @@ def decide_routing(
             adv=adv,
             adv_bucket=adv_bucket,
             urgency="urgent" if normalized_urgency == "urgent" or is_stop_triggered else normalized_urgency,
-        )
+        ), ticker=ticker, action=normalized_action, quantity=quantity, adv=adv, settings=settings)
 
     if normalized_action == "Buy":
         improved = max(nbbo.mid - price_improvement, 0.01)
-        return RoutingDecision(
+        return _attach_algo(RoutingDecision(
             order_type="limit",
             time_in_force="GTC",
             limit_price=round(improved, 4),
@@ -256,8 +384,8 @@ def decide_routing(
             adv=adv,
             adv_bucket=adv_bucket,
             urgency=normalized_urgency,
-        )
-    return RoutingDecision(
+        ), ticker=ticker, action=normalized_action, quantity=quantity, adv=adv, settings=settings)
+    return _attach_algo(RoutingDecision(
         order_type="limit",
         time_in_force="DAY",
         limit_price=round(nbbo.bid, 4),
@@ -266,4 +394,4 @@ def decide_routing(
         adv=adv,
         adv_bucket=adv_bucket,
         urgency=normalized_urgency,
-    )
+    ), ticker=ticker, action=normalized_action, quantity=quantity, adv=adv, settings=settings)

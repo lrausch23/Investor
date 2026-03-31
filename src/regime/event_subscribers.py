@@ -78,6 +78,7 @@ async def trade_decision_subscriber(event: BaseEvent) -> None:
     ltcg_tax_savings = None
     order_type = "limit"
     routing_strategy = ""
+    algo_strategy = ""
     if "[agents:" in rationale:
         trace_start = rationale.index("[agents:")
         agent_trace = rationale[trace_start:].strip()
@@ -109,6 +110,7 @@ async def trade_decision_subscriber(event: BaseEvent) -> None:
         )
         order_type = routing.order_type
         routing_strategy = routing.strategy_name
+        algo_strategy = routing.algo_strategy
     except Exception:
         logger.debug("trade_decision_subscriber: routing fallback for %s", event.ticker, exc_info=True)
     try:
@@ -123,6 +125,7 @@ async def trade_decision_subscriber(event: BaseEvent) -> None:
             source="discovery" if str(event.action).lower() == "buy" else "exit_signal",
             order_type=order_type,
             routing_strategy=routing_strategy,
+            algo_strategy=algo_strategy,
             meta_labeler_score=event.meta_labeler_score,
             agent_trace=agent_trace,
             hurdle_gross_return_pct=hurdle_gross_return_pct,

@@ -61,6 +61,8 @@ class IBOrder:
     stop_price: float | None = None
     time_in_force: IBTimeInForce = IBTimeInForce.DAY
     outside_rth: bool = False
+    algo_strategy: str | None = None
+    algo_params: list[tuple[str, str]] | None = None
 
 
 @dataclass(frozen=True)

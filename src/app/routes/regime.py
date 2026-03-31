@@ -4992,7 +4992,7 @@ def regime_order_routing_diagnostic(
 ):
     del actor
     from src.regime.market_data_client import download_daily_bars
-    from src.regime.order_routing import compute_adv, decide_routing, estimate_nbbo
+    from src.regime.order_routing import compute_adv, decide_routing, estimate_nbbo, get_routing_settings, needs_algo_execution
 
     ticker_key = str(ticker or "").upper()
     last_price = 0.0
@@ -5007,9 +5007,11 @@ def regime_order_routing_diagnostic(
     except Exception:
         last_price = 0.0
     adv = compute_adv(ticker_key)
+    settings = get_routing_settings()
     nbbo = estimate_nbbo(ticker_key, last_price or 0.01, adv)
     buy_routing = decide_routing(ticker_key, "Buy", 100.0, last_price or nbbo.mid, urgency="normal", adv_override=adv, nbbo_override=nbbo)
     sell_routing = decide_routing(ticker_key, "Sell", 100.0, last_price or nbbo.mid, urgency="normal", adv_override=adv, nbbo_override=nbbo)
+    test_quantity_1pct = max(1, int(round(float(adv or 0.0) * float(settings.get("algo_adv_pct_threshold", 0.01)))))
     return JSONResponse(
         content=_json_ready(
             {
@@ -5020,6 +5022,17 @@ def regime_order_routing_diagnostic(
                 "nbbo": nbbo.to_dict(),
                 "buy_routing": buy_routing.to_dict(),
                 "sell_routing": sell_routing.to_dict(),
+                "algo_analysis": {
+                    "adv": adv,
+                    "test_quantity_1pct": test_quantity_1pct,
+                    "needs_algo_at_1pct": needs_algo_execution(
+                        test_quantity_1pct,
+                        adv,
+                        adv_pct_threshold=float(settings.get("algo_adv_pct_threshold", 0.01)),
+                    ),
+                    "algo_enabled": bool(settings.get("algo_enabled", True)),
+                    "algo_max_volume_rate": float(settings.get("algo_max_volume_rate", 0.20)),
+                },
             }
         )
     )
@@ -5710,6 +5723,7 @@ async def regime_paper_plan_precheck(
                     limit_price=float(plan.get("proposed_price") or 0.0) or None,
                     time_in_force="IOC" if str(plan.get("order_type") or "").lower() == "marketable_limit" else "DAY",
                     routing_strategy=str(plan.get("routing_strategy") or ""),
+                    algo_strategy=str(plan.get("algo_strategy") or ""),
                     theme_id=int(plan["theme_id"]) if plan.get("theme_id") is not None else None,
                     source=str(plan.get("source") or "manual"),
                     notes=str(plan.get("rationale") or ""),

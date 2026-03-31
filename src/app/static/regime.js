@@ -2658,6 +2658,11 @@
     return `<span class="ui-badge ui-badge--neutral" title="${escapeHtml(plan.routing_strategy)}">${escapeHtml(plan.routing_strategy)}</span>`;
   }
 
+  function renderAlgoBadge(plan) {
+    if (!plan.algo_strategy) return "";
+    return `<span class="ui-badge ui-badge--warn" title="${escapeHtml(`${plan.algo_strategy} execution`)}">${escapeHtml(plan.algo_strategy)}</span>`;
+  }
+
   function renderAuditTrail() {
     const mount = byId("regimeAuditTrailMount");
     if (!mount) return;
@@ -3383,6 +3388,7 @@
                 ${renderGuardrailBadge(plan)}
                 ${renderOrderTypeBadge(plan)}
                 ${renderRoutingBadge(plan)}
+                ${renderAlgoBadge(plan)}
                 ${plan.regime_label ? `<span class="${badgeClass(plan.regime_label)}">${escapeHtml(plan.regime_label)} ${plan.regime_probability != null ? `· ${(Number(plan.regime_probability) * 100).toFixed(0)}%` : ""}</span>` : ""}
                 ${plan.meta_labeler_score == null ? `<span class="ui-badge ui-badge--neutral">ML N/A</span>` : `<span class="${Number(plan.meta_labeler_score) >= 0.65 ? "ui-badge ui-badge--safe" : Number(plan.meta_labeler_score) >= 0.30 ? "ui-badge ui-badge--warn" : "ui-badge ui-badge--bad"}">ML ${(Number(plan.meta_labeler_score) * 100).toFixed(0)}%</span>`}
                 ${plan.sizing_method === "risk_budget" ? `<span class="ui-badge ui-badge--neutral">Risk-Sized</span>` : ""}
@@ -3393,7 +3399,7 @@
                 ${renderTaxImpactBadge(plan)}
               </div>
               <div class="ui-muted" style="margin-top:6px">${escapeHtml(plan.rationale || "")}</div>
-              ${(plan.hurdle_gross_return_pct != null || plan.hurdle_net_return_pct != null || plan.expected_regime_duration != null || plan.ltcg_override_active || plan.anti_churn_passed != null || plan.routing_strategy || plan.order_type) ? `<div class="ui-muted" style="margin-top:6px">Order ${escapeHtml(String(plan.order_type || "limit"))} · Routing ${escapeHtml(plan.routing_strategy || "—")} · Churn ${escapeHtml(plan.anti_churn_passed == null ? "—" : plan.anti_churn_passed ? "Pass" : "Blocked")} · Gross ${escapeHtml(plan.hurdle_gross_return_pct == null ? "—" : `${Number(plan.hurdle_gross_return_pct).toFixed(2)}%`)} · Net ${escapeHtml(plan.hurdle_net_return_pct == null ? "—" : `${Number(plan.hurdle_net_return_pct).toFixed(2)}%`)} · Duration ${escapeHtml(plan.expected_regime_duration == null ? "—" : `${Number(plan.expected_regime_duration).toFixed(1)}d`)} · LTCG ${escapeHtml(plan.ltcg_override_active ? `${Number(plan.ltcg_protected_quantity || 0).toFixed(2)} sh / ${formatCurrency(plan.ltcg_tax_savings, 2)}` : "—")}</div>` : ""}
+              ${(plan.hurdle_gross_return_pct != null || plan.hurdle_net_return_pct != null || plan.expected_regime_duration != null || plan.ltcg_override_active || plan.anti_churn_passed != null || plan.routing_strategy || plan.order_type || plan.algo_strategy) ? `<div class="ui-muted" style="margin-top:6px">Order ${escapeHtml(String(plan.order_type || "limit"))} · Routing ${escapeHtml(plan.routing_strategy || "—")} · Algo ${escapeHtml(plan.algo_strategy || "—")} · Churn ${escapeHtml(plan.anti_churn_passed == null ? "—" : plan.anti_churn_passed ? "Pass" : "Blocked")} · Gross ${escapeHtml(plan.hurdle_gross_return_pct == null ? "—" : `${Number(plan.hurdle_gross_return_pct).toFixed(2)}%`)} · Net ${escapeHtml(plan.hurdle_net_return_pct == null ? "—" : `${Number(plan.hurdle_net_return_pct).toFixed(2)}%`)} · Duration ${escapeHtml(plan.expected_regime_duration == null ? "—" : `${Number(plan.expected_regime_duration).toFixed(1)}d`)} · LTCG ${escapeHtml(plan.ltcg_override_active ? `${Number(plan.ltcg_protected_quantity || 0).toFixed(2)} sh / ${formatCurrency(plan.ltcg_tax_savings, 2)}` : "—")}</div>` : ""}
               ${plan.execution_result ? `<div class="ui-muted" style="margin-top:6px">${escapeHtml(plan.execution_result)}</div>` : ""}
               <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:10px">
                 <button class="btn btn--secondary" type="button" data-paper-plan-action="Approved" data-paper-plan-id="${escapeHtml(plan.id)}" ${!((planPrecheck(plan.id) || {}).guardrail_passed) || paused || closed ? "disabled" : ""}>${(planPrecheck(plan.id) && !(planPrecheck(plan.id).guardrail_passed)) ? "Blocked" : "Approve"}</button>
@@ -3966,6 +3972,9 @@
       adv_low_threshold: 500000,
       adv_lookback_days: 20,
       price_improvement_pct: 0.001,
+      algo_adv_pct_threshold: 0.01,
+      algo_max_volume_rate: 0.20,
+      algo_enabled: true,
     };
     const notificationPrefs = state.notificationPreferences || {
       preferences: [],
@@ -4160,7 +4169,7 @@
               <div class="table-toolbar">
                 <div>
                   <div style="font-weight:600">Order Routing</div>
-                  <div class="ui-muted">Smart limit-order routing thresholds and price-improvement controls.</div>
+                  <div class="ui-muted">Smart limit-order routing thresholds, price-improvement controls, and TWAP/VWAP execution triggers.</div>
                 </div>
               </div>
               <div style="display:grid; grid-template-columns:repeat(4, minmax(0, 1fr)); gap:8px; margin-top:10px">
@@ -4179,6 +4188,18 @@
                 <label>
                   Price improvement %
                   <input id="regimeRoutingImprovePct" type="number" min="0" max="5" step="0.05" value="${escapeHtml((Number(orderRoutingSettings.price_improvement_pct || 0.001) * 100).toFixed(2))}" />
+                </label>
+                <label style="display:flex; gap:8px; align-items:center; margin-top:22px">
+                  <input id="regimeRoutingAlgoEnabled" type="checkbox" ${orderRoutingSettings.algo_enabled !== false ? "checked" : ""} />
+                  <span>Algo execution enabled</span>
+                </label>
+                <label>
+                  Algo threshold (% ADV)
+                  <input id="regimeRoutingAlgoThreshold" type="number" min="0.1" max="10" step="0.1" value="${escapeHtml((Number(orderRoutingSettings.algo_adv_pct_threshold || 0.01) * 100).toFixed(2))}" />
+                </label>
+                <label>
+                  Max participation rate
+                  <input id="regimeRoutingAlgoMaxVol" type="number" min="1" max="50" step="1" value="${escapeHtml((Number(orderRoutingSettings.algo_max_volume_rate || 0.20) * 100).toFixed(0))}" />
                 </label>
               </div>
               <button class="btn btn--secondary" type="button" id="regimeRoutingSave" style="margin-top:10px">Save Routing Settings</button>
@@ -4503,6 +4524,9 @@
               adv_low_threshold: Number(byId("regimeRoutingAdvLow")?.value || 500000),
               adv_lookback_days: Number(byId("regimeRoutingLookback")?.value || 20),
               price_improvement_pct: Number(byId("regimeRoutingImprovePct")?.value || 0.1) / 100,
+              algo_enabled: Boolean(byId("regimeRoutingAlgoEnabled")?.checked),
+              algo_adv_pct_threshold: Number(byId("regimeRoutingAlgoThreshold")?.value || 1) / 100,
+              algo_max_volume_rate: Number(byId("regimeRoutingAlgoMaxVol")?.value || 20) / 100,
             }),
           });
           const payload = await response.json();

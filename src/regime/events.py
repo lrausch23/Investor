@@ -172,6 +172,7 @@ class OrderExecutionEvent(BaseEvent):
     message: str = ""
     routing_strategy: str = ""
     routing_rationale: str = ""
+    algo_strategy: str = ""
 
 
 @dataclass(frozen=True)

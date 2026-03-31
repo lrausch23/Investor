@@ -79,6 +79,8 @@ class ExecutionAgent(AgentBase):
                 limit_price=routing.limit_price,
                 time_in_force=routing.time_in_force,
                 routing_strategy=routing.strategy_name,
+                algo_strategy=routing.algo_strategy,
+                algo_params=routing.algo_params,
                 source="agent",
             )
             guardrail_result, order_result = submit_guarded_order_fn(
@@ -101,6 +103,7 @@ class ExecutionAgent(AgentBase):
                     message=_blocked_message(guardrail_result),
                     routing_strategy=routing.strategy_name,
                     routing_rationale=routing.rationale,
+                    algo_strategy=routing.algo_strategy,
                 )
             return OrderExecutionEvent(
                 correlation_id=event.correlation_id,
@@ -117,6 +120,7 @@ class ExecutionAgent(AgentBase):
                 message=str(getattr(order_result, "message", "") or ""),
                 routing_strategy=routing.strategy_name,
                 routing_rationale=routing.rationale,
+                algo_strategy=routing.algo_strategy,
             )
         except Exception as exc:
             logger.error("ExecutionAgent: order failed for %s: %s", event.ticker, exc)

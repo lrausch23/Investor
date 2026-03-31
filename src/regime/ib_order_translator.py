@@ -49,6 +49,8 @@ def translate_order_request(request: OrderRequest, next_order_id: int) -> IBOrde
         stop_price=float(request.stop_price) if request.stop_price is not None else None,
         time_in_force=tif,
         outside_rth=False,
+        algo_strategy=str(request.algo_strategy or "").strip() or None,
+        algo_params=[(str(key), str(value)) for key, value in dict(request.algo_params or {}).items()] or None,
     )
 
 

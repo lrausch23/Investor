@@ -75,7 +75,7 @@ class LiveIBBackend(IBConnectionBackend):
             raise BrokerConnectionError("IBKR backend is not connected.")
 
         async def _place() -> IBOrderState:
-            from ib_insync import Contract, LimitOrder, MarketOrder, StopOrder
+            from ib_insync import Contract, LimitOrder, MarketOrder, StopOrder, TagValue
 
             contract = Contract(symbol=order.contract_symbol, secType="STK", exchange="SMART", currency="USD")
             await self._ib.qualifyContractsAsync(contract)
@@ -89,6 +89,11 @@ class LiveIBBackend(IBConnectionBackend):
                 ib_order = MarketOrder(order.action.value, order.quantity)
             ib_order.outsideRth = order.outside_rth
             ib_order.tif = order.time_in_force.value
+            if order.algo_strategy:
+                strategy_name = str(order.algo_strategy or "").strip().upper()
+                ib_order.algoStrategy = "Twap" if strategy_name == "TWAP" else "Vwap" if strategy_name == "VWAP" else str(order.algo_strategy)
+                if order.algo_params:
+                    ib_order.algoParams = [TagValue(str(tag), str(value)) for tag, value in order.algo_params]
             trade = self._ib.placeOrder(contract, ib_order)
             self._order_map[order.order_id] = trade
             return self._trade_to_state(trade, order.order_id)
