@@ -130,6 +130,8 @@ class FundamentalAssessmentEvent(BaseEvent):
     enriched_signal_id: str = ""
     meta_labeler_score: float | None = None
     details: dict[str, Any] = field(default_factory=dict)
+    moat_classification: str = ""
+    moat_justification: str = ""
 
 
 @dataclass(frozen=True)

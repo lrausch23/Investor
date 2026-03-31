@@ -419,12 +419,16 @@ def check_entry_signals(
                             require_roic_above_wacc=bool(gate_settings["require_roic_above_wacc"]),
                             roic_lookback_years=int(gate_settings["roic_lookback_years"]),
                             pass_on_insufficient_data=bool(gate_settings["pass_on_insufficient_data"]),
+                            altman_z_enabled=bool(gate_settings.get("altman_z_enabled", True)),
+                            altman_z_distress_threshold=float(gate_settings.get("altman_z_distress_threshold", 1.81)),
                         )
                         update_watchlist_fundamental_gate(
                             int(item["id"]),
                             passed=bool(gate.passed),
                             piotroski_score=gate.piotroski.score if gate.piotroski else None,
                             roic_pct=gate.roic.roic_avg if gate.roic else None,
+                            altman_z_score=gate.altman_z.z_score if gate.altman_z else None,
+                            altman_z_interpretation=gate.altman_z.interpretation if gate.altman_z else "",
                             details=gate,
                         )
                         if not gate.passed:

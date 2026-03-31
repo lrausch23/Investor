@@ -71,6 +71,8 @@ class FundamentalAgent(AgentBase):
                     require_roic_above_wacc=bool(settings["require_roic_above_wacc"]),
                     roic_lookback_years=int(settings["roic_lookback_years"]),
                     pass_on_insufficient_data=bool(settings["pass_on_insufficient_data"]),
+                    altman_z_enabled=bool(settings.get("altman_z_enabled", True)),
+                    altman_z_distress_threshold=float(settings.get("altman_z_distress_threshold", 1.81)),
                 )
                 if not gate.passed:
                     return FundamentalAssessmentEvent(
@@ -89,6 +91,8 @@ class FundamentalAgent(AgentBase):
                             "piotroski_score": gate.piotroski.score if gate.piotroski else None,
                             "roic_avg": gate.roic.roic_avg if gate.roic else None,
                             "wacc": gate.roic.wacc_estimate if gate.roic else None,
+                            "altman_z_score": gate.altman_z.z_score if gate.altman_z else None,
+                            "altman_z_interpretation": gate.altman_z.interpretation if gate.altman_z else "",
                             "veto_reasons": gate.veto_reasons,
                         },
                     )
@@ -110,10 +114,44 @@ class FundamentalAgent(AgentBase):
         institutional = llm_response.get("institutional_report", {}) if isinstance(llm_response, dict) else {}
         verdict = str(institutional.get("verdict") or llm_response.get("verdict") or "")
         confidence_score = institutional.get("confidence_score")
+        moat_classification = str(
+            institutional.get("moat_classification")
+            or llm_response.get("moat_classification")
+            or ""
+        )
+        moat_justification = str(
+            institutional.get("moat_justification")
+            or llm_response.get("moat_justification")
+            or ""
+        )
         try:
             confidence_value = int(confidence_score) if confidence_score is not None else None
         except Exception:
             confidence_value = None
+        moat_veto = False
+        if gate_enabled and moat_classification.lower() in {"", "none"}:
+            moat_veto = True
+        if moat_veto:
+            return FundamentalAssessmentEvent(
+                correlation_id=event.correlation_id,
+                ticker=event.ticker,
+                regime_label=event.regime_label,
+                verdict="Veto",
+                confidence_score=None,
+                catalyst_sentiment=str(getattr(qualitative, "catalyst_sentiment", "") or ""),
+                vetoed=True,
+                veto_reason=f"moat_classification={moat_classification or 'none'}: no durable competitive advantage identified",
+                source="moat_veto",
+                enriched_signal_id=event.correlation_id,
+                meta_labeler_score=event.meta_labeler_score,
+                details={
+                    "source": str(getattr(qualitative, "source", "") or ""),
+                    "catalysts": getattr(qualitative, "catalysts", []) or [],
+                    "llm_response": llm_response,
+                },
+                moat_classification=moat_classification,
+                moat_justification=moat_justification,
+            )
         return FundamentalAssessmentEvent(
             correlation_id=event.correlation_id,
             ticker=event.ticker,
@@ -131,4 +169,6 @@ class FundamentalAgent(AgentBase):
                 "catalysts": getattr(qualitative, "catalysts", []) or [],
                 "llm_response": llm_response,
             },
+            moat_classification=moat_classification,
+            moat_justification=moat_justification,
         )

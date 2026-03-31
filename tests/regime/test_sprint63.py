@@ -268,7 +268,14 @@ def _agent_runtime(llm_counter: dict[str, int], *, gate_enabled: str = "true") -
         return SimpleNamespace(
             catalyst_sentiment="Positive",
             catalysts=[],
-            llm_response={"institutional_report": {"verdict": "Buy", "confidence_score": 7}},
+            llm_response={
+                "institutional_report": {
+                    "verdict": "Buy",
+                    "confidence_score": 7,
+                    "moat_classification": "Intangibles",
+                    "moat_justification": "Durable IP and ecosystem positioning.",
+                }
+            },
             source="llm",
         )
 

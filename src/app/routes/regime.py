@@ -4828,6 +4828,10 @@ async def regime_fundamental_gate_settings_put(
         set_setting("fundamental_pass_on_insufficient", "true" if payload["pass_on_insufficient_data"] else "false")
     if "gate_enabled" in payload:
         set_setting("fundamental_gate_enabled", "true" if payload["gate_enabled"] else "false")
+    if "altman_z_enabled" in payload:
+        set_setting("fundamental_altman_z_enabled", "true" if payload["altman_z_enabled"] else "false")
+    if "altman_z_distress_threshold" in payload:
+        set_setting("fundamental_altman_z_threshold", str(max(0.5, min(5.0, float(payload["altman_z_distress_threshold"])))))
     return JSONResponse(content=_fundamental_gate_settings_payload())
 
 
@@ -4846,6 +4850,8 @@ def regime_fundamental_gate(
         require_roic_above_wacc=bool(settings["require_roic_above_wacc"]),
         roic_lookback_years=int(settings["roic_lookback_years"]),
         pass_on_insufficient_data=bool(settings["pass_on_insufficient_data"]),
+        altman_z_enabled=bool(settings.get("altman_z_enabled", True)),
+        altman_z_distress_threshold=float(settings.get("altman_z_distress_threshold", 1.81)),
     )
     return JSONResponse(content=_json_ready(asdict(gate)))
 
@@ -6003,6 +6009,7 @@ def regime_agents_consensus(
                 "verdict": assessment.get("verdict"),
                 "vetoed": assessment.get("vetoed"),
                 "sentiment": assessment.get("catalyst_sentiment"),
+                "moat": assessment.get("moat_classification"),
                 "at": assessment.get("created_at"),
             }
     for decision in decisions:

@@ -15,6 +15,9 @@ DEFAULT_PIOTROSKI_MIN = 6
 DEFAULT_ROIC_MUST_EXCEED_WACC = True
 DEFAULT_ROIC_LOOKBACK_YEARS = 3
 DEFAULT_PASS_ON_INSUFFICIENT_DATA = True
+DEFAULT_ALTMAN_Z_DISTRESS_THRESHOLD = 1.81
+DEFAULT_ALTMAN_Z_GREY_THRESHOLD = 2.99
+DEFAULT_ALTMAN_Z_ENABLED = True
 
 
 @dataclass
@@ -38,12 +41,23 @@ class ROICResult:
 
 
 @dataclass
+class AltmanZScoreResult:
+    ticker: str
+    z_score: float | None
+    interpretation: str
+    components: dict[str, float]
+    details: dict[str, Any]
+    data_quality: str
+
+
+@dataclass
 class FundamentalGateResult:
     ticker: str
     passed: bool
     piotroski: PiotroskiResult | None
     roic: ROICResult | None
     veto_reasons: list[str] = field(default_factory=list)
+    altman_z: AltmanZScoreResult | None = None
 
 
 def get_fundamental_gate_settings() -> dict[str, Any]:
@@ -53,6 +67,13 @@ def get_fundamental_gate_settings() -> dict[str, Any]:
         "roic_lookback_years": _int_setting("fundamental_roic_lookback", DEFAULT_ROIC_LOOKBACK_YEARS, min_value=1, max_value=5),
         "pass_on_insufficient_data": _bool_setting("fundamental_pass_on_insufficient", DEFAULT_PASS_ON_INSUFFICIENT_DATA),
         "gate_enabled": _bool_setting("fundamental_gate_enabled", True),
+        "altman_z_enabled": _bool_setting("fundamental_altman_z_enabled", DEFAULT_ALTMAN_Z_ENABLED),
+        "altman_z_distress_threshold": _float_setting(
+            "fundamental_altman_z_threshold",
+            DEFAULT_ALTMAN_Z_DISTRESS_THRESHOLD,
+            min_value=0.5,
+            max_value=5.0,
+        ),
     }
 
 
@@ -67,6 +88,19 @@ def _int_setting(key: str, default: int, *, min_value: int | None = None, max_va
     raw = get_setting(key)
     try:
         value = int(str(raw)) if raw not in (None, "") else default
+    except Exception:
+        value = default
+    if min_value is not None:
+        value = max(min_value, value)
+    if max_value is not None:
+        value = min(max_value, value)
+    return value
+
+
+def _float_setting(key: str, default: float, *, min_value: float | None = None, max_value: float | None = None) -> float:
+    raw = get_setting(key)
+    try:
+        value = float(str(raw)) if raw not in (None, "") else default
     except Exception:
         value = default
     if min_value is not None:
@@ -273,6 +307,106 @@ def calculate_roic(
     )
 
 
+def calculate_altman_z_score(
+    ticker: str,
+    *,
+    statements: FinancialStatements | None = None,
+) -> AltmanZScoreResult:
+    if statements is None:
+        statements = fetch_financial_statements(ticker)
+    balance = statements.balance_sheet
+    income = statements.income_statement
+    info = statements.info or {}
+    if balance.empty or income.empty:
+        return AltmanZScoreResult(
+            ticker=ticker,
+            z_score=None,
+            interpretation="insufficient",
+            components={},
+            details={"error": "insufficient_data"},
+            data_quality="insufficient",
+        )
+
+    total_assets = _get(balance, ["Total Assets"], 0)
+    if total_assets is None or total_assets <= 0:
+        return AltmanZScoreResult(
+            ticker=ticker,
+            z_score=None,
+            interpretation="insufficient",
+            components={},
+            details={"error": "no_total_assets"},
+            data_quality="insufficient",
+        )
+
+    current_assets = _get(balance, ["Current Assets"], 0) or 0.0
+    current_liabilities = _get(balance, ["Current Liabilities"], 0) or 0.0
+    working_capital = current_assets - current_liabilities
+
+    retained_earnings = _get(
+        balance,
+        ["Retained Earnings", "Retained Earnings Deficit", "Accumulated Earnings"],
+        0,
+    ) or 0.0
+    ebit = _get(income, ["Operating Income", "EBIT"], 0) or 0.0
+    market_cap = float(info.get("marketCap") or 0.0)
+
+    total_liabilities = _get(
+        balance,
+        ["Total Liabilities Net Minority Interest", "Total Liab", "Total Non Current Liabilities Net Minority Interest"],
+        0,
+    )
+    if total_liabilities is None:
+        stockholders_equity = _get(
+            balance,
+            ["Total Stockholders Equity", "Stockholders Equity", "Total Equity Gross Minority Interest"],
+            0,
+        )
+        if stockholders_equity is not None:
+            total_liabilities = float(total_assets) - float(stockholders_equity)
+        else:
+            total_debt = _get(balance, ["Total Debt", "Long Term Debt"], 0) or 0.0
+            total_liabilities = total_debt + current_liabilities
+
+    revenue = _get(income, ["Total Revenue"], 0) or 0.0
+
+    x1 = working_capital / float(total_assets)
+    x2 = retained_earnings / float(total_assets)
+    x3 = ebit / float(total_assets)
+    x4 = (market_cap / float(total_liabilities)) if total_liabilities and total_liabilities > 0 else 0.0
+    x5 = revenue / float(total_assets)
+    z_score = 1.2 * x1 + 1.4 * x2 + 3.3 * x3 + 0.6 * x4 + 1.0 * x5
+
+    if z_score > DEFAULT_ALTMAN_Z_GREY_THRESHOLD:
+        interpretation = "Safe"
+    elif z_score >= DEFAULT_ALTMAN_Z_DISTRESS_THRESHOLD:
+        interpretation = "Grey Zone"
+    else:
+        interpretation = "Distress"
+
+    return AltmanZScoreResult(
+        ticker=ticker,
+        z_score=round(z_score, 2),
+        interpretation=interpretation,
+        components={
+            "X1_working_capital_ta": round(x1, 4),
+            "X2_retained_earnings_ta": round(x2, 4),
+            "X3_ebit_ta": round(x3, 4),
+            "X4_market_equity_tl": round(x4, 4),
+            "X5_sales_ta": round(x5, 4),
+        },
+        details={
+            "working_capital": working_capital,
+            "retained_earnings": retained_earnings,
+            "ebit": ebit,
+            "market_cap": market_cap,
+            "total_liabilities": total_liabilities,
+            "revenue": revenue,
+            "total_assets": total_assets,
+        },
+        data_quality="full" if market_cap > 0 else "partial",
+    )
+
+
 def run_fundamental_gate(
     ticker: str,
     *,
@@ -280,6 +414,8 @@ def run_fundamental_gate(
     require_roic_above_wacc: bool = DEFAULT_ROIC_MUST_EXCEED_WACC,
     roic_lookback_years: int = DEFAULT_ROIC_LOOKBACK_YEARS,
     pass_on_insufficient_data: bool = DEFAULT_PASS_ON_INSUFFICIENT_DATA,
+    altman_z_enabled: bool = DEFAULT_ALTMAN_Z_ENABLED,
+    altman_z_distress_threshold: float = DEFAULT_ALTMAN_Z_DISTRESS_THRESHOLD,
 ) -> FundamentalGateResult:
     statements = fetch_financial_statements(ticker)
     veto_reasons: list[str] = []
@@ -297,10 +433,20 @@ def run_fundamental_gate(
     elif require_roic_above_wacc and roic.roic_avg is not None and not roic.roic_exceeds_wacc:
         veto_reasons.append(f"ROIC {roic.roic_avg:.1f}% <= WACC {roic.wacc_estimate:.1f}%")
 
+    altman_z = calculate_altman_z_score(ticker, statements=statements)
+    if altman_z.data_quality == "insufficient":
+        if not pass_on_insufficient_data:
+            veto_reasons.append("Altman Z-Score: insufficient data")
+    elif altman_z_enabled and altman_z.z_score is not None and altman_z.z_score < float(altman_z_distress_threshold):
+        veto_reasons.append(
+            f"Altman Z-Score {altman_z.z_score:.2f} < {float(altman_z_distress_threshold):.2f} (Distress Zone)"
+        )
+
     return FundamentalGateResult(
         ticker=str(ticker or "").upper(),
         passed=not veto_reasons,
         piotroski=piotroski,
         roic=roic,
         veto_reasons=veto_reasons,
+        altman_z=altman_z,
     )

@@ -387,6 +387,8 @@ def _migrate_discovery_watchlist_fundamental_gate(conn: sqlite3.Connection) -> N
         ("piotroski_score", "INTEGER"),
         ("roic_pct", "REAL"),
         ("fundamental_details", "TEXT NOT NULL DEFAULT ''"),
+        ("altman_z_score", "REAL"),
+        ("altman_z_interpretation", "TEXT NOT NULL DEFAULT ''"),
     )
     for column, ddl in columns:
         try:
@@ -712,6 +714,8 @@ def _connect() -> sqlite3.Connection:
             fundamental_gate_passed INTEGER,
             piotroski_score INTEGER,
             roic_pct REAL,
+            altman_z_score REAL,
+            altman_z_interpretation TEXT NOT NULL DEFAULT '',
             fundamental_details TEXT NOT NULL DEFAULT '',
             status TEXT NOT NULL DEFAULT 'Watching'
                 CHECK (status IN ('Watching', 'Entry Signal', 'Added', 'Passed', 'Expired')),
@@ -1690,6 +1694,8 @@ def update_watchlist_fundamental_gate(
     passed: bool,
     piotroski_score: int | None,
     roic_pct: float | None,
+    altman_z_score: float | None = None,
+    altman_z_interpretation: str = "",
     details: Any = None,
 ) -> None:
     """Persist fundamental gate diagnostics on a discovery watchlist row."""
@@ -1706,6 +1712,8 @@ def update_watchlist_fundamental_gate(
             SET fundamental_gate_passed = ?,
                 piotroski_score = ?,
                 roic_pct = ?,
+                altman_z_score = ?,
+                altman_z_interpretation = ?,
                 fundamental_details = ?
             WHERE id = ?
             """,
@@ -1713,6 +1721,8 @@ def update_watchlist_fundamental_gate(
                 1 if passed else 0,
                 int(piotroski_score) if piotroski_score is not None else None,
                 float(roic_pct) if roic_pct is not None else None,
+                float(altman_z_score) if altman_z_score is not None else None,
+                str(altman_z_interpretation or ""),
                 details_json,
                 int(watchlist_id),
             ),

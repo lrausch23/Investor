@@ -107,6 +107,8 @@ def _deterministic_defensive_response(
             "confidence_score": confidence_score,
             "risk_trigger": f"Meta-labeler below {threshold:.0%} threshold",
             "rationale": rationale,
+            "moat_classification": "none",
+            "moat_justification": "Deterministic override — ML score too low for moat assessment.",
         },
         "override_threshold": threshold,
         "ticker": ticker,
@@ -199,7 +201,7 @@ def build_decision_prompt(
 - Interpretation: {guidance}
 """.rstrip()
     return f"""
-You are a Senior Quantitative Strategist and Institutional Portfolio Manager specializing in the 2026 Semiconductor and Physical AI cycles. Your goal is to validate or invalidate technical regime shifts detected by a Hidden Markov Model. You prioritize long-term structural trends over short-term retail noise.
+You are a Senior Quantitative Strategist and Institutional Portfolio Manager. Your goal is to validate or invalidate technical regime shifts detected by a Hidden Markov Model. You prioritize long-term structural trends over short-term retail noise.
 
 State mapping:
 - State 0 = Bullish Expansion = Positive Mean + Low Volatility
@@ -222,14 +224,24 @@ Market Intelligence Report: {ticker}
 3. Executive Task:
 Analyze the discrepancy between the math and the narrative.
 
+4. Competitive Moat Assessment:
+Evaluate the company's durable competitive advantage. Classify into exactly one of four categories:
+- "Network Effect" — value grows with each additional user/participant
+- "Switching Cost" — customers face significant cost to change providers
+- "Intangibles" — durable brand equity, patents, regulatory licenses
+- "Cost Advantage" — structural cost leadership through scale or process
+If none of these categories applies, classify as "none".
+
 Return strict JSON with these fields:
 - regime_validation: string, either "Technical Glitch" or "Fundamental Pivot"
-- thesis_alignment: short string on 2026 target impact
+- thesis_alignment: short string on structural thesis impact
 - divergence_check: short string on alpha factor or "None"
 - verdict: one of ["Entry", "Hold", "Exit"]
 - confidence_score: integer 1-10
 - risk_trigger: short string
 - rationale: short string
+- moat_classification: one of ["Network Effect", "Switching Cost", "Intangibles", "Cost Advantage", "none"]
+- moat_justification: short string explaining why this moat applies (or why none exists)
 """.strip()
 
 
@@ -315,7 +327,7 @@ def _fallback_regime_validation(
     else:
         verdict = "Exit"
     divergence = "Alpha from idiosyncratic execution versus benchmark weakness." if state_name == "Bull" and benchmark_state in {"Neutral", "Bear"} else "None"
-    thesis_note = "For physical AI names, supply-chain health remains the main 2026 gating variable." if ticker.upper() in {"MTRN", "PLAB"} else "2026 target depends on sustained execution and sector breadth."
+    thesis_note = "Structural thesis depends on sustained execution, durable unit economics, and supportive sector breadth."
     return {
         "regime_validation": validation,
         "thesis_alignment": thesis_note,
@@ -324,6 +336,8 @@ def _fallback_regime_validation(
         "confidence_score": confidence_score,
         "risk_trigger": "If the 10-year Treasury yield breaks above 5.0%, re-underwrite immediately.",
         "rationale": f"Fallback institutional summary for transition {previous_label} -> {state_name}.",
+        "moat_classification": "none",
+        "moat_justification": "Fallback heuristic — no LLM moat assessment available.",
     }
 
 

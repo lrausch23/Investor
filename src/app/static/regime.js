@@ -2465,6 +2465,11 @@
         <div class="ui-muted" style="margin-top:8px">
           F-Score <span class="${Number(item.piotroski_score) >= 6 ? "cell-ok" : Number.isFinite(Number(item.piotroski_score)) ? "cell-bad" : ""}">${escapeHtml(item.piotroski_score == null ? "—" : item.piotroski_score)}</span>
           · ROIC ${escapeHtml(item.roic_pct == null ? "—" : `${formatFixed(item.roic_pct, 1)}%`)}
+          · Z-Score <span class="${
+            Number(item.altman_z_score) > 2.99 ? "cell-ok" :
+            Number(item.altman_z_score) >= 1.81 ? "cell-warn" :
+            Number.isFinite(Number(item.altman_z_score)) ? "cell-bad" : ""
+          }">${escapeHtml(item.altman_z_score == null ? "—" : formatFixed(item.altman_z_score, 2))}</span> (${escapeHtml(item.altman_z_interpretation || "—")})
           · Gate <span class="${item.fundamental_gate_passed === 1 ? "ui-badge ui-badge--safe" : item.fundamental_gate_passed === 0 ? "ui-badge ui-badge--bad" : "ui-badge ui-badge--neutral"}">${escapeHtml(item.fundamental_gate_passed === 1 ? "Pass" : item.fundamental_gate_passed === 0 ? "Fail" : "Pending")}</span>
         </div>
         <div class="regime-strength-bar" style="margin-top:8px">
@@ -2785,7 +2790,7 @@
                     <tr>
                       <td><strong>${escapeHtml(ticker)}</strong></td>
                       <td>${escapeHtml(item.quant ? `${item.quant.action || "—"}${item.quant.confidence != null ? ` (${formatFixed(item.quant.confidence, 1)})` : ""}` : "—")}</td>
-                      <td>${escapeHtml(item.fundamental ? `${item.fundamental.verdict || "—"}${item.fundamental.vetoed ? " (veto)" : ""}` : "—")}</td>
+                      <td>${escapeHtml(item.fundamental ? `${item.fundamental.verdict || "—"}${item.fundamental.moat ? ` / ${item.fundamental.moat}` : ""}${item.fundamental.vetoed ? " (veto)" : ""}` : "—")}</td>
                       <td>${escapeHtml(item.portfolio ? `${item.portfolio.decision || "—"}${item.portfolio.veto_reason ? ` (${item.portfolio.veto_reason})` : ""}` : "—")}</td>
                       <td>${escapeHtml(item.execution ? `${item.execution.status || "—"}${item.execution.filled_price != null ? ` @ ${formatCurrency(item.execution.filled_price, 2)}` : ""}` : "—")}</td>
                     </tr>
