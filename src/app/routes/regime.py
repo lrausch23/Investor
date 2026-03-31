@@ -3032,6 +3032,8 @@ def _build_shell_context(
             "watchlist_pass": "/regime/watchlist/__WATCHLIST_ID__/pass",
             "fundamental_gate": "/regime/fundamental-gate/__TICKER__",
             "fundamental_gate_settings": "/regime/fundamental-gate/settings",
+            "cross_sectional": "/regime/cross-sectional/__TICKER__",
+            "sizing_settings": "/regime/sizing/settings",
             "paper_portfolios": "/regime/paper-portfolio",
             "paper_portfolio": "/regime/paper-portfolio/__PORTFOLIO_ID__",
             "paper_budget": "/regime/paper-portfolio/__PORTFOLIO_ID__/budget",
@@ -4796,6 +4798,12 @@ def _fundamental_gate_settings_payload() -> dict[str, Any]:
     return _json_ready(get_fundamental_gate_settings())
 
 
+def _sizing_settings_payload() -> dict[str, Any]:
+    from src.regime.paper_trading import get_sizing_settings
+
+    return _json_ready(get_sizing_settings())
+
+
 @router.get("/fundamental-gate/settings")
 def regime_fundamental_gate_settings_get(
     actor: str = Depends(require_actor),
@@ -4854,6 +4862,60 @@ def regime_fundamental_gate(
         altman_z_distress_threshold=float(settings.get("altman_z_distress_threshold", 1.81)),
     )
     return JSONResponse(content=_json_ready(asdict(gate)))
+
+
+@router.get("/cross-sectional/{ticker}")
+def regime_cross_sectional(
+    ticker: str,
+    actor: str = Depends(require_actor),
+):
+    del actor
+    from src.regime.cross_sectional import calculate_beta_adjusted_return, calculate_volatility_z_score
+
+    ticker_key = str(ticker or "").upper()
+    return JSONResponse(
+        content={
+            "ticker": ticker_key,
+            "beta_adjusted": _json_ready(asdict(calculate_beta_adjusted_return(ticker_key))),
+            "volatility_z": _json_ready(asdict(calculate_volatility_z_score(ticker_key))),
+        }
+    )
+
+
+@router.get("/sizing/settings")
+def regime_sizing_settings_get(
+    actor: str = Depends(require_actor),
+):
+    del actor
+    return JSONResponse(content=_sizing_settings_payload())
+
+
+@router.put("/sizing/settings")
+async def regime_sizing_settings_put(
+    request: Request,
+    actor: str = Depends(require_actor),
+):
+    del actor
+    from src.regime.persistence import set_setting
+
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Request body must be a JSON object.")
+    if "sizing_method" in payload:
+        method = str(payload["sizing_method"] or "risk_budget").strip().lower()
+        if method not in {"risk_budget", "equal_dollar"}:
+            raise HTTPException(status_code=400, detail=f"Invalid sizing method: {method}")
+        set_setting("sizing_method", method)
+    if "sizing_base_risk_fraction" in payload:
+        value = max(0.001, min(0.25, float(payload["sizing_base_risk_fraction"])))
+        set_setting("sizing_base_risk_fraction", str(value))
+    if "sizing_atr_multiplier" in payload:
+        value = max(0.5, min(5.0, float(payload["sizing_atr_multiplier"])))
+        set_setting("sizing_atr_multiplier", str(value))
+    return JSONResponse(content=_sizing_settings_payload())
 
 
 @router.get("/discovery/signals")

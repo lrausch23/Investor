@@ -1,14 +1,22 @@
 from __future__ import annotations
 
+from dataclasses import asdict
 import json
 import logging
 import time
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, cast
 
 import pandas as pd
 
 from .config import DEFAULT_DISCOVERY_THRESHOLDS, DiscoveryThresholds
+from .cross_sectional import (
+    BetaAdjustedResult,
+    VolatilityZResult,
+    calculate_beta_adjusted_return,
+    calculate_volatility_z_score,
+    compute_peer_percentiles,
+)
 from .data import download_market_frame
 from .hmm_engine import fit_regime_model
 from .llm_layer import request_frontier_decision
@@ -26,6 +34,7 @@ from .persistence import (
     save_supply_chain_layers,
     update_watchlist_status,
     update_watchlist_fundamental_gate,
+    update_watchlist_cross_sectional,
     upsert_watchlist_candidate,
 )
 
@@ -247,6 +256,42 @@ def compute_crowd_score(
     return normalized_score, details
 
 
+def _normalize_crowd_sub_scores(raw_scores: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if len(raw_scores) < 3:
+        return raw_scores
+
+    metric_keys = ("analyst_score", "institutional_score", "volume_score", "short_score")
+    ranked_values: dict[str, list[float]] = {}
+    for metric in metric_keys:
+        values: list[float] = []
+        for item in raw_scores:
+            value = item.get(metric)
+            if value is not None:
+                values.append(float(value))
+        ranked_values[metric] = values
+
+    for item in raw_scores:
+        total = 0
+        normalized_details: dict[str, float | None] = {}
+        for metric in metric_keys:
+            value = item.get(metric)
+            peers = ranked_values.get(metric) or []
+            if value is None or len(peers) < 2:
+                normalized_details[f"{metric}_percentile"] = None
+                normalized_details[f"{metric}_normalized"] = None
+                continue
+            below = sum(1 for peer in peers if peer < float(value))
+            equal = sum(1 for peer in peers if peer == float(value))
+            percentile = ((below + 0.5 * equal) / len(peers)) * 100.0
+            normalized_value = int(round((percentile / 100.0) * 25.0))
+            normalized_details[f"{metric}_percentile"] = round(percentile, 2)
+            normalized_details[f"{metric}_normalized"] = normalized_value
+            total += normalized_value
+        item["normalized_crowd_score"] = max(0, min(100, int(total)))
+        item["crowd_percentiles"] = normalized_details
+    return raw_scores
+
+
 def build_sector_discovery_prompt(
     theme: dict,
     existing_tickers: list[str],
@@ -350,7 +395,7 @@ def run_discovery_scan(
     if not candidates:
         logger.warning("Discovery scan returned no candidates for theme_id=%s", theme_id)
         return []
-    results: list[dict] = []
+    provisional: list[dict[str, Any]] = []
     seen: set[str] = set()
     for candidate in candidates:
         ticker = str(candidate.get("ticker") or "").strip().upper()
@@ -365,23 +410,53 @@ def run_discovery_scan(
         layer = str(
             candidate.get("supply_chain_layer") or candidate.get("sector_layer") or ""
         ).strip()
+        provisional.append(
+            {
+                "theme_id": theme_id,
+                "ticker": ticker,
+                "company_name": str(candidate.get("company_name") or "").strip(),
+                "supply_chain_layer": layer,
+                "discovery_rationale": str(candidate.get("rationale") or "").strip(),
+                "suggested_role": str(candidate.get("suggested_role") or "Critical-Path"),
+                "suggested_entry_price": entry_price,
+                "suggested_stop_price": stop_price,
+                "crowd_score": crowd_score,
+                "crowd_details": dict(crowd_details),
+                "regime_label": regime_label,
+                "regime_probability": regime_probability,
+                "status": "Watching",
+                "analyst_score": crowd_details.get("analyst_score"),
+                "institutional_score": crowd_details.get("institutional_score"),
+                "volume_score": crowd_details.get("volume_score"),
+                "short_score": crowd_details.get("short_interest_score"),
+            }
+        )
+        time.sleep(0.5)
+    _normalize_crowd_sub_scores(provisional)
+    results: list[dict[str, Any]] = []
+    for item in provisional:
+        crowd_details = dict(item.get("crowd_details") or {})
+        if item.get("normalized_crowd_score") is not None:
+            crowd_details["normalized_crowd_score"] = int(item["normalized_crowd_score"])
+        if item.get("crowd_percentiles"):
+            crowd_details["crowd_percentiles"] = item["crowd_percentiles"]
         watch = upsert_watchlist_candidate(
-            theme_id,
-            ticker,
-            company_name=str(candidate.get("company_name") or "").strip(),
-            supply_chain_layer=layer,
-            discovery_rationale=str(candidate.get("rationale") or "").strip(),
-            suggested_role=str(candidate.get("suggested_role") or "Critical-Path"),
-            suggested_entry_price=entry_price,
-            suggested_stop_price=stop_price,
-            crowd_score=crowd_score,
+            int(item["theme_id"]),
+            str(item["ticker"]),
+            company_name=str(item.get("company_name") or ""),
+            supply_chain_layer=str(item.get("supply_chain_layer") or ""),
+            discovery_rationale=str(item.get("discovery_rationale") or ""),
+            suggested_role=str(item.get("suggested_role") or "Critical-Path"),
+            suggested_entry_price=item.get("suggested_entry_price"),
+            suggested_stop_price=item.get("suggested_stop_price"),
+            crowd_score=int(item.get("crowd_score") or 50),
+            normalized_crowd_score=int(item["normalized_crowd_score"]) if item.get("normalized_crowd_score") is not None else None,
             crowd_details=json.dumps(crowd_details),
-            regime_label=regime_label,
-            regime_probability=regime_probability,
+            regime_label=item.get("regime_label"),
+            regime_probability=item.get("regime_probability"),
             status="Watching",
         )
         results.append(watch)
-        time.sleep(0.5)
     return results
 
 
@@ -401,10 +476,12 @@ def check_entry_signals(
             continue
         if str(theme.get("status") or "") != "Active" or int(theme.get("conviction") or 0) < thresholds.entry_signal_min_conviction:
             continue
+        survivors: list[dict[str, Any]] = []
         for item in get_watchlist(theme_id=int(theme["id"]), status="Watching"):
             label = str(item.get("regime_label") or "")
             probability = float(item.get("regime_probability") or 0.0)
-            crowd = int(item.get("crowd_score") or 50)
+            crowd_raw = item.get("normalized_crowd_score")
+            crowd = int(crowd_raw) if crowd_raw is not None else int(item.get("crowd_score") or 50)
             if label == "Bull" and probability >= thresholds.entry_signal_min_probability and crowd <= thresholds.entry_signal_max_crowd_score:
                 ticker = str(item.get("ticker") or "").upper()
                 if gate_enabled:
@@ -448,9 +525,42 @@ def check_entry_signals(
                                 continue
                     except Exception as exc:
                         logger.warning("Meta-labeler veto check failed for discovery candidate %s; continuing without veto gate.", item.get("ticker"), exc_info=exc)
-                updated = update_watchlist_status(int(item["id"]), "Entry Signal")
-                if updated:
-                    triggered.append(updated)
+                survivors.append(dict(item))
+        metrics_map: dict[str, dict[str, float | None]] = {}
+        cross_sectional_data: dict[str, dict[str, BetaAdjustedResult | VolatilityZResult]] = {}
+        for item in survivors:
+            ticker = str(item.get("ticker") or "").upper()
+            try:
+                beta_result = calculate_beta_adjusted_return(ticker)
+                vol_result = calculate_volatility_z_score(ticker)
+                cross_sectional_data[ticker] = {"beta_adjusted": beta_result, "volatility_z": vol_result}
+                metrics_map[ticker] = {
+                    "beta_adj_return": beta_result.beta_adjusted_return if beta_result.data_quality != "insufficient" else None,
+                    "vol_z": vol_result.vol_z_score if vol_result.data_quality != "insufficient" else None,
+                }
+            except Exception:
+                logger.debug("Cross-sectional enrichment failed for %s", ticker, exc_info=True)
+        peer_norms = compute_peer_percentiles([str(item.get("ticker") or "").upper() for item in survivors], metrics_map) if metrics_map else {}
+        for item in survivors:
+            ticker = str(item.get("ticker") or "").upper()
+            stored_beta_result: BetaAdjustedResult | None = cast(BetaAdjustedResult | None, (cross_sectional_data.get(ticker) or {}).get("beta_adjusted"))
+            stored_vol_result: VolatilityZResult | None = cast(VolatilityZResult | None, (cross_sectional_data.get(ticker) or {}).get("volatility_z"))
+            peer_payload = [asdict(row) for row in peer_norms.get(ticker, [])]
+            try:
+                update_watchlist_cross_sectional(
+                    int(item["id"]),
+                    beta=stored_beta_result.beta if stored_beta_result and stored_beta_result.beta is not None else None,
+                    beta_adjusted_return=stored_beta_result.beta_adjusted_return if stored_beta_result else None,
+                    vol_z_score=stored_vol_result.vol_z_score if stored_vol_result else None,
+                    vol_z_interpretation=stored_vol_result.interpretation if stored_vol_result else "",
+                    normalized_crowd_score=int(item["normalized_crowd_score"]) if item.get("normalized_crowd_score") is not None else int(item.get("crowd_score") or 50),
+                    peer_percentile_json=json.dumps(peer_payload),
+                )
+            except Exception:
+                logger.debug("Persisting cross-sectional enrichment failed for %s", ticker, exc_info=True)
+            updated = update_watchlist_status(int(item["id"]), "Entry Signal")
+            if updated:
+                triggered.append(updated)
     return triggered
 
 

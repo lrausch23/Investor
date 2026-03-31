@@ -2471,6 +2471,12 @@
             Number.isFinite(Number(item.altman_z_score)) ? "cell-bad" : ""
           }">${escapeHtml(item.altman_z_score == null ? "—" : formatFixed(item.altman_z_score, 2))}</span> (${escapeHtml(item.altman_z_interpretation || "—")})
           · Gate <span class="${item.fundamental_gate_passed === 1 ? "ui-badge ui-badge--safe" : item.fundamental_gate_passed === 0 ? "ui-badge ui-badge--bad" : "ui-badge ui-badge--neutral"}">${escapeHtml(item.fundamental_gate_passed === 1 ? "Pass" : item.fundamental_gate_passed === 0 ? "Fail" : "Pending")}</span>
+          · Beta ${escapeHtml(item.beta == null ? "—" : formatFixed(item.beta, 2))}
+          · BA-Ret ${escapeHtml(item.beta_adjusted_return == null ? "—" : formatSignedPct(item.beta_adjusted_return, 1))}
+          · Vol-Z <span class="${
+            Number(item.vol_z_score) > 1.5 ? "cell-warn" :
+            Number(item.vol_z_score) < -1.0 ? "cell-ok" : ""
+          }">${escapeHtml(item.vol_z_score == null ? "—" : formatFixed(item.vol_z_score, 2))}</span> (${escapeHtml(item.vol_z_interpretation || "—")})
         </div>
         <div class="regime-strength-bar" style="margin-top:8px">
           <div class="regime-strength-bar__fill" style="width:${Math.max(0, Math.min(100, Number(item.regime_probability || 0) * 100)).toFixed(1)}%"></div>
@@ -3320,6 +3326,7 @@
                 ${renderGuardrailBadge(plan)}
                 ${plan.regime_label ? `<span class="${badgeClass(plan.regime_label)}">${escapeHtml(plan.regime_label)} ${plan.regime_probability != null ? `· ${(Number(plan.regime_probability) * 100).toFixed(0)}%` : ""}</span>` : ""}
                 ${plan.meta_labeler_score == null ? `<span class="ui-badge ui-badge--neutral">ML N/A</span>` : `<span class="${Number(plan.meta_labeler_score) >= 0.65 ? "ui-badge ui-badge--safe" : Number(plan.meta_labeler_score) >= 0.30 ? "ui-badge ui-badge--warn" : "ui-badge ui-badge--bad"}">ML ${(Number(plan.meta_labeler_score) * 100).toFixed(0)}%</span>`}
+                ${plan.sizing_method === "risk_budget" ? `<span class="ui-badge ui-badge--neutral">Risk-Sized</span>` : ""}
                 ${renderTaxImpactBadge(plan)}
               </div>
               <div class="ui-muted" style="margin-top:6px">${escapeHtml(plan.rationale || "")}</div>

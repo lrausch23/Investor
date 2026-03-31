@@ -18,6 +18,7 @@ from .config import (
     RiskGuardrails,
 )
 from .discovery import _quick_regime_screen
+from .fundamental_data import fetch_financial_statements
 from .market_data_client import download_daily_bars, get_ticker_info
 from .persistence import (
     close_paper_position,
@@ -32,6 +33,8 @@ from .persistence import (
     get_paper_portfolio,
     get_paper_portfolio_summary,
     get_paper_positions,
+    get_latest_signal_snapshot,
+    get_setting,
     get_trade_plans,
     get_watchlist,
     get_watchlist_by_ticker,
@@ -53,6 +56,9 @@ logger = logging.getLogger(__name__)
 
 CachedRegimeValue = tuple[str, float] | dict[str, Any]
 CachedRegimeMap = dict[str, CachedRegimeValue]
+DEFAULT_SIZING_METHOD = "risk_budget"
+DEFAULT_SIZING_BASE_RISK_FRACTION = 0.02
+DEFAULT_SIZING_ATR_MULTIPLIER = 2.0
 
 
 def _normalize_close_series(frame: pd.DataFrame | None) -> pd.Series:
@@ -260,6 +266,70 @@ def _open_position_index(portfolio_id: int) -> dict[str, list[dict[str, Any]]]:
     return by_ticker
 
 
+def get_sizing_settings() -> dict[str, Any]:
+    raw_method = str(get_setting("sizing_method") or DEFAULT_SIZING_METHOD).strip().lower()
+    method = raw_method if raw_method in {"risk_budget", "equal_dollar"} else DEFAULT_SIZING_METHOD
+    try:
+        base_risk_fraction = float(get_setting("sizing_base_risk_fraction") or DEFAULT_SIZING_BASE_RISK_FRACTION)
+    except Exception:
+        base_risk_fraction = DEFAULT_SIZING_BASE_RISK_FRACTION
+    try:
+        atr_multiplier = float(get_setting("sizing_atr_multiplier") or DEFAULT_SIZING_ATR_MULTIPLIER)
+    except Exception:
+        atr_multiplier = DEFAULT_SIZING_ATR_MULTIPLIER
+    return {
+        "sizing_method": method,
+        "sizing_base_risk_fraction": max(0.001, min(base_risk_fraction, 0.25)),
+        "sizing_atr_multiplier": max(0.5, min(atr_multiplier, 5.0)),
+    }
+
+
+def _lookup_atr(ticker: str) -> float | None:
+    snapshot = get_latest_signal_snapshot(str(ticker or "").upper(), max_age_days=7)
+    if not snapshot:
+        return None
+    atr = snapshot.get("atr_14")
+    try:
+        return float(atr) if atr is not None else None
+    except Exception:
+        return None
+
+
+def _lookup_beta(ticker: str) -> float | None:
+    try:
+        info = fetch_financial_statements(str(ticker or "").upper()).info or {}
+    except Exception:
+        info = {}
+    beta = info.get("beta")
+    try:
+        return float(beta) if beta is not None else None
+    except Exception:
+        return None
+
+
+def _risk_adjusted_quantity(
+    role_budget: float,
+    proposed_price: float,
+    atr_14: float | None,
+    beta: float | None,
+    *,
+    risk_per_share_multiplier: float = DEFAULT_SIZING_ATR_MULTIPLIER,
+    base_risk_fraction: float = DEFAULT_SIZING_BASE_RISK_FRACTION,
+) -> int:
+    max_shares_by_capital = math.floor(float(role_budget) / float(proposed_price)) if proposed_price > 0 else 0
+    if max_shares_by_capital <= 0:
+        return 0
+    if atr_14 is None or atr_14 <= 0:
+        return max_shares_by_capital
+    effective_beta = max(float(beta or 1.0), 0.3)
+    effective_risk_fraction = float(base_risk_fraction) / effective_beta
+    risk_per_share = float(atr_14) * float(risk_per_share_multiplier)
+    if risk_per_share <= 0:
+        return max_shares_by_capital
+    max_shares_by_risk = math.floor((float(role_budget) * effective_risk_fraction) / risk_per_share)
+    return max(0, min(max_shares_by_capital, max_shares_by_risk))
+
+
 def generate_buy_plans(
     portfolio_id: int,
     *,
@@ -281,6 +351,10 @@ def generate_buy_plans(
         )
         return []
     allocation = allocate_budget(portfolio_id, config=config)
+    sizing_settings = get_sizing_settings()
+    sizing_method = str(sizing_settings.get("sizing_method") or DEFAULT_SIZING_METHOD)
+    base_risk_fraction = float(sizing_settings.get("sizing_base_risk_fraction") or DEFAULT_SIZING_BASE_RISK_FRACTION)
+    atr_multiplier = float(sizing_settings.get("sizing_atr_multiplier") or DEFAULT_SIZING_ATR_MULTIPLIER)
     theme_budgets = {int(item["theme_id"]): item for item in allocation.get("themes", [])}
     pending_buys = _pending_plan_index(portfolio_id, "Buy")
     open_positions = _open_position_index(portfolio_id)
@@ -300,14 +374,35 @@ def generate_buy_plans(
         proposed_price = float(item.get("suggested_entry_price") or 0.0)
         if role_budget <= 0 or proposed_price <= 0:
             continue
-        quantity = math.floor(role_budget / proposed_price)
+        atr_14 = _lookup_atr(ticker)
+        beta = _lookup_beta(ticker)
+        if sizing_method == "risk_budget":
+            quantity = _risk_adjusted_quantity(
+                role_budget,
+                proposed_price,
+                atr_14,
+                beta,
+                risk_per_share_multiplier=atr_multiplier,
+                base_risk_fraction=base_risk_fraction,
+            )
+        else:
+            quantity = math.floor(role_budget / proposed_price)
         if quantity <= 0:
             continue
         planned_keys.add(key)
-        rationale = (
-            f"Entry Signal from discovery watchlist. "
-            f"{item.get('discovery_rationale') or 'Candidate meets paper-trading entry criteria.'}"
-        )
+        if sizing_method == "risk_budget" and atr_14 is not None and atr_14 > 0:
+            risk_per_share = float(atr_14) * atr_multiplier
+            rationale = (
+                f"Entry Signal from discovery watchlist. "
+                f"Risk-sized: ATR={atr_14:.2f}, beta={float(beta or 1.0):.2f}, "
+                f"risk/share=${risk_per_share:.2f}. "
+                f"{item.get('discovery_rationale') or 'Candidate meets paper-trading entry criteria.'}"
+            )
+        else:
+            rationale = (
+                f"Entry Signal from discovery watchlist. "
+                f"{item.get('discovery_rationale') or 'Candidate meets paper-trading entry criteria.'}"
+            )
         created.append(
             create_trade_plan(
                 portfolio_id,
@@ -322,6 +417,7 @@ def generate_buy_plans(
                 crowd_score=int(item.get("crowd_score")) if item.get("crowd_score") is not None else None,
                 source="discovery",
                 meta_labeler_score=float(item.get("meta_labeler_probability")) if item.get("meta_labeler_probability") is not None else None,
+                sizing_method="risk_budget" if sizing_method == "risk_budget" and atr_14 is not None and atr_14 > 0 else "equal_dollar",
             )
         )
     return created

@@ -209,6 +209,7 @@ def _create_paper_trade_plan_table(conn: sqlite3.Connection) -> None:
             broker_status TEXT,
             filled_quantity REAL NOT NULL DEFAULT 0,
             meta_labeler_score REAL,
+            sizing_method TEXT NOT NULL DEFAULT 'equal_dollar',
             agent_trace TEXT NOT NULL DEFAULT '',
             notes TEXT NOT NULL DEFAULT '',
             created_at TEXT NOT NULL,
@@ -395,6 +396,29 @@ def _migrate_discovery_watchlist_fundamental_gate(conn: sqlite3.Connection) -> N
             conn.execute(f"ALTER TABLE discovery_watchlist ADD COLUMN {column} {ddl}")
         except Exception:
             pass
+
+
+def _migrate_discovery_watchlist_cross_sectional(conn: sqlite3.Connection) -> None:
+    columns = (
+        ("beta", "REAL"),
+        ("beta_adjusted_return", "REAL"),
+        ("vol_z_score", "REAL"),
+        ("vol_z_interpretation", "TEXT NOT NULL DEFAULT ''"),
+        ("normalized_crowd_score", "INTEGER"),
+        ("peer_percentile_json", "TEXT NOT NULL DEFAULT ''"),
+    )
+    for column, ddl in columns:
+        try:
+            conn.execute(f"ALTER TABLE discovery_watchlist ADD COLUMN {column} {ddl}")
+        except Exception:
+            pass
+
+
+def _migrate_paper_trade_plan_sizing_method(conn: sqlite3.Connection) -> None:
+    try:
+        conn.execute("ALTER TABLE paper_trade_plan ADD COLUMN sizing_method TEXT NOT NULL DEFAULT 'equal_dollar'")
+    except Exception:
+        pass
 
 
 def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
@@ -716,6 +740,12 @@ def _connect() -> sqlite3.Connection:
             roic_pct REAL,
             altman_z_score REAL,
             altman_z_interpretation TEXT NOT NULL DEFAULT '',
+            beta REAL,
+            beta_adjusted_return REAL,
+            vol_z_score REAL,
+            vol_z_interpretation TEXT NOT NULL DEFAULT '',
+            normalized_crowd_score INTEGER,
+            peer_percentile_json TEXT NOT NULL DEFAULT '',
             fundamental_details TEXT NOT NULL DEFAULT '',
             status TEXT NOT NULL DEFAULT 'Watching'
                 CHECK (status IN ('Watching', 'Entry Signal', 'Added', 'Passed', 'Expired')),
@@ -791,7 +821,9 @@ def _connect() -> sqlite3.Connection:
     _ensure_paper_schema(conn)
     _migrate_paper_trade_plan_agent_trace(conn)
     _migrate_trade_plan_source_check(conn)
+    _migrate_paper_trade_plan_sizing_method(conn)
     _migrate_discovery_watchlist_fundamental_gate(conn)
+    _migrate_discovery_watchlist_cross_sectional(conn)
     _migrate_audit_event_type_check(conn)
     _migrate_alert_log_type_check(conn)
     _migrate_legacy_theses(conn)
@@ -1548,6 +1580,7 @@ def upsert_watchlist_candidate(
     suggested_entry_price: float | None = None,
     suggested_stop_price: float | None = None,
     crowd_score: int = 50,
+    normalized_crowd_score: int | None = None,
     crowd_details: str = "",
     regime_label: str | None = None,
     regime_probability: float | None = None,
@@ -1562,10 +1595,11 @@ def upsert_watchlist_candidate(
             INSERT INTO discovery_watchlist (
                 theme_id, ticker, company_name, supply_chain_layer, discovery_rationale,
                 suggested_role, suggested_entry_price, suggested_stop_price, crowd_score,
+                normalized_crowd_score,
                 crowd_details, regime_label, regime_probability, status, discovered_at,
                 last_scanned_at, notes
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(theme_id, ticker) DO UPDATE SET
                 company_name = excluded.company_name,
                 supply_chain_layer = excluded.supply_chain_layer,
@@ -1574,6 +1608,7 @@ def upsert_watchlist_candidate(
                 suggested_entry_price = excluded.suggested_entry_price,
                 suggested_stop_price = excluded.suggested_stop_price,
                 crowd_score = excluded.crowd_score,
+                normalized_crowd_score = excluded.normalized_crowd_score,
                 crowd_details = excluded.crowd_details,
                 regime_label = excluded.regime_label,
                 regime_probability = excluded.regime_probability,
@@ -1597,6 +1632,7 @@ def upsert_watchlist_candidate(
                 float(suggested_entry_price) if suggested_entry_price is not None else None,
                 float(suggested_stop_price) if suggested_stop_price is not None else None,
                 max(0, min(100, int(crowd_score))),
+                max(0, min(100, int(normalized_crowd_score))) if normalized_crowd_score is not None else None,
                 crowd_details,
                 regime_label,
                 float(regime_probability) if regime_probability is not None else None,
@@ -1724,6 +1760,40 @@ def update_watchlist_fundamental_gate(
                 float(altman_z_score) if altman_z_score is not None else None,
                 str(altman_z_interpretation or ""),
                 details_json,
+                int(watchlist_id),
+            ),
+        )
+
+
+def update_watchlist_cross_sectional(
+    watchlist_id: int,
+    *,
+    beta: float | None = None,
+    beta_adjusted_return: float | None = None,
+    vol_z_score: float | None = None,
+    vol_z_interpretation: str = "",
+    normalized_crowd_score: int | None = None,
+    peer_percentile_json: str = "",
+) -> None:
+    with _connect() as conn:
+        conn.execute(
+            """
+            UPDATE discovery_watchlist
+            SET beta = ?,
+                beta_adjusted_return = ?,
+                vol_z_score = ?,
+                vol_z_interpretation = ?,
+                normalized_crowd_score = ?,
+                peer_percentile_json = ?
+            WHERE id = ?
+            """,
+            (
+                float(beta) if beta is not None else None,
+                float(beta_adjusted_return) if beta_adjusted_return is not None else None,
+                float(vol_z_score) if vol_z_score is not None else None,
+                str(vol_z_interpretation or ""),
+                int(normalized_crowd_score) if normalized_crowd_score is not None else None,
+                str(peer_percentile_json or ""),
                 int(watchlist_id),
             ),
         )
@@ -2168,6 +2238,7 @@ def create_trade_plan(
     crowd_score: int | None = None,
     source: str = "discovery",
     meta_labeler_score: float | None = None,
+    sizing_method: str = "equal_dollar",
     agent_trace: str = "",
 ) -> dict[str, Any]:
     now = datetime.now(timezone.utc).isoformat()
@@ -2176,9 +2247,9 @@ def create_trade_plan(
             """
             INSERT INTO paper_trade_plan (
                 portfolio_id, theme_id, ticker, action, quantity, proposed_price, rationale,
-                regime_label, regime_probability, crowd_score, source, status, meta_labeler_score, agent_trace, created_at, updated_at
+                regime_label, regime_probability, crowd_score, source, status, meta_labeler_score, sizing_method, agent_trace, created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Pending', ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Pending', ?, ?, ?, ?, ?)
             """,
             (
                 int(portfolio_id),
@@ -2193,6 +2264,7 @@ def create_trade_plan(
                 int(crowd_score) if crowd_score is not None else None,
                 source,
                 float(meta_labeler_score) if meta_labeler_score is not None else None,
+                str(sizing_method or "equal_dollar"),
                 str(agent_trace or ""),
                 now,
                 now,
@@ -2916,6 +2988,22 @@ def get_pending_outcomes(as_of: str | None = None) -> list[dict[str, int | str |
         if snapshot.get("return_3m") is None and due_3m <= today:
             pending.append({**snapshot, "interval": "3m"})
     return pending
+
+
+def get_latest_signal_snapshot(ticker: str, max_age_days: int = 7) -> dict[str, Any] | None:
+    with _connect() as conn:
+        row = conn.execute(
+            """
+            SELECT *
+            FROM signal_snapshots
+            WHERE ticker = ?
+              AND snapshot_date >= date('now', ?)
+            ORDER BY snapshot_date DESC, updated_at DESC, id DESC
+            LIMIT 1
+            """,
+            (str(ticker or "").upper(), f"-{int(max_age_days)} day"),
+        ).fetchone()
+    return dict(row) if row else None
 
 
 def _signal_hit(action: str, raw_return: float) -> int:
