@@ -61,6 +61,14 @@ async def lifespan(app: FastAPI):
     Path("data").mkdir(parents=True, exist_ok=True)
     init_db()
     try:
+        from src.regime.event_bus import get_event_bus, register_default_subscribers
+
+        bus = get_event_bus()
+        register_default_subscribers(bus)
+        logger.info("Event bus initialized with %d subscribers", bus.subscriber_count())
+    except Exception as exc:
+        logger.warning("Event bus startup skipped: %s", exc)
+    try:
         from src.app.startup_checks import run_all_checks
 
         errors, warnings = run_all_checks()

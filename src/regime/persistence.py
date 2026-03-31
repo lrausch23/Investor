@@ -74,6 +74,7 @@ ALERT_TYPES = (
     "capital_ceiling_breach",
     "wash_sale_block",
     "data_validation_failed",
+    "bus_event",
     "test",
 )
 
@@ -96,6 +97,7 @@ _NOTIFICATION_DEFAULT_MATRIX: dict[str, tuple[str, ...]] = {
     "capital_ceiling_breach": ("in_app", "email"),
     "wash_sale_block": ("in_app",),
     "data_validation_failed": ("in_app", "email"),
+    "bus_event": ("in_app",),
     "test": ("in_app", "email", "slack"),
 }
 
@@ -141,7 +143,7 @@ def _create_alert_log_table(conn: sqlite3.Connection) -> None:
                     'daily_loss_breach', 'meta_labeler_veto', 'vix_freeze', 'vix_resume',
                     'execution_error', 'connection_lost', 'connection_restored',
                     'drawdown_breach', 'concentration_breach', 'ml_accuracy_drift',
-                    'capital_ceiling_breach', 'wash_sale_block', 'data_validation_failed', 'test'
+                    'capital_ceiling_breach', 'wash_sale_block', 'data_validation_failed', 'bus_event', 'test'
                 )
             ),
             severity TEXT NOT NULL DEFAULT 'info' CHECK (severity IN ('info', 'warning', 'critical')),
@@ -321,11 +323,11 @@ def _migrate_alert_log_type_check(conn: sqlite3.Connection) -> None:
         "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'alert_log'"
     ).fetchone()
     create_sql = str(row["sql"] or "") if row else ""
-    if "'wash_sale_block'" in create_sql and "'data_validation_failed'" in create_sql:
+    if "'wash_sale_block'" in create_sql and "'data_validation_failed'" in create_sql and "'bus_event'" in create_sql:
         return
     if not _table_exists(conn, "alert_log"):
         return
-    logger.info("Migrating alert_log alert_type CHECK to include 'wash_sale_block'")
+    logger.info("Migrating alert_log alert_type CHECK to include 'bus_event'")
     conn.execute("ALTER TABLE alert_log RENAME TO _alert_log_old")
     _create_alert_log_table(conn)
     old_columns = [str(col["name"]) for col in conn.execute("PRAGMA table_info(_alert_log_old)").fetchall()]
@@ -2111,6 +2113,27 @@ def create_trade_plan(
             ),
         )
         plan_id = int(cursor.lastrowid)
+    try:
+        from .event_bus import get_event_bus
+        from .events import TradeIntentEvent
+
+        bus = get_event_bus()
+        bus.publish_sync(
+            TradeIntentEvent(
+                ticker=ticker.upper(),
+                portfolio_id=int(portfolio_id),
+                action=str(action),
+                source=str(source),
+                plan_id=plan_id,
+                meta_labeler_score=float(meta_labeler_score) if meta_labeler_score is not None else None,
+                regime_label=str(regime_label or ""),
+                quantity=float(quantity),
+                proposed_price=float(proposed_price) if proposed_price is not None else None,
+                rationale=str(rationale or ""),
+            )
+        )
+    except Exception:
+        logger.debug("Event bus publish failed for trade_intent %s — non-fatal", ticker, exc_info=True)
     return get_trade_plan(plan_id) or {}
 
 
@@ -2763,6 +2786,24 @@ def save_signal_snapshot(
                 now,
             ),
         )
+    try:
+        from .event_bus import get_event_bus
+        from .events import SignalSnapshotEvent
+
+        bus = get_event_bus()
+        bus.publish_sync(
+            SignalSnapshotEvent(
+                ticker=ticker.upper(),
+                snapshot_date=snapshot_date,
+                action=action,
+                regime_label=regime_label,
+                regime_probability=float(regime_probability),
+                composite_strength=float(composite_strength),
+                current_price=float(current_price),
+            )
+        )
+    except Exception:
+        logger.debug("Event bus publish failed for signal_snapshot %s — non-fatal", ticker, exc_info=True)
 
 
 def get_pending_outcomes(as_of: str | None = None) -> list[dict[str, int | str | float | None]]:

@@ -2131,6 +2131,7 @@ def _build_regime_dashboard_payload(
                 "confidence_points": confidence_points,
                 "duration_accuracy": duration_context,
                 "unified_confidence": _json_ready(unified_confidence),
+                "unified_confidence_raw": unified_confidence,
                 "theme_membership": theme_membership,
                 "theme_target_price": theme_target_price,
                 "theme_stop_price": theme_stop_price,
@@ -2157,6 +2158,33 @@ def _build_regime_dashboard_payload(
                 snapshots_saved_count += 1
             except Exception as exc:
                 logger.warning("Unable to persist signal snapshot for %s.", ticker, exc_info=exc)
+        try:
+            from src.regime.event_bus import get_event_bus
+            from src.regime.events import enriched_signal_from_payload
+
+            confidence_raw = unified_confidence
+            if price_targets is not None and confidence_raw is not None:
+                latest_volume = None
+                try:
+                    latest_volume = float(market_frame["volume"].iloc[-1])
+                except Exception:
+                    latest_volume = None
+                event = enriched_signal_from_payload(
+                    ticker=ticker,
+                    regime_result=regime,
+                    composite_signal=composite_signal,
+                    price_targets=price_targets,
+                    confidence=confidence_raw,
+                    ensemble_verdict=None,
+                    benchmark=benchmark,
+                    snapshot_date=dt.date.today().isoformat(),
+                    source="regime_analysis",
+                    meta_labeler_score=None,
+                    volume=latest_volume,
+                )
+                get_event_bus().publish_sync(event)
+        except Exception:
+            logger.debug("Event bus publish failed for enriched_signal %s — non-fatal", ticker, exc_info=True)
 
     cache_hits = 0
     cache_misses = 0
@@ -5682,6 +5710,7 @@ def regime_health(
         raise HTTPException(status_code=503, detail=runtime_error or "Regime analytics are unavailable.")
     from src.regime.backup import get_backup_status
     from src.regime.data_validator import check_database_health
+    from src.regime.event_bus import get_event_bus
     from src.regime.meta_labeler import list_saved_versions
     from src.regime.persistence import DB_PATH
     from src.regime.recovery import detect_stuck_orders
@@ -5689,6 +5718,7 @@ def regime_health(
 
     db = check_database_health()
     backup = get_backup_status()
+    bus = get_event_bus()
     watchdog = get_watchdog()
     ibkr = None
     if "validate_ibkr_readiness" in runtime:
@@ -5763,11 +5793,56 @@ def regime_health(
                 "heartbeat_epoch": heartbeat_epoch,
                 "heartbeat_age_seconds": heartbeat_age_seconds,
                 "backup": backup,
+                "event_bus": {
+                    "running": bus._running,
+                    "subscriber_count": bus.subscriber_count(),
+                    "history_size": len(bus._history),
+                },
                 "active_alerts": active_alerts,
                 "stuck_orders": len(stuck_orders),
             }
         )
     )
+
+
+@router.get("/event-bus/status")
+def regime_event_bus_status(
+    actor: str = Depends(require_actor),
+):
+    """Return event bus health and recent activity."""
+    del actor
+    from src.regime.event_bus import get_event_bus
+
+    bus = get_event_bus()
+    recent = bus.get_history(limit=20)
+    by_type: dict[str, int] = {}
+    for event in recent:
+        event_type = str(event.get("event_type") or "unknown")
+        by_type[event_type] = by_type.get(event_type, 0) + 1
+    return JSONResponse(
+        content={
+            "running": bus._running,
+            "subscriber_count": bus.subscriber_count(),
+            "history_size": len(bus._history),
+            "recent_event_types": by_type,
+            "last_event": recent[-1] if recent else None,
+        }
+    )
+
+
+@router.get("/event-bus/history")
+def regime_event_bus_history(
+    event_type: str | None = None,
+    limit: int = 50,
+    actor: str = Depends(require_actor),
+):
+    """Return recent events from the in-memory ring buffer."""
+    del actor
+    from src.regime.event_bus import get_event_bus
+
+    bus = get_event_bus()
+    events = bus.get_history(event_type=event_type, limit=min(max(int(limit), 1), 200))
+    return JSONResponse(content={"count": len(events), "events": events})
 
 
 @router.get("/theses")
