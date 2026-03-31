@@ -13,6 +13,7 @@ from src.app.routes import regime as regime_route
 from src.regime.agents import AgentBase, get_agent_registry, reset_agent_registry
 from src.regime.agents.execution_agent import ExecutionAgent
 from src.regime.agents.fundamental_agent import FundamentalAgent
+from src.regime.agents.orchestrator import AgentOrchestrator, OrchestratorConfig
 from src.regime.agents.portfolio_agent import PortfolioTaxAgent
 from src.regime.agents.quant_agent import QuantAgent
 from src.regime.ensemble import AnalystResult, EnsembleConfig
@@ -309,8 +310,7 @@ def test_fundamental_agent_publishes_assessment() -> None:
 
     bus.subscribe("fundamental_assessment", capture)
     agent = FundamentalAgent(bus, runtime=_runtime())
-    agent.register()
-    asyncio.run(bus.publish(EnrichedSignalEvent(ticker="NVDA", source="quant_agent", regime_label="Bull", regime_probability=0.8, composite_action="Buy", meta_labeler_score=0.6, benchmark="SOXX")))
+    asyncio.run(agent.handle(EnrichedSignalEvent(ticker="NVDA", source="quant_agent", regime_label="Bull", regime_probability=0.8, composite_action="Buy", meta_labeler_score=0.6, benchmark="SOXX")))
     assert len(seen) == 1
     assert seen[0].verdict == "Buy"
 
@@ -333,8 +333,7 @@ def test_fundamental_agent_veto_on_low_ml_score() -> None:
 
     bus.subscribe("fundamental_assessment", capture)
     agent = FundamentalAgent(bus, runtime=runtime)
-    agent.register()
-    asyncio.run(bus.publish(EnrichedSignalEvent(ticker="NVDA", source="quant_agent", regime_label="Bull", regime_probability=0.8, composite_action="Buy", meta_labeler_score=0.2)))
+    asyncio.run(agent.handle(EnrichedSignalEvent(ticker="NVDA", source="quant_agent", regime_label="Bull", regime_probability=0.8, composite_action="Buy", meta_labeler_score=0.2)))
     assert len(seen) == 1
     assert seen[0].vetoed is True
     assert called["llm"] == 0
@@ -380,8 +379,7 @@ def test_portfolio_agent_approves_buy() -> None:
 
     bus.subscribe("trade_decision", capture)
     agent = PortfolioTaxAgent(bus, runtime=_runtime())
-    agent.register()
-    asyncio.run(bus.publish(EnrichedSignalEvent(ticker="NVDA", source="quant_agent", composite_action="Buy", composite_strength=0.8, current_price=100.0, ensemble_sizing_multiplier=1.0, regime_label="Bull", meta_labeler_score=0.7)))
+    asyncio.run(agent.handle(EnrichedSignalEvent(ticker="NVDA", source="quant_agent", composite_action="Buy", composite_strength=0.8, current_price=100.0, ensemble_sizing_multiplier=1.0, regime_label="Bull", meta_labeler_score=0.7)))
     assert len(seen) == 1
     assert seen[0].decision == "approved"
 
@@ -398,8 +396,7 @@ def test_portfolio_agent_vetoes_wash_sale() -> None:
 
     bus.subscribe("trade_decision", capture)
     agent = PortfolioTaxAgent(bus, runtime=runtime)
-    agent.register()
-    asyncio.run(bus.publish(EnrichedSignalEvent(ticker="NVDA", source="quant_agent", composite_action="Buy", composite_strength=0.8, current_price=100.0)))
+    asyncio.run(agent.handle(EnrichedSignalEvent(ticker="NVDA", source="quant_agent", composite_action="Buy", composite_strength=0.8, current_price=100.0)))
     assert seen[0].decision == "vetoed"
     assert seen[0].veto_reason == "wash_sale_restricted"
 
@@ -503,6 +500,7 @@ def test_full_agent_pipeline_end_to_end(monkeypatch) -> None:
     registry.register(FundamentalAgent(bus, runtime=runtime))
     registry.register(PortfolioTaxAgent(bus, runtime=runtime))
     registry.register(ExecutionAgent(bus, runtime=runtime))
+    registry.register(AgentOrchestrator(bus, config=OrchestratorConfig()))
 
     seen: dict[str, list[BaseEvent]] = {"enriched": [], "fundamental": [], "decision": [], "execution": []}
 

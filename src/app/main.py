@@ -65,6 +65,7 @@ async def lifespan(app: FastAPI):
         from src.regime.agents import get_agent_registry
         from src.regime.agents.execution_agent import ExecutionAgent
         from src.regime.agents.fundamental_agent import FundamentalAgent
+        from src.regime.agents.orchestrator import AgentOrchestrator, OrchestratorConfig
         from src.regime.agents.portfolio_agent import PortfolioTaxAgent
         from src.regime.agents.quant_agent import QuantAgent
         from src.app.routes.regime import _load_hmm_runtime
@@ -78,6 +79,15 @@ async def lifespan(app: FastAPI):
         agent_registry.register(FundamentalAgent(bus, runtime_loader=runtime_loader))
         agent_registry.register(PortfolioTaxAgent(bus, runtime_loader=runtime_loader))
         agent_registry.register(ExecutionAgent(bus, runtime_loader=runtime_loader))
+        agent_registry.register(
+            AgentOrchestrator(
+                bus,
+                config=OrchestratorConfig(
+                    fundamental_timeout_seconds=30.0,
+                    portfolio_timeout_seconds=10.0,
+                ),
+            )
+        )
         logger.info("Agent topology initialized with %d agents", len(agent_registry.all_agents()))
     except Exception as exc:
         logger.warning("Event bus / agent startup skipped: %s", exc)

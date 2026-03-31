@@ -59,17 +59,24 @@ async def trade_decision_subscriber(event: BaseEvent) -> None:
         return
     if event.decision != "approved":
         return
+    rationale = str(event.sizing_rationale or "")
+    agent_trace = ""
+    if "[agents:" in rationale:
+        trace_start = rationale.index("[agents:")
+        agent_trace = rationale[trace_start:].strip()
+        rationale = rationale[:trace_start].strip()
     try:
         create_trade_plan(
             portfolio_id=event.portfolio_id,
             ticker=event.ticker,
             action=event.action,
             quantity=float(event.quantity or 0.0),
-            rationale=event.sizing_rationale or f"Agent decision: {event.decision}",
+            rationale=rationale or f"Agent decision: {event.decision}",
             proposed_price=event.proposed_price,
             regime_label=event.regime_label or None,
             source="discovery" if str(event.action).lower() == "buy" else "exit_signal",
             meta_labeler_score=event.meta_labeler_score,
+            agent_trace=agent_trace,
         )
     except Exception as exc:
         logger.error("trade_decision_subscriber: persistence failed: %s", exc)

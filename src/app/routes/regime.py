@@ -3064,6 +3064,8 @@ def _build_shell_context(
             "ensemble_analysts": "/regime/ensemble/analysts",
             "ensemble_weights": "/regime/ensemble/weights",
             "agents_status": "/regime/agents/status",
+            "agents_consensus": "/regime/agents/consensus",
+            "orchestrator_settings": "/regime/orchestrator/settings",
             "autonomy_settings": "/regime/autonomy/settings",
             "tax_settings": "/regime/tax-settings",
             "health": "/regime/health",
@@ -5722,6 +5724,7 @@ def regime_health(
     backup = get_backup_status()
     bus = get_event_bus()
     agent_registry = get_agent_registry()
+    orchestrator = agent_registry.get("orchestrator")
     watchdog = get_watchdog()
     ibkr = None
     if "validate_ibkr_readiness" in runtime:
@@ -5804,12 +5807,77 @@ def regime_health(
                 "agents": {
                     "count": len(agent_registry.all_agents()),
                     "agents": agent_registry.status(),
+                    "orchestrator": {
+                        "registered": orchestrator is not None,
+                        "enabled": bool(orchestrator.enabled) if orchestrator is not None else False,
+                        "config": {
+                            "fundamental_timeout_seconds": float(orchestrator.config.fundamental_timeout_seconds),
+                            "portfolio_timeout_seconds": float(orchestrator.config.portfolio_timeout_seconds),
+                            "skip_fundamental_on_timeout": bool(orchestrator.config.skip_fundamental_on_timeout),
+                            "fundamental_veto_respected": bool(orchestrator.config.fundamental_veto_respected),
+                        }
+                        if orchestrator is not None
+                        else {},
+                    },
                 },
                 "active_alerts": active_alerts,
                 "stuck_orders": len(stuck_orders),
             }
         )
     )
+
+
+def _orchestrator_settings_payload() -> dict[str, Any]:
+    from src.regime.agents import get_agent_registry
+
+    registry = get_agent_registry()
+    orchestrator = registry.get("orchestrator")
+    if orchestrator is None:
+        return {"error": "orchestrator not registered", "registered": False}
+    return {
+        "registered": True,
+        "fundamental_timeout_seconds": float(orchestrator.config.fundamental_timeout_seconds),
+        "portfolio_timeout_seconds": float(orchestrator.config.portfolio_timeout_seconds),
+        "skip_fundamental_on_timeout": bool(orchestrator.config.skip_fundamental_on_timeout),
+        "fundamental_veto_respected": bool(orchestrator.config.fundamental_veto_respected),
+    }
+
+
+@router.get("/orchestrator/settings")
+def regime_orchestrator_settings_get(
+    actor: str = Depends(require_actor),
+):
+    del actor
+    return JSONResponse(content=_json_ready(_orchestrator_settings_payload()))
+
+
+@router.put("/orchestrator/settings")
+async def regime_orchestrator_settings_put(
+    request: Request,
+    actor: str = Depends(require_actor),
+):
+    del actor
+    from src.regime.agents import get_agent_registry
+
+    registry = get_agent_registry()
+    orchestrator = registry.get("orchestrator")
+    if orchestrator is None:
+        return JSONResponse(content={"error": "orchestrator not registered", "registered": False})
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Request body must be a JSON object.")
+    if "fundamental_timeout_seconds" in payload:
+        orchestrator.config.fundamental_timeout_seconds = max(0.1, float(payload["fundamental_timeout_seconds"]))
+    if "portfolio_timeout_seconds" in payload:
+        orchestrator.config.portfolio_timeout_seconds = max(0.1, float(payload["portfolio_timeout_seconds"]))
+    if "skip_fundamental_on_timeout" in payload:
+        orchestrator.config.skip_fundamental_on_timeout = bool(payload["skip_fundamental_on_timeout"])
+    if "fundamental_veto_respected" in payload:
+        orchestrator.config.fundamental_veto_respected = bool(payload["fundamental_veto_respected"])
+    return JSONResponse(content=_json_ready(_orchestrator_settings_payload()))
 
 
 @router.get("/agents/status")
@@ -5820,10 +5888,92 @@ def regime_agents_status(
     from src.regime.agents import get_agent_registry
 
     registry = get_agent_registry()
+    orchestrator = registry.get("orchestrator")
     return JSONResponse(
         content={
             "agent_count": len(registry.all_agents()),
             "agents": registry.status(),
+            "orchestrator": {
+                "registered": orchestrator is not None,
+                "enabled": bool(orchestrator.enabled) if orchestrator is not None else False,
+                "config": {
+                    "fundamental_timeout_seconds": float(orchestrator.config.fundamental_timeout_seconds),
+                    "portfolio_timeout_seconds": float(orchestrator.config.portfolio_timeout_seconds),
+                    "skip_fundamental_on_timeout": bool(orchestrator.config.skip_fundamental_on_timeout),
+                    "fundamental_veto_respected": bool(orchestrator.config.fundamental_veto_respected),
+                }
+                if orchestrator is not None
+                else {},
+            },
+        }
+    )
+
+
+@router.get("/agents/consensus")
+def regime_agents_consensus(
+    limit: int = 20,
+    actor: str = Depends(require_actor),
+):
+    del actor
+    from src.regime.event_bus import get_event_bus
+
+    bus = get_event_bus()
+    signals = bus.get_history(event_type="enriched_signal", limit=100)
+    fundamentals = bus.get_history(event_type="fundamental_assessment", limit=100)
+    decisions = bus.get_history(event_type="trade_decision", limit=100)
+    executions = bus.get_history(event_type="order_execution", limit=100)
+    consensus: dict[str, dict[str, Any]] = {}
+
+    for sig in signals:
+        ticker = str(sig.get("ticker") or "").upper()
+        if ticker:
+            consensus.setdefault(ticker, {})["quant"] = {
+                "action": sig.get("composite_action"),
+                "regime": sig.get("regime_label"),
+                "confidence": sig.get("unified_confidence"),
+                "ml_score": sig.get("meta_labeler_score"),
+                "at": sig.get("created_at"),
+            }
+    for assessment in fundamentals:
+        ticker = str(assessment.get("ticker") or "").upper()
+        if ticker:
+            consensus.setdefault(ticker, {})["fundamental"] = {
+                "verdict": assessment.get("verdict"),
+                "vetoed": assessment.get("vetoed"),
+                "sentiment": assessment.get("catalyst_sentiment"),
+                "at": assessment.get("created_at"),
+            }
+    for decision in decisions:
+        ticker = str(decision.get("ticker") or "").upper()
+        if ticker:
+            consensus.setdefault(ticker, {})["portfolio"] = {
+                "decision": decision.get("decision"),
+                "action": decision.get("action"),
+                "quantity": decision.get("quantity"),
+                "veto_reason": decision.get("veto_reason"),
+                "at": decision.get("created_at"),
+            }
+    for execution in executions:
+        ticker = str(execution.get("ticker") or "").upper()
+        if ticker:
+            consensus.setdefault(ticker, {})["execution"] = {
+                "status": execution.get("status"),
+                "filled_price": execution.get("filled_price"),
+                "at": execution.get("created_at"),
+            }
+
+    sorted_tickers = sorted(
+        consensus.keys(),
+        key=lambda ticker: max(
+            str(consensus[ticker].get(agent_name, {}).get("at") or "")
+            for agent_name in ("quant", "fundamental", "portfolio", "execution")
+        ),
+        reverse=True,
+    )[: min(max(int(limit), 1), 100)]
+    return JSONResponse(
+        content={
+            "ticker_count": len(sorted_tickers),
+            "consensus": {ticker: consensus[ticker] for ticker in sorted_tickers},
         }
     )
 

@@ -54,6 +54,7 @@
     paperAuditSummary: null,
     paperMonitoring: null,
     systemHealth: null,
+    agentConsensus: null,
     dataValidation: null,
     alertHistory: [],
     unacknowledgedAlerts: [],
@@ -2697,6 +2698,9 @@
     const model = health.model || {};
     const eventBus = health.event_bus || {};
     const agentData = health.agents || {};
+    const orchestrator = agentData.orchestrator || {};
+    const consensus = state.agentConsensus || {};
+    const consensusRows = Object.entries(consensus.consensus || {});
     const heartbeatAge = Number(health.heartbeat_age_seconds || 0);
     const heartbeatBadge = heartbeatAge <= 60
       ? "ui-badge ui-badge--safe"
@@ -2750,11 +2754,41 @@
         <div class="ui-muted" style="margin-top:6px">Last regime check ${escapeHtml(relativeTime(health.last_regime_check) || "never")} · Last plan generation ${escapeHtml(relativeTime(health.last_paper_plans) || "never")} · Heartbeat <span class="${heartbeatBadge}">${escapeHtml(health.heartbeat ? relativeTime(health.heartbeat) : "missing")}</span></div>
         <div class="ui-muted" style="margin-top:6px">Event Bus <span class="${eventBus.running ? "ui-badge ui-badge--safe" : "ui-badge ui-badge--bad"}">${escapeHtml(eventBus.running ? `Active (${eventBus.subscriber_count || 0} subscribers)` : "Stopped")}</span> · History ${escapeHtml(eventBus.history_size || 0)}</div>
         <div class="ui-muted" style="margin-top:6px">Agents <span class="${agentList.length && enabledAgents === agentList.length ? "ui-badge ui-badge--safe" : agentList.length ? "ui-badge ui-badge--warn" : "ui-badge ui-badge--neutral"}">${escapeHtml(`${agentData.count || 0} registered · ${enabledAgents} enabled`)}</span>${agentList.length ? ` · ${escapeHtml(agentList.map((agent) => `${agent.name}${agent.enabled ? "" : " (disabled)"}`).join(", "))}` : ""}</div>
+        <div class="ui-muted" style="margin-top:6px">Orchestrator <span class="${orchestrator.registered ? "ui-badge ui-badge--safe" : "ui-badge ui-badge--neutral"}">${escapeHtml(orchestrator.registered ? "registered" : "missing")}</span>${orchestrator.config ? ` · F ${escapeHtml(String(orchestrator.config.fundamental_timeout_seconds || 0))}s · P ${escapeHtml(String(orchestrator.config.portfolio_timeout_seconds || 0))}s` : ""}</div>
         <div class="ui-muted" style="margin-top:6px">Out-of-band watchdog: configure manually</div>
         ${Array.isArray((validation || {}).issues) && validation.issues.length ? `<div class="ui-muted" style="margin-top:8px">${escapeHtml(validation.issues.join(" | "))}</div>` : ""}
         <details style="margin-top:10px">
           <summary style="cursor:pointer; font-weight:600">Backups (${escapeHtml((backup.backup_count || 0))})</summary>
           <div class="ui-muted" style="margin-top:8px">Directory ${escapeHtml(backup.backup_dir || "")} · Total size ${escapeHtml(formatCurrency((Number(backup.total_size_bytes || 0) / 1024 / 1024), 2))} MB</div>
+        </details>
+        <details style="margin-top:10px" ${consensusRows.length ? "open" : ""}>
+          <summary style="cursor:pointer; font-weight:600">Agent Consensus (${escapeHtml(consensus.ticker_count || 0)})</summary>
+          ${consensusRows.length ? `
+            <div class="table-wrap" style="margin-top:10px">
+              <table class="ui-table">
+                <thead>
+                  <tr>
+                    <th>Ticker</th>
+                    <th>Quant</th>
+                    <th>Fundamental</th>
+                    <th>Portfolio</th>
+                    <th>Execution</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${consensusRows.map(([ticker, item]) => `
+                    <tr>
+                      <td><strong>${escapeHtml(ticker)}</strong></td>
+                      <td>${escapeHtml(item.quant ? `${item.quant.action || "—"}${item.quant.confidence != null ? ` (${formatFixed(item.quant.confidence, 1)})` : ""}` : "—")}</td>
+                      <td>${escapeHtml(item.fundamental ? `${item.fundamental.verdict || "—"}${item.fundamental.vetoed ? " (veto)" : ""}` : "—")}</td>
+                      <td>${escapeHtml(item.portfolio ? `${item.portfolio.decision || "—"}${item.portfolio.veto_reason ? ` (${item.portfolio.veto_reason})` : ""}` : "—")}</td>
+                      <td>${escapeHtml(item.execution ? `${item.execution.status || "—"}${item.execution.filled_price != null ? ` @ ${formatCurrency(item.execution.filled_price, 2)}` : ""}` : "—")}</td>
+                    </tr>
+                  `).join("")}
+                </tbody>
+              </table>
+            </div>
+          ` : '<div class="ui-muted" style="margin-top:8px">No orchestrated agent events yet.</div>'}
         </details>
       </div>
       <div class="regime-monitor-grid" style="margin-top:12px">
@@ -4086,6 +4120,7 @@
       state.paperAudit = [];
       state.paperAuditSummary = null;
       state.paperMonitoring = null;
+      state.agentConsensus = null;
       state.unacknowledgedAlerts = [];
       state.alertHistory = [];
       state.vixStatus = null;
@@ -4103,7 +4138,7 @@
       return;
     }
     try {
-      const [detailResponse, autonomySettingsResponse, autonomyStatusResponse, marketDataSettingsResponse, notificationPreferencesResponse, budgetResponse, plansResponse, positionsResponse, taxLotsResponse, washSaleResponse, performanceResponse, auditResponse, precheckResponse, monitoringResponse, healthResponse, validationResponse, alertsResponse, alertHistoryResponse, vixResponse] = await Promise.all([
+      const [detailResponse, autonomySettingsResponse, autonomyStatusResponse, marketDataSettingsResponse, notificationPreferencesResponse, budgetResponse, plansResponse, positionsResponse, taxLotsResponse, washSaleResponse, performanceResponse, auditResponse, precheckResponse, monitoringResponse, healthResponse, consensusResponse, validationResponse, alertsResponse, alertHistoryResponse, vixResponse] = await Promise.all([
         fetch(paperEndpoint("paper_portfolio", portfolioId), { headers: { Accept: "application/json" } }),
         fetch(state.config.endpoints.autonomy_settings, { headers: { Accept: "application/json" } }),
         fetch(paperEndpoint("paper_autonomy_status", portfolioId), { headers: { Accept: "application/json" } }),
@@ -4119,6 +4154,7 @@
         fetch(paperEndpoint("paper_precheck", portfolioId), { method: "POST", headers: { Accept: "application/json" } }),
         fetch(paperEndpoint("paper_monitoring", portfolioId), { headers: { Accept: "application/json" } }),
         fetch(state.config.endpoints.health, { headers: { Accept: "application/json" } }),
+        fetch(`${state.config.endpoints.agents_consensus}?limit=20`, { headers: { Accept: "application/json" } }),
         fetch(state.config.endpoints.data_validation, { headers: { Accept: "application/json" } }),
         fetch(`${state.config.endpoints.alerts}?unacknowledged=true&limit=5`, { headers: { Accept: "application/json" } }),
         fetch(`${state.config.endpoints.alerts}?limit=25`, { headers: { Accept: "application/json" } }),
@@ -4131,7 +4167,7 @@
           return {};
         }
       };
-      const [detail, autonomySettings, autonomyStatus, marketDataSettings, notificationPreferences, budget, plans, positions, taxLots, washSale, performance, audit, precheck, monitoring, health, validation, alerts, alertHistory, vixStatus] = await Promise.all([
+      const [detail, autonomySettings, autonomyStatus, marketDataSettings, notificationPreferences, budget, plans, positions, taxLots, washSale, performance, audit, precheck, monitoring, health, consensus, validation, alerts, alertHistory, vixStatus] = await Promise.all([
         parseJson(detailResponse),
         parseJson(autonomySettingsResponse),
         parseJson(autonomyStatusResponse),
@@ -4147,6 +4183,7 @@
         parseJson(precheckResponse),
         parseJson(monitoringResponse),
         parseJson(healthResponse),
+        parseJson(consensusResponse),
         parseJson(validationResponse),
         parseJson(alertsResponse),
         parseJson(alertHistoryResponse),
@@ -4240,6 +4277,12 @@
         state.paperMonitoring = null;
       }
       state.systemHealth = healthResponse.ok ? health : null;
+      if (consensusResponse.ok) {
+        state.agentConsensus = consensus;
+      } else {
+        warnPanel("Agent consensus", consensusResponse, consensus);
+        state.agentConsensus = null;
+      }
       state.dataValidation = validationResponse.ok ? validation : null;
       if (precheckResponse.ok) {
         state.paperPrecheck = Object.fromEntries((Array.isArray(precheck.plans) ? precheck.plans : []).map((row) => [String(row.plan_id), row]));

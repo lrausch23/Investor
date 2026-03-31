@@ -42,6 +42,7 @@ _PAPER_TRADE_PLAN_COLUMNS: dict[str, str] = {
     "broker_status": "TEXT",
     "filled_quantity": "REAL NOT NULL DEFAULT 0",
     "meta_labeler_score": "REAL",
+    "agent_trace": "TEXT NOT NULL DEFAULT ''",
 }
 
 LOT_SELECTION_METHODS = ("HIFO", "HIFO_LTCG", "FIFO", "LIFO")
@@ -208,12 +209,21 @@ def _create_paper_trade_plan_table(conn: sqlite3.Connection) -> None:
             broker_status TEXT,
             filled_quantity REAL NOT NULL DEFAULT 0,
             meta_labeler_score REAL,
+            agent_trace TEXT NOT NULL DEFAULT '',
             notes TEXT NOT NULL DEFAULT '',
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         )
         """
     )
+
+
+def _migrate_paper_trade_plan_agent_trace(conn: sqlite3.Connection) -> None:
+    """Add agent_trace column for orchestrated decision audit."""
+    try:
+        conn.execute("ALTER TABLE paper_trade_plan ADD COLUMN agent_trace TEXT NOT NULL DEFAULT ''")
+    except Exception:
+        pass
 
 
 def _create_paper_tax_lot_table(conn: sqlite3.Connection) -> None:
@@ -756,6 +766,7 @@ def _connect() -> sqlite3.Connection:
         """
     )
     _ensure_paper_schema(conn)
+    _migrate_paper_trade_plan_agent_trace(conn)
     _migrate_trade_plan_source_check(conn)
     _migrate_audit_event_type_check(conn)
     _migrate_alert_log_type_check(conn)
@@ -2092,6 +2103,7 @@ def create_trade_plan(
     crowd_score: int | None = None,
     source: str = "discovery",
     meta_labeler_score: float | None = None,
+    agent_trace: str = "",
 ) -> dict[str, Any]:
     now = datetime.now(timezone.utc).isoformat()
     with _connect() as conn:
@@ -2099,9 +2111,9 @@ def create_trade_plan(
             """
             INSERT INTO paper_trade_plan (
                 portfolio_id, theme_id, ticker, action, quantity, proposed_price, rationale,
-                regime_label, regime_probability, crowd_score, source, status, meta_labeler_score, created_at, updated_at
+                regime_label, regime_probability, crowd_score, source, status, meta_labeler_score, agent_trace, created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Pending', ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Pending', ?, ?, ?, ?)
             """,
             (
                 int(portfolio_id),
@@ -2116,6 +2128,7 @@ def create_trade_plan(
                 int(crowd_score) if crowd_score is not None else None,
                 source,
                 float(meta_labeler_score) if meta_labeler_score is not None else None,
+                str(agent_trace or ""),
                 now,
                 now,
             ),

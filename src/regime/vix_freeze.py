@@ -94,7 +94,10 @@ def check_vix_freeze() -> dict[str, Any]:
 
 
 def manual_override_vix_freeze(unfreeze: bool) -> dict[str, Any]:
-    set_setting("vix_freeze_active", "false" if unfreeze else "true")
+    frozen = not bool(unfreeze)
+    set_setting("vix_freeze_active", "true" if frozen else "false")
+    if frozen:
+        set_setting("vix_freeze_triggered_at", datetime.now(timezone.utc).isoformat())
     action = "manually lifted" if unfreeze else "manually activated"
     save_alert(
         "vix_resume" if unfreeze else "vix_freeze",
@@ -103,6 +106,12 @@ def manual_override_vix_freeze(unfreeze: bool) -> dict[str, Any]:
         message=f"User {action} VIX freeze override.",
         data={"override": action},
     )
-    status = check_vix_freeze()
-    status["frozen"] = not unfreeze
-    return status
+    return {
+        "vix": fetch_current_vix(),
+        "frozen": frozen,
+        "freeze_threshold": get_vix_freeze_threshold(),
+        "resume_threshold": get_vix_resume_threshold(),
+        "changed": True,
+        "triggered_at": get_setting("vix_freeze_triggered_at"),
+        "trigger_level": get_setting("vix_freeze_trigger_level"),
+    }

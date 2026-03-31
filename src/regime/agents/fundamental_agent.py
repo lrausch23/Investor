@@ -11,33 +11,39 @@ logger = logging.getLogger(__name__)
 
 
 class FundamentalAgent(AgentBase):
+    META_LABELER_VETO_THRESHOLD = 0.30
+
     @property
     def name(self) -> str:
         return "fundamental"
 
     @property
     def subscriptions(self) -> list[str]:
-        return ["enriched_signal"]
+        return []
 
     async def handle(self, event: BaseEvent) -> None:
         if not isinstance(event, EnrichedSignalEvent):
             return
         if event.source != "quant_agent":
             return
-        runtime = self._get_runtime()
-        if runtime is None:
-            logger.warning("FundamentalAgent skipped %s: runtime unavailable", event.ticker)
-            return
         try:
-            assessment = await asyncio.to_thread(self._evaluate, runtime, event)
+            assessment = await self.run_for_orchestrator(event)
         except Exception as exc:
             logger.error("FundamentalAgent failed for %s: %s", event.ticker, exc)
             return
         if assessment is not None:
             await self._bus.publish(assessment)
 
+    async def run_for_orchestrator(self, event: EnrichedSignalEvent) -> FundamentalAssessmentEvent | None:
+        """Run the qualitative assessment directly for orchestrated sequencing."""
+        runtime = self._get_runtime()
+        if runtime is None:
+            logger.warning("FundamentalAgent skipped %s: runtime unavailable", event.ticker)
+            return None
+        return await asyncio.to_thread(self._evaluate, runtime, event)
+
     def _evaluate(self, runtime: dict[str, Any], event: EnrichedSignalEvent) -> FundamentalAssessmentEvent | None:
-        if event.meta_labeler_score is not None and float(event.meta_labeler_score) < 0.30:
+        if event.meta_labeler_score is not None and float(event.meta_labeler_score) < self.META_LABELER_VETO_THRESHOLD:
             return FundamentalAssessmentEvent(
                 correlation_id=event.correlation_id,
                 ticker=event.ticker,
@@ -46,11 +52,11 @@ class FundamentalAgent(AgentBase):
                 confidence_score=None,
                 catalyst_sentiment="",
                 vetoed=True,
-                veto_reason="meta_labeler_below_threshold",
-                source=event.source,
+                veto_reason=f"meta_labeler_score={float(event.meta_labeler_score):.3f} < {self.META_LABELER_VETO_THRESHOLD:.2f}",
+                source="quant_veto",
                 enriched_signal_id=event.correlation_id,
                 meta_labeler_score=event.meta_labeler_score,
-                details={"reason": "Meta-labeler score below 0.30 threshold"},
+                details={"reason": "Meta-labeler score below threshold"},
             )
 
         frontier_provider = str(runtime["get_setting"]("frontier_provider") or "auto") if callable(runtime.get("get_setting")) else "auto"
@@ -90,4 +96,3 @@ class FundamentalAgent(AgentBase):
                 "llm_response": llm_response,
             },
         )
-
