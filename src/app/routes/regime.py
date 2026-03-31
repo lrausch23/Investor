@@ -2154,6 +2154,7 @@ def _build_regime_dashboard_payload(
                     stop_price=getattr(price_targets, "stop_price", None),
                     risk_reward_ratio=getattr(price_targets, "risk_reward_ratio", None),
                     timeframe_days=int(getattr(price_targets, "timeframe_days", 0) or 0),
+                    expected_regime_duration=float(getattr(regime, "expected_regime_duration", 0.0) or 0.0),
                 )
                 snapshots_saved_count += 1
             except Exception as exc:
@@ -3032,6 +3033,8 @@ def _build_shell_context(
             "watchlist_pass": "/regime/watchlist/__WATCHLIST_ID__/pass",
             "fundamental_gate": "/regime/fundamental-gate/__TICKER__",
             "fundamental_gate_settings": "/regime/fundamental-gate/settings",
+            "hurdle_settings": "/regime/hurdle/settings",
+            "hurdle_diagnostic": "/regime/hurdle/__TICKER__",
             "cross_sectional": "/regime/cross-sectional/__TICKER__",
             "sizing_settings": "/regime/sizing/settings",
             "paper_portfolios": "/regime/paper-portfolio",
@@ -4798,6 +4801,12 @@ def _fundamental_gate_settings_payload() -> dict[str, Any]:
     return _json_ready(get_fundamental_gate_settings())
 
 
+def _hurdle_settings_payload() -> dict[str, Any]:
+    from src.regime.hurdle_rate import get_hurdle_settings
+
+    return _json_ready(get_hurdle_settings())
+
+
 def _sizing_settings_payload() -> dict[str, Any]:
     from src.regime.paper_trading import get_sizing_settings
 
@@ -4862,6 +4871,64 @@ def regime_fundamental_gate(
         altman_z_distress_threshold=float(settings.get("altman_z_distress_threshold", 1.81)),
     )
     return JSONResponse(content=_json_ready(asdict(gate)))
+
+
+@router.get("/hurdle/settings")
+def regime_hurdle_settings_get(
+    actor: str = Depends(require_actor),
+):
+    del actor
+    return JSONResponse(content=_hurdle_settings_payload())
+
+
+@router.put("/hurdle/settings")
+async def regime_hurdle_settings_put(
+    request: Request,
+    actor: str = Depends(require_actor),
+):
+    del actor
+    from src.regime.hurdle_rate import set_hurdle_settings
+
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Request body must be a JSON object.")
+    try:
+        updated = set_hurdle_settings(payload)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return JSONResponse(content=_json_ready(updated))
+
+
+@router.get("/hurdle/{ticker}")
+def regime_hurdle_diagnostic(
+    ticker: str,
+    actor: str = Depends(require_actor),
+):
+    del actor
+    from src.regime.hurdle_rate import check_duration_gate, check_hurdle_rate
+    from src.regime.persistence import get_latest_signal_snapshot
+
+    ticker_key = str(ticker or "").upper()
+    snapshot = get_latest_signal_snapshot(ticker_key, max_age_days=7) or {}
+    expected_duration = snapshot.get("expected_regime_duration")
+    if expected_duration in (None, "") and snapshot.get("timeframe_days") not in (None, ""):
+        expected_duration = snapshot.get("timeframe_days")
+    hurdle = check_hurdle_rate(ticker_key, snapshot.get("entry_price"), snapshot.get("exit_price"))
+    duration_gate = check_duration_gate(
+        ticker_key,
+        float(expected_duration) if expected_duration not in (None, "") else None,
+        str(snapshot.get("regime_label") or ""),
+    )
+    return JSONResponse(
+        content={
+            "ticker": ticker_key,
+            "hurdle": _json_ready(asdict(hurdle)),
+            "duration_gate": _json_ready(asdict(duration_gate)),
+        }
+    )
 
 
 @router.get("/cross-sectional/{ticker}")

@@ -19,6 +19,7 @@ from .config import (
 )
 from .discovery import _quick_regime_screen
 from .fundamental_data import fetch_financial_statements
+from .hurdle_rate import check_duration_gate, check_hurdle_rate, get_hurdle_settings
 from .market_data_client import download_daily_bars, get_ticker_info
 from .persistence import (
     close_paper_position,
@@ -352,6 +353,7 @@ def generate_buy_plans(
         return []
     allocation = allocate_budget(portfolio_id, config=config)
     sizing_settings = get_sizing_settings()
+    hurdle_settings = get_hurdle_settings()
     sizing_method = str(sizing_settings.get("sizing_method") or DEFAULT_SIZING_METHOD)
     base_risk_fraction = float(sizing_settings.get("sizing_base_risk_fraction") or DEFAULT_SIZING_BASE_RISK_FRACTION)
     atr_multiplier = float(sizing_settings.get("sizing_atr_multiplier") or DEFAULT_SIZING_ATR_MULTIPLIER)
@@ -374,6 +376,30 @@ def generate_buy_plans(
         proposed_price = float(item.get("suggested_entry_price") or 0.0)
         if role_budget <= 0 or proposed_price <= 0:
             continue
+        snapshot = get_latest_signal_snapshot(ticker, max_age_days=7) or {}
+        exit_price = item.get("suggested_exit_price")
+        if exit_price in (None, ""):
+            exit_price = snapshot.get("exit_price")
+        hurdle_result = None
+        duration_result = None
+        if bool(hurdle_settings.get("hurdle_enabled", True)):
+            hurdle_result = check_hurdle_rate(ticker, proposed_price, float(exit_price) if exit_price not in (None, "") else None)
+            if not hurdle_result.passed:
+                logger.info("Hurdle gate blocked %s: %s", ticker, hurdle_result.reason)
+                continue
+        if bool(hurdle_settings.get("duration_gate_enabled", True)):
+            expected_duration = snapshot.get("expected_regime_duration")
+            if expected_duration in (None, "") and snapshot.get("timeframe_days") not in (None, ""):
+                expected_duration = snapshot.get("timeframe_days")
+            regime_label = str(item.get("regime_label") or snapshot.get("regime_label") or "")
+            duration_result = check_duration_gate(
+                ticker,
+                float(expected_duration) if expected_duration not in (None, "") else None,
+                regime_label,
+            )
+            if not duration_result.passed:
+                logger.info("Duration gate blocked %s: %s", ticker, duration_result.reason)
+                continue
         atr_14 = _lookup_atr(ticker)
         beta = _lookup_beta(ticker)
         if sizing_method == "risk_budget":
@@ -403,6 +429,16 @@ def generate_buy_plans(
                 f"Entry Signal from discovery watchlist. "
                 f"{item.get('discovery_rationale') or 'Candidate meets paper-trading entry criteria.'}"
             )
+        if hurdle_result and hurdle_result.net_return_pct is not None and hurdle_result.gross_return_pct is not None:
+            rationale = (
+                f"{rationale} Hurdle: {hurdle_result.net_return_pct:.2f}% net "
+                f"({hurdle_result.gross_return_pct:.2f}% gross @ {hurdle_result.estimated_stcg_rate:.0%} tax)."
+            )
+        if duration_result and duration_result.expected_regime_duration is not None:
+            rationale = (
+                f"{rationale} Duration: {duration_result.expected_regime_duration:.1f}d "
+                f"(min {duration_result.min_regime_duration_days:.1f}d)."
+            )
         created.append(
             create_trade_plan(
                 portfolio_id,
@@ -418,6 +454,11 @@ def generate_buy_plans(
                 source="discovery",
                 meta_labeler_score=float(item.get("meta_labeler_probability")) if item.get("meta_labeler_probability") is not None else None,
                 sizing_method="risk_budget" if sizing_method == "risk_budget" and atr_14 is not None and atr_14 > 0 else "equal_dollar",
+                hurdle_gross_return_pct=hurdle_result.gross_return_pct if hurdle_result else None,
+                hurdle_net_return_pct=hurdle_result.net_return_pct if hurdle_result else None,
+                hurdle_passed=hurdle_result.passed if hurdle_result else None,
+                duration_gate_passed=duration_result.passed if duration_result else None,
+                expected_regime_duration=duration_result.expected_regime_duration if duration_result else None,
             )
         )
     return created

@@ -43,6 +43,15 @@ _PAPER_TRADE_PLAN_COLUMNS: dict[str, str] = {
     "filled_quantity": "REAL NOT NULL DEFAULT 0",
     "meta_labeler_score": "REAL",
     "agent_trace": "TEXT NOT NULL DEFAULT ''",
+    "hurdle_gross_return_pct": "REAL",
+    "hurdle_net_return_pct": "REAL",
+    "hurdle_passed": "INTEGER",
+    "duration_gate_passed": "INTEGER",
+    "expected_regime_duration": "REAL",
+}
+
+_SIGNAL_SNAPSHOT_COLUMNS: dict[str, str] = {
+    "expected_regime_duration": "REAL",
 }
 
 LOT_SELECTION_METHODS = ("HIFO", "HIFO_LTCG", "FIFO", "LIFO")
@@ -141,6 +150,11 @@ def _ensure_paper_schema(conn: sqlite3.Connection) -> None:
         pass
 
 
+def _ensure_signal_snapshot_schema(conn: sqlite3.Connection) -> None:
+    for column, ddl in _SIGNAL_SNAPSHOT_COLUMNS.items():
+        _ensure_column(conn, "signal_snapshots", column, ddl)
+
+
 def _create_alert_log_table(conn: sqlite3.Connection) -> None:
     conn.execute(
         """
@@ -211,6 +225,11 @@ def _create_paper_trade_plan_table(conn: sqlite3.Connection) -> None:
             meta_labeler_score REAL,
             sizing_method TEXT NOT NULL DEFAULT 'equal_dollar',
             agent_trace TEXT NOT NULL DEFAULT '',
+            hurdle_gross_return_pct REAL,
+            hurdle_net_return_pct REAL,
+            hurdle_passed INTEGER,
+            duration_gate_passed INTEGER,
+            expected_regime_duration REAL,
             notes TEXT NOT NULL DEFAULT '',
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
@@ -590,6 +609,7 @@ def _connect() -> sqlite3.Connection:
             stop_price REAL,
             risk_reward_ratio REAL,
             timeframe_days INTEGER NOT NULL,
+            expected_regime_duration REAL,
             return_1w REAL,
             return_1m REAL,
             return_3m REAL,
@@ -819,6 +839,7 @@ def _connect() -> sqlite3.Connection:
         """
     )
     _ensure_paper_schema(conn)
+    _ensure_signal_snapshot_schema(conn)
     _migrate_paper_trade_plan_agent_trace(conn)
     _migrate_trade_plan_source_check(conn)
     _migrate_paper_trade_plan_sizing_method(conn)
@@ -2240,6 +2261,11 @@ def create_trade_plan(
     meta_labeler_score: float | None = None,
     sizing_method: str = "equal_dollar",
     agent_trace: str = "",
+    hurdle_gross_return_pct: float | None = None,
+    hurdle_net_return_pct: float | None = None,
+    hurdle_passed: bool | None = None,
+    duration_gate_passed: bool | None = None,
+    expected_regime_duration: float | None = None,
 ) -> dict[str, Any]:
     now = datetime.now(timezone.utc).isoformat()
     with _connect() as conn:
@@ -2247,9 +2273,11 @@ def create_trade_plan(
             """
             INSERT INTO paper_trade_plan (
                 portfolio_id, theme_id, ticker, action, quantity, proposed_price, rationale,
-                regime_label, regime_probability, crowd_score, source, status, meta_labeler_score, sizing_method, agent_trace, created_at, updated_at
+                regime_label, regime_probability, crowd_score, source, status, meta_labeler_score, sizing_method, agent_trace,
+                hurdle_gross_return_pct, hurdle_net_return_pct, hurdle_passed, duration_gate_passed, expected_regime_duration,
+                created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Pending', ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 int(portfolio_id),
@@ -2266,6 +2294,11 @@ def create_trade_plan(
                 float(meta_labeler_score) if meta_labeler_score is not None else None,
                 str(sizing_method or "equal_dollar"),
                 str(agent_trace or ""),
+                float(hurdle_gross_return_pct) if hurdle_gross_return_pct is not None else None,
+                float(hurdle_net_return_pct) if hurdle_net_return_pct is not None else None,
+                None if hurdle_passed is None else (1 if hurdle_passed else 0),
+                None if duration_gate_passed is None else (1 if duration_gate_passed else 0),
+                float(expected_regime_duration) if expected_regime_duration is not None else None,
                 now,
                 now,
             ),
@@ -2902,6 +2935,7 @@ def save_signal_snapshot(
     stop_price: float | None,
     risk_reward_ratio: float | None,
     timeframe_days: int,
+    expected_regime_duration: float | None = None,
 ) -> None:
     now = datetime.now(timezone.utc).isoformat()
     logger.debug("Saving signal snapshot for %s at %s", ticker, snapshot_date)
@@ -2910,9 +2944,9 @@ def save_signal_snapshot(
             """
             INSERT INTO signal_snapshots (
                 ticker, snapshot_date, action, regime_label, regime_probability, composite_strength, benchmark,
-                current_price, entry_price, exit_price, stop_price, risk_reward_ratio, timeframe_days, updated_at
+                current_price, entry_price, exit_price, stop_price, risk_reward_ratio, timeframe_days, expected_regime_duration, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(ticker, snapshot_date) DO UPDATE SET
                 action = excluded.action,
                 regime_label = excluded.regime_label,
@@ -2925,6 +2959,7 @@ def save_signal_snapshot(
                 stop_price = excluded.stop_price,
                 risk_reward_ratio = excluded.risk_reward_ratio,
                 timeframe_days = excluded.timeframe_days,
+                expected_regime_duration = excluded.expected_regime_duration,
                 updated_at = excluded.updated_at
             """,
             (
@@ -2941,6 +2976,7 @@ def save_signal_snapshot(
                 float(stop_price) if stop_price is not None else None,
                 float(risk_reward_ratio) if risk_reward_ratio is not None else None,
                 int(timeframe_days),
+                float(expected_regime_duration) if expected_regime_duration is not None else None,
                 now,
             ),
         )

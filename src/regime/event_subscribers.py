@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import logging
+import re
 
 from .events import BaseEvent, EnrichedSignalEvent, OrderExecutionEvent, TradeDecisionEvent, TradeIntentEvent
 from .persistence import save_alert
 
 logger = logging.getLogger(__name__)
+
+_HURDLE_RE = re.compile(r"hurdle=(?P<net>-?\d+(?:\.\d+)?)%net\((?P<gross>-?\d+(?:\.\d+)?)%gross@")
+_DURATION_RE = re.compile(r"duration=(?P<duration>-?\d+(?:\.\d+)?)d\(min=(?P<minimum>-?\d+(?:\.\d+)?)\)")
 
 
 async def audit_log_subscriber(event: BaseEvent) -> None:
@@ -61,10 +65,22 @@ async def trade_decision_subscriber(event: BaseEvent) -> None:
         return
     rationale = str(event.sizing_rationale or "")
     agent_trace = ""
+    hurdle_gross_return_pct = None
+    hurdle_net_return_pct = None
+    duration_gate_passed = None
+    expected_regime_duration = None
     if "[agents:" in rationale:
         trace_start = rationale.index("[agents:")
         agent_trace = rationale[trace_start:].strip()
         rationale = rationale[:trace_start].strip()
+    hurdle_match = _HURDLE_RE.search(rationale)
+    if hurdle_match:
+        hurdle_net_return_pct = float(hurdle_match.group("net"))
+        hurdle_gross_return_pct = float(hurdle_match.group("gross"))
+    duration_match = _DURATION_RE.search(rationale)
+    if duration_match:
+        expected_regime_duration = float(duration_match.group("duration"))
+        duration_gate_passed = True
     try:
         create_trade_plan(
             portfolio_id=event.portfolio_id,
@@ -77,6 +93,11 @@ async def trade_decision_subscriber(event: BaseEvent) -> None:
             source="discovery" if str(event.action).lower() == "buy" else "exit_signal",
             meta_labeler_score=event.meta_labeler_score,
             agent_trace=agent_trace,
+            hurdle_gross_return_pct=hurdle_gross_return_pct,
+            hurdle_net_return_pct=hurdle_net_return_pct,
+            hurdle_passed=True if hurdle_match else None,
+            duration_gate_passed=duration_gate_passed,
+            expected_regime_duration=expected_regime_duration,
         )
     except Exception as exc:
         logger.error("trade_decision_subscriber: persistence failed: %s", exc)

@@ -50,6 +50,7 @@
     autonomySettings: null,
     autonomyStatus: null,
     taxSettings: null,
+    hurdleSettings: null,
     paperAudit: [],
     paperAuditSummary: null,
     paperMonitoring: null,
@@ -2601,6 +2602,22 @@
     return `<span class="${klass}" title="${escapeHtml(`ST gain ${formatCurrency(impact.short_term_gain, 2)} · ST loss ${formatCurrency(impact.short_term_loss, 2)} · LT gain ${formatCurrency(impact.long_term_gain, 2)} · LT loss ${formatCurrency(impact.long_term_loss, 2)}`)}">${escapeHtml(formatCurrency(pnl, 2))} ${term}${impact.wash_sale_warning ? " ⚠" : ""}</span>`;
   }
 
+  function renderHurdleBadge(plan) {
+    if (plan.hurdle_passed == null) return "";
+    const title = plan.hurdle_net_return_pct == null
+      ? "Net-return hurdle not recorded"
+      : `Net ${Number(plan.hurdle_net_return_pct).toFixed(2)}%${plan.hurdle_gross_return_pct == null ? "" : ` · Gross ${Number(plan.hurdle_gross_return_pct).toFixed(2)}%`}`;
+    return `<span class="${plan.hurdle_passed ? "ui-badge ui-badge--safe" : "ui-badge ui-badge--bad"}" title="${escapeHtml(title)}">Hurdle ${plan.hurdle_passed ? "✓" : "✗"}</span>`;
+  }
+
+  function renderDurationGateBadge(plan) {
+    if (plan.duration_gate_passed == null) return "";
+    const title = plan.expected_regime_duration == null
+      ? "Projected duration not recorded"
+      : `Projected duration ${Number(plan.expected_regime_duration).toFixed(1)}d`;
+    return `<span class="${plan.duration_gate_passed ? "ui-badge ui-badge--safe" : "ui-badge ui-badge--bad"}" title="${escapeHtml(title)}">Dur ${plan.duration_gate_passed ? "✓" : "✗"}</span>`;
+  }
+
   function renderAuditTrail() {
     const mount = byId("regimeAuditTrailMount");
     if (!mount) return;
@@ -3327,9 +3344,12 @@
                 ${plan.regime_label ? `<span class="${badgeClass(plan.regime_label)}">${escapeHtml(plan.regime_label)} ${plan.regime_probability != null ? `· ${(Number(plan.regime_probability) * 100).toFixed(0)}%` : ""}</span>` : ""}
                 ${plan.meta_labeler_score == null ? `<span class="ui-badge ui-badge--neutral">ML N/A</span>` : `<span class="${Number(plan.meta_labeler_score) >= 0.65 ? "ui-badge ui-badge--safe" : Number(plan.meta_labeler_score) >= 0.30 ? "ui-badge ui-badge--warn" : "ui-badge ui-badge--bad"}">ML ${(Number(plan.meta_labeler_score) * 100).toFixed(0)}%</span>`}
                 ${plan.sizing_method === "risk_budget" ? `<span class="ui-badge ui-badge--neutral">Risk-Sized</span>` : ""}
+                ${renderHurdleBadge(plan)}
+                ${renderDurationGateBadge(plan)}
                 ${renderTaxImpactBadge(plan)}
               </div>
               <div class="ui-muted" style="margin-top:6px">${escapeHtml(plan.rationale || "")}</div>
+              ${(plan.hurdle_gross_return_pct != null || plan.hurdle_net_return_pct != null || plan.expected_regime_duration != null) ? `<div class="ui-muted" style="margin-top:6px">Gross ${escapeHtml(plan.hurdle_gross_return_pct == null ? "—" : `${Number(plan.hurdle_gross_return_pct).toFixed(2)}%`)} · Net ${escapeHtml(plan.hurdle_net_return_pct == null ? "—" : `${Number(plan.hurdle_net_return_pct).toFixed(2)}%`)} · Duration ${escapeHtml(plan.expected_regime_duration == null ? "—" : `${Number(plan.expected_regime_duration).toFixed(1)}d`)}</div>` : ""}
               ${plan.execution_result ? `<div class="ui-muted" style="margin-top:6px">${escapeHtml(plan.execution_result)}</div>` : ""}
               <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:10px">
                 <button class="btn btn--secondary" type="button" data-paper-plan-action="Approved" data-paper-plan-id="${escapeHtml(plan.id)}" ${!((planPrecheck(plan.id) || {}).guardrail_passed) || paused || closed ? "disabled" : ""}>${(planPrecheck(plan.id) && !(planPrecheck(plan.id).guardrail_passed)) ? "Blocked" : "Approve"}</button>
@@ -3657,6 +3677,13 @@
     const autonomy = state.autonomySettings || { operating_mode: "manual", auto_approve_threshold: 0.65, daily_capital_ceiling_pct: 0.25 };
     const autonomyStatus = state.autonomyStatus || null;
     const taxSettings = state.taxSettings || { lot_selection_method: "HIFO_LTCG", ltcg_defer_window_days: 30 };
+    const hurdleSettings = state.hurdleSettings || {
+      hurdle_enabled: true,
+      duration_gate_enabled: true,
+      estimated_stcg_rate: 0.32,
+      hurdle_min_net_return_pct: 3.0,
+      min_regime_duration_days: 7.0,
+    };
     const marketData = state.marketDataSettings || {
       settings: {
         benchmark_provider_order: ["cache", "ibkr", "stooq", "yahoo"],
@@ -3764,6 +3791,27 @@
                   <label>
                     LTCG deferral window
                     <input id="regimeLtcgDeferWindow" type="number" min="0" max="365" step="1" value="${escapeHtml(Number(taxSettings.ltcg_defer_window_days || 30).toFixed(0))}" />
+                  </label>
+                  <div style="grid-column:1 / -1; font-weight:600; margin-top:6px">Tax-Efficient Trading</div>
+                  <label style="display:flex; gap:8px; align-items:center; margin-top:22px">
+                    <input id="regimeHurdleEnabled" type="checkbox" ${hurdleSettings.hurdle_enabled ? "checked" : ""} />
+                    <span>Hurdle rate enabled</span>
+                  </label>
+                  <label style="display:flex; gap:8px; align-items:center; margin-top:22px">
+                    <input id="regimeDurationGateEnabled" type="checkbox" ${hurdleSettings.duration_gate_enabled ? "checked" : ""} />
+                    <span>Duration gate enabled</span>
+                  </label>
+                  <label>
+                    Estimated STCG rate
+                    <input id="regimeEstimatedStcgRate" type="number" min="0" max="99" step="1" value="${escapeHtml(Number(hurdleSettings.estimated_stcg_rate * 100 || 32).toFixed(0))}" />
+                  </label>
+                  <label>
+                    Min net return
+                    <input id="regimeMinNetReturnPct" type="number" min="0" max="50" step="0.5" value="${escapeHtml(Number(hurdleSettings.hurdle_min_net_return_pct || 3).toFixed(1))}" />
+                  </label>
+                  <label>
+                    Min regime duration
+                    <input id="regimeMinRegimeDurationDays" type="number" min="1" max="90" step="1" value="${escapeHtml(Number(hurdleSettings.min_regime_duration_days || 7).toFixed(0))}" />
                   </label>
                   <button class="btn btn--secondary" type="button" id="regimeAutonomySave" style="align-self:end">Save</button>
                 </div>
@@ -3953,6 +4001,11 @@
         const vixResumeInput = byId("regimeVixResumeThreshold");
         const lotMethodInput = byId("regimeLotSelectionMethod");
         const ltcgWindowInput = byId("regimeLtcgDeferWindow");
+        const hurdleEnabledInput = byId("regimeHurdleEnabled");
+        const durationGateEnabledInput = byId("regimeDurationGateEnabled");
+        const estimatedStcgInput = byId("regimeEstimatedStcgRate");
+        const minNetReturnInput = byId("regimeMinNetReturnPct");
+        const minDurationInput = byId("regimeMinRegimeDurationDays");
         await saveAutonomySettings({
           auto_approve_threshold: thresholdInput ? Number(thresholdInput.value || autonomy.auto_approve_threshold || 0.65) : autonomy.auto_approve_threshold,
           daily_capital_ceiling_pct: ceilingInput ? Number(ceilingInput.value || 25) / 100 : autonomy.daily_capital_ceiling_pct,
@@ -3990,6 +4043,26 @@
             state.taxSettings = payload;
           } catch (error) {
             showToast(`Unable to save tax settings: ${error.message || error}`, "error");
+          }
+        }
+        if (state.config?.endpoints?.hurdle_settings) {
+          try {
+            const response = await fetch(state.config.endpoints.hurdle_settings, {
+              method: "PUT",
+              headers: { Accept: "application/json", "Content-Type": "application/json" },
+              body: JSON.stringify({
+                hurdle_enabled: !!hurdleEnabledInput?.checked,
+                duration_gate_enabled: !!durationGateEnabledInput?.checked,
+                estimated_stcg_rate: Number(estimatedStcgInput?.value || 32) / 100,
+                hurdle_min_net_return_pct: Number(minNetReturnInput?.value || 3),
+                min_regime_duration_days: Number(minDurationInput?.value || 7),
+              }),
+            });
+            const payload = await response.json();
+            if (!response.ok) throw new Error(payload.detail || `Hurdle settings failed (${response.status})`);
+            state.hurdleSettings = payload;
+          } catch (error) {
+            showToast(`Unable to save hurdle settings: ${error.message || error}`, "error");
           }
         }
       });
@@ -4155,9 +4228,10 @@
       return;
     }
     try {
-      const [detailResponse, autonomySettingsResponse, autonomyStatusResponse, marketDataSettingsResponse, notificationPreferencesResponse, budgetResponse, plansResponse, positionsResponse, taxLotsResponse, washSaleResponse, performanceResponse, auditResponse, precheckResponse, monitoringResponse, healthResponse, consensusResponse, validationResponse, alertsResponse, alertHistoryResponse, vixResponse] = await Promise.all([
+      const [detailResponse, autonomySettingsResponse, hurdleSettingsResponse, autonomyStatusResponse, marketDataSettingsResponse, notificationPreferencesResponse, budgetResponse, plansResponse, positionsResponse, taxLotsResponse, washSaleResponse, performanceResponse, auditResponse, precheckResponse, monitoringResponse, healthResponse, consensusResponse, validationResponse, alertsResponse, alertHistoryResponse, vixResponse] = await Promise.all([
         fetch(paperEndpoint("paper_portfolio", portfolioId), { headers: { Accept: "application/json" } }),
         fetch(state.config.endpoints.autonomy_settings, { headers: { Accept: "application/json" } }),
+        fetch(state.config.endpoints.hurdle_settings, { headers: { Accept: "application/json" } }),
         fetch(paperEndpoint("paper_autonomy_status", portfolioId), { headers: { Accept: "application/json" } }),
         fetch(state.config.endpoints.market_data_settings, { headers: { Accept: "application/json" } }),
         fetch(state.config.endpoints.notification_preferences, { headers: { Accept: "application/json" } }),
@@ -4184,9 +4258,10 @@
           return {};
         }
       };
-      const [detail, autonomySettings, autonomyStatus, marketDataSettings, notificationPreferences, budget, plans, positions, taxLots, washSale, performance, audit, precheck, monitoring, health, consensus, validation, alerts, alertHistory, vixStatus] = await Promise.all([
+      const [detail, autonomySettings, hurdleSettings, autonomyStatus, marketDataSettings, notificationPreferences, budget, plans, positions, taxLots, washSale, performance, audit, precheck, monitoring, health, consensus, validation, alerts, alertHistory, vixStatus] = await Promise.all([
         parseJson(detailResponse),
         parseJson(autonomySettingsResponse),
+        parseJson(hurdleSettingsResponse),
         parseJson(autonomyStatusResponse),
         parseJson(marketDataSettingsResponse),
         parseJson(notificationPreferencesResponse),
@@ -4220,6 +4295,12 @@
         };
       } else {
         warnPanel("Autonomy settings", autonomySettingsResponse, autonomySettings);
+      }
+      if (hurdleSettingsResponse.ok) {
+        state.hurdleSettings = hurdleSettings;
+      } else {
+        warnPanel("Hurdle settings", hurdleSettingsResponse, hurdleSettings);
+        state.hurdleSettings = null;
       }
       if (autonomyStatusResponse.ok) {
         state.autonomyStatus = autonomyStatus;

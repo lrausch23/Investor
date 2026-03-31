@@ -118,6 +118,45 @@ class PortfolioTaxAgent(AgentBase):
                 enriched_signal_id=event.correlation_id,
             )
 
+        hurdle_result = None
+        duration_result = None
+        if trade_action == "Buy":
+            from ..hurdle_rate import check_duration_gate, check_hurdle_rate, get_hurdle_settings
+
+            hurdle_settings = get_hurdle_settings()
+            if bool(hurdle_settings.get("hurdle_enabled", True)):
+                hurdle_result = check_hurdle_rate(ticker, event.entry_price, event.exit_price)
+                if not hurdle_result.passed:
+                    logger.info("PortfolioTaxAgent hurdle gate blocked %s: %s", ticker, hurdle_result.reason)
+                    return TradeDecisionEvent(
+                        correlation_id=event.correlation_id,
+                        ticker=ticker,
+                        portfolio_id=portfolio_id,
+                        action=trade_action,
+                        decision="vetoed",
+                        veto_reason=f"hurdle_rate: {hurdle_result.reason}",
+                        source=event.source,
+                        regime_label=event.regime_label,
+                        meta_labeler_score=event.meta_labeler_score,
+                        enriched_signal_id=event.correlation_id,
+                    )
+            if bool(hurdle_settings.get("duration_gate_enabled", True)):
+                duration_result = check_duration_gate(ticker, event.expected_regime_duration, event.regime_label)
+                if not duration_result.passed:
+                    logger.info("PortfolioTaxAgent duration gate blocked %s: %s", ticker, duration_result.reason)
+                    return TradeDecisionEvent(
+                        correlation_id=event.correlation_id,
+                        ticker=ticker,
+                        portfolio_id=portfolio_id,
+                        action=trade_action,
+                        decision="vetoed",
+                        veto_reason=f"duration_gate: {duration_result.reason}",
+                        source=event.source,
+                        regime_label=event.regime_label,
+                        meta_labeler_score=event.meta_labeler_score,
+                        enriched_signal_id=event.correlation_id,
+                    )
+
         current_price = float(event.current_price or 0.0)
         if trade_action == "Sell":
             positions = runtime["get_paper_positions"](portfolio_id, status="Open")
@@ -173,6 +212,17 @@ class PortfolioTaxAgent(AgentBase):
                 meta_labeler_score=event.meta_labeler_score,
                 enriched_signal_id=event.correlation_id,
             )
+        rationale = f"allocation={allocation:.3f} ml_mult={ml_multiplier:.2f} budget={budget:.0f}"
+        if hurdle_result and hurdle_result.net_return_pct is not None and hurdle_result.gross_return_pct is not None:
+            rationale = (
+                f"{rationale} hurdle={hurdle_result.net_return_pct:.1f}%net"
+                f"({hurdle_result.gross_return_pct:.1f}%gross@{hurdle_result.estimated_stcg_rate:.0%}tax)"
+            )
+        if duration_result and duration_result.expected_regime_duration is not None:
+            rationale = (
+                f"{rationale} duration={duration_result.expected_regime_duration:.1f}d"
+                f"(min={duration_result.min_regime_duration_days:.1f})"
+            )
         return TradeDecisionEvent(
             correlation_id=event.correlation_id,
             ticker=ticker,
@@ -184,6 +234,6 @@ class PortfolioTaxAgent(AgentBase):
             source=event.source,
             regime_label=event.regime_label,
             meta_labeler_score=event.meta_labeler_score,
-            sizing_rationale=f"allocation={allocation:.3f} ml_mult={ml_multiplier:.2f} budget={budget:.0f}",
+            sizing_rationale=rationale,
             enriched_signal_id=event.correlation_id,
         )
