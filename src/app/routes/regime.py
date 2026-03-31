@@ -340,6 +340,13 @@ def _load_hmm_runtime() -> tuple[dict[str, Any] | None, str | None]:
             log_wash_sale_block,
             select_lots,
         )
+        from src.regime.order_routing import (
+            compute_adv,
+            decide_routing,
+            estimate_nbbo,
+            get_routing_settings,
+            set_routing_settings,
+        )
     except ImportError:
         return None, (
             "Regime analytics are unavailable because hmm-market-regime-tool is not installed "
@@ -519,6 +526,11 @@ def _load_hmm_runtime() -> tuple[dict[str, Any] | None, str | None]:
         "estimate_tax_impact": estimate_tax_impact,
         "log_wash_sale_block": log_wash_sale_block,
         "compute_wash_sale_opportunity_cost": compute_wash_sale_opportunity_cost,
+        "compute_adv": compute_adv,
+        "estimate_nbbo": estimate_nbbo,
+        "decide_routing": decide_routing,
+        "get_routing_settings": get_routing_settings,
+        "set_routing_settings": set_routing_settings,
         "get_calibration_data": get_calibration_data,
         "get_historical_regime_durations": get_historical_regime_durations,
         "get_trade_plan": get_trade_plan,
@@ -3094,6 +3106,8 @@ def _build_shell_context(
             "hurdle_diagnostic": "/regime/hurdle/__TICKER__",
             "ltcg_override_settings": "/regime/ltcg-override/settings",
             "ltcg_override_diagnostic": "/regime/ltcg-override/__TICKER__",
+            "order_routing_settings": "/regime/order-routing/settings",
+            "order_routing_diagnostic": "/regime/order-routing/__TICKER__",
             "cross_sectional": "/regime/cross-sectional/__TICKER__",
             "sizing_settings": "/regime/sizing/settings",
             "paper_portfolios": "/regime/paper-portfolio",
@@ -4940,6 +4954,77 @@ def regime_hurdle_settings_get(
     return JSONResponse(content=_hurdle_settings_payload())
 
 
+@router.get("/order-routing/settings")
+def regime_order_routing_settings_get(
+    actor: str = Depends(require_actor),
+):
+    del actor
+    from src.regime.order_routing import get_routing_settings
+
+    return JSONResponse(content=_json_ready(get_routing_settings()))
+
+
+@router.put("/order-routing/settings")
+async def regime_order_routing_settings_put(
+    request: Request,
+    actor: str = Depends(require_actor),
+):
+    del actor
+    from src.regime.order_routing import set_routing_settings
+
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Request body must be a JSON object.")
+    try:
+        updated = set_routing_settings(payload)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return JSONResponse(content=_json_ready(updated))
+
+
+@router.get("/order-routing/{ticker}")
+def regime_order_routing_diagnostic(
+    ticker: str,
+    actor: str = Depends(require_actor),
+):
+    del actor
+    from src.regime.market_data_client import download_daily_bars
+    from src.regime.order_routing import compute_adv, decide_routing, estimate_nbbo
+
+    ticker_key = str(ticker or "").upper()
+    last_price = 0.0
+    try:
+        frame = download_daily_bars(ticker_key, period="5d", auto_adjust=False)
+        if frame is not None and not frame.empty and "Close" in frame.columns:
+            close = frame["Close"]
+            if getattr(close, "ndim", 1) > 1:
+                close = close.iloc[:, 0]
+            if len(close):
+                last_price = float(close.iloc[-1])
+    except Exception:
+        last_price = 0.0
+    adv = compute_adv(ticker_key)
+    nbbo = estimate_nbbo(ticker_key, last_price or 0.01, adv)
+    buy_routing = decide_routing(ticker_key, "Buy", 100.0, last_price or nbbo.mid, urgency="normal", adv_override=adv, nbbo_override=nbbo)
+    sell_routing = decide_routing(ticker_key, "Sell", 100.0, last_price or nbbo.mid, urgency="normal", adv_override=adv, nbbo_override=nbbo)
+    return JSONResponse(
+        content=_json_ready(
+            {
+                "ticker": ticker_key,
+                "adv": adv,
+                "adv_bucket": buy_routing.adv_bucket,
+                "last_price": last_price or nbbo.mid,
+                "nbbo": nbbo.to_dict(),
+                "buy_routing": buy_routing.to_dict(),
+                "sell_routing": sell_routing.to_dict(),
+            }
+        )
+    )
+
+
 @router.put("/hurdle/settings")
 async def regime_hurdle_settings_put(
     request: Request,
@@ -5621,7 +5706,10 @@ async def regime_paper_plan_precheck(
                     ticker=ticker,
                     action=str(plan.get("action") or ""),
                     quantity=float(plan.get("quantity") or 0.0),
+                    order_type=str(plan.get("order_type") or "limit"),
                     limit_price=float(plan.get("proposed_price") or 0.0) or None,
+                    time_in_force="IOC" if str(plan.get("order_type") or "").lower() == "marketable_limit" else "DAY",
+                    routing_strategy=str(plan.get("routing_strategy") or ""),
                     theme_id=int(plan["theme_id"]) if plan.get("theme_id") is not None else None,
                     source=str(plan.get("source") or "manual"),
                     notes=str(plan.get("rationale") or ""),

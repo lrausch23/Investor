@@ -26,7 +26,7 @@ def test_order_request_dataclass(temp_modules) -> None:
     order = broker.OrderRequest(portfolio_id=1, ticker="nvda", action="Buy", quantity=10)
     assert order.portfolio_id == 1
     assert order.ticker == "nvda"
-    assert order.order_type == "market"
+    assert order.order_type == "limit"
 
 
 def test_order_result_dataclass(temp_modules) -> None:

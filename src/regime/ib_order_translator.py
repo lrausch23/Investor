@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 from .broker_adapter import AccountSummary, OrderRequest, OrderResult, PositionInfo
 from .ib_types import (
     IBAccountSummary,
@@ -12,14 +14,31 @@ from .ib_types import (
     IBTimeInForce,
 )
 
+logger = logging.getLogger(__name__)
+
+_ORDER_TYPE_MAP = {
+    "market": IBOrderType.MARKET,
+    "limit": IBOrderType.LIMIT,
+    "marketable_limit": IBOrderType.LIMIT,
+    "stop": IBOrderType.STOP,
+}
+
+_TIF_MAP = {
+    "DAY": IBTimeInForce.DAY,
+    "GTC": IBTimeInForce.GTC,
+    "IOC": IBTimeInForce.IOC,
+    "GTD": IBTimeInForce.GTD,
+}
+
 
 def translate_order_request(request: OrderRequest, next_order_id: int) -> IBOrder:
     action = IBOrderAction.BUY if str(request.action or "").lower() == "buy" else IBOrderAction.SELL
-    order_type = IBOrderType.MARKET
-    limit_price = None
-    if request.limit_price is not None and float(request.limit_price) > 0:
-        order_type = IBOrderType.LIMIT
-        limit_price = float(request.limit_price)
+    order_type = _ORDER_TYPE_MAP.get(str(request.order_type or "").lower(), IBOrderType.LIMIT)
+    limit_price = float(request.limit_price) if request.limit_price is not None and float(request.limit_price) > 0 else None
+    if order_type == IBOrderType.LIMIT and limit_price is None:
+        order_type = IBOrderType.MARKET
+        logger.warning("Limit order for %s has no limit_price, falling back to MARKET", request.ticker)
+    tif = _TIF_MAP.get(str(getattr(request, "time_in_force", "DAY") or "DAY").upper(), IBTimeInForce.DAY)
     return IBOrder(
         order_id=int(next_order_id),
         contract_symbol=str(request.ticker or "").upper(),
@@ -28,7 +47,7 @@ def translate_order_request(request: OrderRequest, next_order_id: int) -> IBOrde
         quantity=float(request.quantity or 0.0),
         limit_price=limit_price,
         stop_price=float(request.stop_price) if request.stop_price is not None else None,
-        time_in_force=IBTimeInForce.DAY,
+        time_in_force=tif,
         outside_rth=False,
     )
 

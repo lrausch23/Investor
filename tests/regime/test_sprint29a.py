@@ -68,9 +68,9 @@ def test_kill_switch_missing_portfolio_returns_none(temp_modules) -> None:
     assert paper.kill_switch(9999) is None
 
 
-def test_translate_order_request_supports_market_and_limit(temp_modules) -> None:
+def test_translate_order_request_supports_explicit_market_and_limit(temp_modules) -> None:
     _store, _config, broker, _ib_types, translator, _ib_connection, _ibkr, _paper, _scheduled = temp_modules
-    market = translator.translate_order_request(broker.OrderRequest(portfolio_id=1, ticker="NVDA", action="Buy", quantity=5), 101)
+    market = translator.translate_order_request(broker.OrderRequest(portfolio_id=1, ticker="NVDA", action="Buy", quantity=5, order_type="market"), 101)
     limit = translator.translate_order_request(broker.OrderRequest(portfolio_id=1, ticker="NVDA", action="Sell", quantity=5, limit_price=125.0), 102)
     assert market.order_type.value == "MKT"
     assert limit.order_type.value == "LMT"

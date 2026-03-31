@@ -83,6 +83,7 @@
     expandedDiagnosticsTicker: null,
     frontierSettings: null,
     marketDataSettings: null,
+    orderRoutingSettings: null,
     notificationPreferences: null,
     ensembleWeights: null,
     stressTestScenarios: [],
@@ -2641,6 +2642,22 @@
     return `<span class="ui-badge ui-badge--neutral" title="${escapeHtml(title)}">LTCG Shield</span>`;
   }
 
+  function renderOrderTypeBadge(plan) {
+    const normalized = String(plan.order_type || "limit").toLowerCase();
+    if (normalized === "marketable_limit") {
+      return '<span class="ui-badge ui-badge--warn">Mkt Limit</span>';
+    }
+    if (normalized === "limit") {
+      return '<span class="ui-badge ui-badge--safe">Limit</span>';
+    }
+    return `<span class="ui-badge ui-badge--neutral">${escapeHtml(normalized || "limit")}</span>`;
+  }
+
+  function renderRoutingBadge(plan) {
+    if (!plan.routing_strategy) return "";
+    return `<span class="ui-badge ui-badge--neutral" title="${escapeHtml(plan.routing_strategy)}">${escapeHtml(plan.routing_strategy)}</span>`;
+  }
+
   function renderAuditTrail() {
     const mount = byId("regimeAuditTrailMount");
     if (!mount) return;
@@ -3364,6 +3381,8 @@
               </div>
               <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:6px">
                 ${renderGuardrailBadge(plan)}
+                ${renderOrderTypeBadge(plan)}
+                ${renderRoutingBadge(plan)}
                 ${plan.regime_label ? `<span class="${badgeClass(plan.regime_label)}">${escapeHtml(plan.regime_label)} ${plan.regime_probability != null ? `· ${(Number(plan.regime_probability) * 100).toFixed(0)}%` : ""}</span>` : ""}
                 ${plan.meta_labeler_score == null ? `<span class="ui-badge ui-badge--neutral">ML N/A</span>` : `<span class="${Number(plan.meta_labeler_score) >= 0.65 ? "ui-badge ui-badge--safe" : Number(plan.meta_labeler_score) >= 0.30 ? "ui-badge ui-badge--warn" : "ui-badge ui-badge--bad"}">ML ${(Number(plan.meta_labeler_score) * 100).toFixed(0)}%</span>`}
                 ${plan.sizing_method === "risk_budget" ? `<span class="ui-badge ui-badge--neutral">Risk-Sized</span>` : ""}
@@ -3374,7 +3393,7 @@
                 ${renderTaxImpactBadge(plan)}
               </div>
               <div class="ui-muted" style="margin-top:6px">${escapeHtml(plan.rationale || "")}</div>
-              ${(plan.hurdle_gross_return_pct != null || plan.hurdle_net_return_pct != null || plan.expected_regime_duration != null || plan.ltcg_override_active || plan.anti_churn_passed != null) ? `<div class="ui-muted" style="margin-top:6px">Churn ${escapeHtml(plan.anti_churn_passed == null ? "—" : plan.anti_churn_passed ? "Pass" : "Blocked")} · Gross ${escapeHtml(plan.hurdle_gross_return_pct == null ? "—" : `${Number(plan.hurdle_gross_return_pct).toFixed(2)}%`)} · Net ${escapeHtml(plan.hurdle_net_return_pct == null ? "—" : `${Number(plan.hurdle_net_return_pct).toFixed(2)}%`)} · Duration ${escapeHtml(plan.expected_regime_duration == null ? "—" : `${Number(plan.expected_regime_duration).toFixed(1)}d`)} · LTCG ${escapeHtml(plan.ltcg_override_active ? `${Number(plan.ltcg_protected_quantity || 0).toFixed(2)} sh / ${formatCurrency(plan.ltcg_tax_savings, 2)}` : "—")}</div>` : ""}
+              ${(plan.hurdle_gross_return_pct != null || plan.hurdle_net_return_pct != null || plan.expected_regime_duration != null || plan.ltcg_override_active || plan.anti_churn_passed != null || plan.routing_strategy || plan.order_type) ? `<div class="ui-muted" style="margin-top:6px">Order ${escapeHtml(String(plan.order_type || "limit"))} · Routing ${escapeHtml(plan.routing_strategy || "—")} · Churn ${escapeHtml(plan.anti_churn_passed == null ? "—" : plan.anti_churn_passed ? "Pass" : "Blocked")} · Gross ${escapeHtml(plan.hurdle_gross_return_pct == null ? "—" : `${Number(plan.hurdle_gross_return_pct).toFixed(2)}%`)} · Net ${escapeHtml(plan.hurdle_net_return_pct == null ? "—" : `${Number(plan.hurdle_net_return_pct).toFixed(2)}%`)} · Duration ${escapeHtml(plan.expected_regime_duration == null ? "—" : `${Number(plan.expected_regime_duration).toFixed(1)}d`)} · LTCG ${escapeHtml(plan.ltcg_override_active ? `${Number(plan.ltcg_protected_quantity || 0).toFixed(2)} sh / ${formatCurrency(plan.ltcg_tax_savings, 2)}` : "—")}</div>` : ""}
               ${plan.execution_result ? `<div class="ui-muted" style="margin-top:6px">${escapeHtml(plan.execution_result)}</div>` : ""}
               <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:10px">
                 <button class="btn btn--secondary" type="button" data-paper-plan-action="Approved" data-paper-plan-id="${escapeHtml(plan.id)}" ${!((planPrecheck(plan.id) || {}).guardrail_passed) || paused || closed ? "disabled" : ""}>${(planPrecheck(plan.id) && !(planPrecheck(plan.id).guardrail_passed)) ? "Blocked" : "Approve"}</button>
@@ -3942,6 +3961,12 @@
       },
       ibkr_connected: false,
     };
+    const orderRoutingSettings = state.orderRoutingSettings || {
+      adv_high_threshold: 1000000,
+      adv_low_threshold: 500000,
+      adv_lookback_days: 20,
+      price_improvement_pct: 0.001,
+    };
     const notificationPrefs = state.notificationPreferences || {
       preferences: [],
       settings: {
@@ -4130,6 +4155,33 @@
               </div>
               <div class="ui-muted" style="margin-top:8px">Benchmark order must keep CACHE first.</div>
               <button class="btn btn--secondary" type="button" id="regimeMarketDataSave" style="margin-top:10px">Save Market Data Settings</button>
+            </div>
+            <div style="border:1px solid ${COLORS.border}; border-radius:10px; padding:10px; margin-top:10px">
+              <div class="table-toolbar">
+                <div>
+                  <div style="font-weight:600">Order Routing</div>
+                  <div class="ui-muted">Smart limit-order routing thresholds and price-improvement controls.</div>
+                </div>
+              </div>
+              <div style="display:grid; grid-template-columns:repeat(4, minmax(0, 1fr)); gap:8px; margin-top:10px">
+                <label>
+                  ADV high threshold
+                  <input id="regimeRoutingAdvHigh" type="number" min="1000" step="1000" value="${escapeHtml(Number(orderRoutingSettings.adv_high_threshold || 1000000).toFixed(0))}" />
+                </label>
+                <label>
+                  ADV low threshold
+                  <input id="regimeRoutingAdvLow" type="number" min="1000" step="1000" value="${escapeHtml(Number(orderRoutingSettings.adv_low_threshold || 500000).toFixed(0))}" />
+                </label>
+                <label>
+                  ADV lookback days
+                  <input id="regimeRoutingLookback" type="number" min="5" max="90" step="1" value="${escapeHtml(Number(orderRoutingSettings.adv_lookback_days || 20).toFixed(0))}" />
+                </label>
+                <label>
+                  Price improvement %
+                  <input id="regimeRoutingImprovePct" type="number" min="0" max="5" step="0.05" value="${escapeHtml((Number(orderRoutingSettings.price_improvement_pct || 0.001) * 100).toFixed(2))}" />
+                </label>
+              </div>
+              <button class="btn btn--secondary" type="button" id="regimeRoutingSave" style="margin-top:10px">Save Routing Settings</button>
             </div>
             <div style="border:1px solid ${COLORS.border}; border-radius:10px; padding:10px; margin-top:10px">
               <div class="table-toolbar">
@@ -4439,6 +4491,30 @@
         }
       });
     }
+    const routingSave = byId("regimeRoutingSave");
+    if (routingSave && state.config?.endpoints?.order_routing_settings) {
+      routingSave.addEventListener("click", async () => {
+        try {
+          const response = await fetch(state.config.endpoints.order_routing_settings, {
+            method: "PUT",
+            headers: { Accept: "application/json", "Content-Type": "application/json" },
+            body: JSON.stringify({
+              adv_high_threshold: Number(byId("regimeRoutingAdvHigh")?.value || 1000000),
+              adv_low_threshold: Number(byId("regimeRoutingAdvLow")?.value || 500000),
+              adv_lookback_days: Number(byId("regimeRoutingLookback")?.value || 20),
+              price_improvement_pct: Number(byId("regimeRoutingImprovePct")?.value || 0.1) / 100,
+            }),
+          });
+          const payload = await response.json();
+          if (!response.ok) throw new Error(payload.detail || `Order routing settings failed (${response.status})`);
+          state.orderRoutingSettings = payload;
+          showToast("Saved order routing settings.");
+          renderPaperPortfolioSection();
+        } catch (error) {
+          showToast(`Unable to save order routing settings: ${error.message || error}`, "error");
+        }
+      });
+    }
     const macroTester = async () => {
       if (!state.config?.endpoints?.market_data_test_macro) return;
       try {
@@ -4647,6 +4723,7 @@
       state.unacknowledgedAlerts = [];
       state.alertHistory = [];
       state.vixStatus = null;
+      state.orderRoutingSettings = null;
       state.paperPrecheck = {};
       renderPaperBudget();
       renderPaperPlans();
@@ -4663,7 +4740,7 @@
       return;
     }
     try {
-      const [detailResponse, autonomySettingsResponse, hurdleSettingsResponse, antiChurnSettingsResponse, ltcgOverrideSettingsResponse, autonomyStatusResponse, marketDataSettingsResponse, notificationPreferencesResponse, budgetResponse, plansResponse, positionsResponse, taxLotsResponse, washSaleResponse, performanceResponse, auditResponse, precheckResponse, monitoringResponse, healthResponse, consensusResponse, validationResponse, alertsResponse, alertHistoryResponse, vixResponse] = await Promise.all([
+      const [detailResponse, autonomySettingsResponse, hurdleSettingsResponse, antiChurnSettingsResponse, ltcgOverrideSettingsResponse, autonomyStatusResponse, marketDataSettingsResponse, orderRoutingSettingsResponse, notificationPreferencesResponse, budgetResponse, plansResponse, positionsResponse, taxLotsResponse, washSaleResponse, performanceResponse, auditResponse, precheckResponse, monitoringResponse, healthResponse, consensusResponse, validationResponse, alertsResponse, alertHistoryResponse, vixResponse] = await Promise.all([
         fetch(paperEndpoint("paper_portfolio", portfolioId), { headers: { Accept: "application/json" } }),
         fetch(state.config.endpoints.autonomy_settings, { headers: { Accept: "application/json" } }),
         fetch(state.config.endpoints.hurdle_settings, { headers: { Accept: "application/json" } }),
@@ -4671,6 +4748,7 @@
         fetch(state.config.endpoints.ltcg_override_settings, { headers: { Accept: "application/json" } }),
         fetch(paperEndpoint("paper_autonomy_status", portfolioId), { headers: { Accept: "application/json" } }),
         fetch(state.config.endpoints.market_data_settings, { headers: { Accept: "application/json" } }),
+        fetch(state.config.endpoints.order_routing_settings, { headers: { Accept: "application/json" } }),
         fetch(state.config.endpoints.notification_preferences, { headers: { Accept: "application/json" } }),
         fetch(paperEndpoint("paper_budget", portfolioId), { headers: { Accept: "application/json" } }),
         fetch(`${paperEndpoint("paper_plans", portfolioId)}?status=all`, { headers: { Accept: "application/json" } }),
@@ -4695,7 +4773,7 @@
           return {};
         }
       };
-      const [detail, autonomySettings, hurdleSettings, antiChurnSettings, ltcgOverrideSettings, autonomyStatus, marketDataSettings, notificationPreferences, budget, plans, positions, taxLots, washSale, performance, audit, precheck, monitoring, health, consensus, validation, alerts, alertHistory, vixStatus] = await Promise.all([
+      const [detail, autonomySettings, hurdleSettings, antiChurnSettings, ltcgOverrideSettings, autonomyStatus, marketDataSettings, orderRoutingSettings, notificationPreferences, budget, plans, positions, taxLots, washSale, performance, audit, precheck, monitoring, health, consensus, validation, alerts, alertHistory, vixStatus] = await Promise.all([
         parseJson(detailResponse),
         parseJson(autonomySettingsResponse),
         parseJson(hurdleSettingsResponse),
@@ -4703,6 +4781,7 @@
         parseJson(ltcgOverrideSettingsResponse),
         parseJson(autonomyStatusResponse),
         parseJson(marketDataSettingsResponse),
+        parseJson(orderRoutingSettingsResponse),
         parseJson(notificationPreferencesResponse),
         parseJson(budgetResponse),
         parseJson(plansResponse),
@@ -4763,6 +4842,12 @@
         state.marketDataSettings = marketDataSettings;
       } else {
         warnPanel("Market data settings", marketDataSettingsResponse, marketDataSettings);
+      }
+      if (orderRoutingSettingsResponse.ok) {
+        state.orderRoutingSettings = orderRoutingSettings;
+      } else {
+        warnPanel("Order routing settings", orderRoutingSettingsResponse, orderRoutingSettings);
+        state.orderRoutingSettings = null;
       }
       if (notificationPreferencesResponse.ok) {
         state.notificationPreferences = notificationPreferences;

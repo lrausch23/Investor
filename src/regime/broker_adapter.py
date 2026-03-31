@@ -36,9 +36,11 @@ class OrderRequest:
     ticker: str
     action: str
     quantity: float
-    order_type: str = "market"
+    order_type: str = "limit"
     limit_price: float | None = None
     stop_price: float | None = None
+    time_in_force: str = "DAY"
+    routing_strategy: str = ""
     theme_id: int | None = None
     role: str | None = None
     source: str = "manual"
@@ -153,6 +155,7 @@ class PaperBrokerAdapter(BrokerAdapter):
         ticker = str(order.ticker or "").upper()
         price_map = _batch_current_prices([ticker])
         fill_price = float(price_map.get(ticker) or order.limit_price or 0.0)
+        normalized_order_type = str(order.order_type or "limit").strip().lower()
         order_id = str(uuid.uuid4())
         if fill_price <= 0:
             result = OrderResult(
@@ -193,6 +196,13 @@ class PaperBrokerAdapter(BrokerAdapter):
             )
             self._completed_orders[order_id] = result
             return result
+
+        if normalized_order_type in {"limit", "marketable_limit"} and order.limit_price is not None:
+            limit_value = float(order.limit_price)
+            if str(order.action or "").lower() == "buy" and fill_price > limit_value:
+                fill_price = limit_value
+            elif str(order.action or "").lower() == "sell" and fill_price < limit_value:
+                fill_price = limit_value
 
         if str(order.action or "").lower() == "buy":
             total_cost = quantity * fill_price

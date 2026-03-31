@@ -6,6 +6,7 @@ from typing import Any
 
 from . import AgentBase
 from ..events import BaseEvent, OrderExecutionEvent, TradeDecisionEvent
+from ..order_routing import decide_routing
 
 logger = logging.getLogger(__name__)
 
@@ -61,13 +62,23 @@ class ExecutionAgent(AgentBase):
 
         try:
             adapter = paper_broker_adapter_ctor(event.portfolio_id)
+            routing = decide_routing(
+                ticker=event.ticker,
+                action=event.action,
+                quantity=float(event.quantity or 0.0),
+                last_price=float(event.proposed_price or 0.0),
+                urgency=str(getattr(event, "urgency", "normal") or "normal"),
+                is_stop_triggered=bool(str(event.source or "").lower() == "exit_signal"),
+            )
             order = order_request_ctor(
                 portfolio_id=event.portfolio_id,
                 ticker=event.ticker,
                 action=str(event.action or "").lower(),
                 quantity=float(event.quantity or 0.0),
-                order_type="market",
-                limit_price=float(event.proposed_price) if event.proposed_price is not None else None,
+                order_type=routing.order_type,
+                limit_price=routing.limit_price,
+                time_in_force=routing.time_in_force,
+                routing_strategy=routing.strategy_name,
                 source="agent",
             )
             guardrail_result, order_result = submit_guarded_order_fn(
@@ -88,6 +99,8 @@ class ExecutionAgent(AgentBase):
                     broker_type="paper",
                     trade_decision_id=event.correlation_id,
                     message=_blocked_message(guardrail_result),
+                    routing_strategy=routing.strategy_name,
+                    routing_rationale=routing.rationale,
                 )
             return OrderExecutionEvent(
                 correlation_id=event.correlation_id,
@@ -102,6 +115,8 @@ class ExecutionAgent(AgentBase):
                 filled_price=float(getattr(order_result, "filled_price", 0.0) or 0.0) if getattr(order_result, "filled_price", None) is not None else None,
                 filled_at=str(getattr(order_result, "filled_at", "") or "") or None,
                 message=str(getattr(order_result, "message", "") or ""),
+                routing_strategy=routing.strategy_name,
+                routing_rationale=routing.rationale,
             )
         except Exception as exc:
             logger.error("ExecutionAgent: order failed for %s: %s", event.ticker, exc)

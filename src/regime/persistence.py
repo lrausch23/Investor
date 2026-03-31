@@ -41,6 +41,8 @@ _PAPER_TRADE_PLAN_COLUMNS: dict[str, str] = {
     "broker_order_id": "TEXT",
     "broker_status": "TEXT",
     "filled_quantity": "REAL NOT NULL DEFAULT 0",
+    "order_type": "TEXT NOT NULL DEFAULT 'limit'",
+    "routing_strategy": "TEXT NOT NULL DEFAULT ''",
     "meta_labeler_score": "REAL",
     "agent_trace": "TEXT NOT NULL DEFAULT ''",
     "hurdle_gross_return_pct": "REAL",
@@ -265,6 +267,8 @@ def _create_paper_trade_plan_table(conn: sqlite3.Connection) -> None:
             broker_order_id TEXT,
             broker_status TEXT,
             filled_quantity REAL NOT NULL DEFAULT 0,
+            order_type TEXT NOT NULL DEFAULT 'limit',
+            routing_strategy TEXT NOT NULL DEFAULT '',
             meta_labeler_score REAL,
             sizing_method TEXT NOT NULL DEFAULT 'equal_dollar',
             agent_trace TEXT NOT NULL DEFAULT '',
@@ -2422,6 +2426,8 @@ def create_trade_plan(
     regime_probability: float | None = None,
     crowd_score: int | None = None,
     source: str = "discovery",
+    order_type: str = "limit",
+    routing_strategy: str = "",
     meta_labeler_score: float | None = None,
     sizing_method: str = "equal_dollar",
     agent_trace: str = "",
@@ -2441,12 +2447,12 @@ def create_trade_plan(
             """
             INSERT INTO paper_trade_plan (
                 portfolio_id, theme_id, ticker, action, quantity, proposed_price, rationale,
-                regime_label, regime_probability, crowd_score, source, status, meta_labeler_score, sizing_method, agent_trace,
+                regime_label, regime_probability, crowd_score, source, status, order_type, routing_strategy, meta_labeler_score, sizing_method, agent_trace,
                 hurdle_gross_return_pct, hurdle_net_return_pct, hurdle_passed, duration_gate_passed, expected_regime_duration,
                 anti_churn_passed, ltcg_override_active, ltcg_protected_quantity, ltcg_tax_savings,
                 created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 int(portfolio_id),
@@ -2460,6 +2466,8 @@ def create_trade_plan(
                 float(regime_probability) if regime_probability is not None else None,
                 int(crowd_score) if crowd_score is not None else None,
                 source,
+                str(order_type or "limit"),
+                str(routing_strategy or ""),
                 float(meta_labeler_score) if meta_labeler_score is not None else None,
                 str(sizing_method or "equal_dollar"),
                 str(agent_trace or ""),

@@ -139,6 +139,7 @@ class PortfolioTaxAgent(AgentBase):
                         regime_label=event.regime_label,
                         meta_labeler_score=event.meta_labeler_score,
                         enriched_signal_id=event.correlation_id,
+                        urgency="patient" if trade_action == "Buy" else "normal",
                     )
                 )
             return decisions
@@ -165,6 +166,7 @@ class PortfolioTaxAgent(AgentBase):
                 regime_label=event.regime_label,
                 meta_labeler_score=event.meta_labeler_score,
                 enriched_signal_id=event.correlation_id,
+                urgency="patient",
             )
 
         anti_churn_result = None
@@ -190,6 +192,7 @@ class PortfolioTaxAgent(AgentBase):
                         regime_label=event.regime_label,
                         meta_labeler_score=event.meta_labeler_score,
                         enriched_signal_id=event.correlation_id,
+                        urgency="patient",
                     )
             hurdle_settings = get_hurdle_settings()
             if bool(hurdle_settings.get("hurdle_enabled", True)):
@@ -207,6 +210,7 @@ class PortfolioTaxAgent(AgentBase):
                         regime_label=event.regime_label,
                         meta_labeler_score=event.meta_labeler_score,
                         enriched_signal_id=event.correlation_id,
+                        urgency="patient",
                     )
             if bool(hurdle_settings.get("duration_gate_enabled", True)):
                 duration_result = check_duration_gate(ticker, event.expected_regime_duration, event.regime_label)
@@ -223,6 +227,7 @@ class PortfolioTaxAgent(AgentBase):
                         regime_label=event.regime_label,
                         meta_labeler_score=event.meta_labeler_score,
                         enriched_signal_id=event.correlation_id,
+                        urgency="patient",
                     )
 
         current_price = float(event.current_price or 0.0)
@@ -245,6 +250,7 @@ class PortfolioTaxAgent(AgentBase):
                     regime_label=event.regime_label,
                     meta_labeler_score=event.meta_labeler_score,
                     enriched_signal_id=event.correlation_id,
+                    urgency="normal",
                 )
             from ..ltcg_override import check_ltcg_override, get_ltcg_override_settings
 
@@ -273,6 +279,7 @@ class PortfolioTaxAgent(AgentBase):
                             regime_label=event.regime_label,
                             meta_labeler_score=event.meta_labeler_score,
                             enriched_signal_id=event.correlation_id,
+                            urgency="normal",
                         )
                     quantity = float(ltcg_result.sellable_quantity)
                     ltcg_rationale_text = (
@@ -294,6 +301,7 @@ class PortfolioTaxAgent(AgentBase):
                 meta_labeler_score=event.meta_labeler_score,
                 sizing_rationale=f"Exit {quantity:.0f} shares. {ltcg_rationale_text}",
                 enriched_signal_id=event.correlation_id,
+                urgency="normal",
             )
 
         budget = float(portfolio.get("current_cash") or portfolio.get("starting_budget") or 0.0)
@@ -314,6 +322,7 @@ class PortfolioTaxAgent(AgentBase):
                 regime_label=event.regime_label,
                 meta_labeler_score=event.meta_labeler_score,
                 enriched_signal_id=event.correlation_id,
+                urgency="patient",
             )
         rationale = f"allocation={allocation:.3f} ml_mult={ml_multiplier:.2f} budget={budget:.0f}"
         if anti_churn_result:
@@ -344,4 +353,5 @@ class PortfolioTaxAgent(AgentBase):
             meta_labeler_score=event.meta_labeler_score,
             sizing_rationale=rationale,
             enriched_signal_id=event.correlation_id,
+            urgency="patient",
         )

@@ -60,6 +60,7 @@ async def trade_intent_logger(event: BaseEvent) -> None:
 async def trade_decision_subscriber(event: BaseEvent) -> None:
     """Persist approved agent decisions as trade plans."""
     from .persistence import create_trade_plan
+    from .order_routing import decide_routing
 
     if not isinstance(event, TradeDecisionEvent):
         return
@@ -75,6 +76,8 @@ async def trade_decision_subscriber(event: BaseEvent) -> None:
     ltcg_override_active = None
     ltcg_protected_quantity = None
     ltcg_tax_savings = None
+    order_type = "limit"
+    routing_strategy = ""
     if "[agents:" in rationale:
         trace_start = rationale.index("[agents:")
         agent_trace = rationale[trace_start:].strip()
@@ -96,6 +99,19 @@ async def trade_decision_subscriber(event: BaseEvent) -> None:
         ltcg_protected_quantity = float(ltcg_match.group("protected"))
         ltcg_tax_savings = float(ltcg_match.group("tax"))
     try:
+        routing = decide_routing(
+            ticker=event.ticker,
+            action=event.action,
+            quantity=float(event.quantity or 0.0),
+            last_price=float(event.proposed_price or 0.0),
+            urgency=str(event.urgency or "normal"),
+            is_stop_triggered=bool(str(event.source or "").lower() == "exit_signal"),
+        )
+        order_type = routing.order_type
+        routing_strategy = routing.strategy_name
+    except Exception:
+        logger.debug("trade_decision_subscriber: routing fallback for %s", event.ticker, exc_info=True)
+    try:
         create_trade_plan(
             portfolio_id=event.portfolio_id,
             ticker=event.ticker,
@@ -105,6 +121,8 @@ async def trade_decision_subscriber(event: BaseEvent) -> None:
             proposed_price=event.proposed_price,
             regime_label=event.regime_label or None,
             source="discovery" if str(event.action).lower() == "buy" else "exit_signal",
+            order_type=order_type,
+            routing_strategy=routing_strategy,
             meta_labeler_score=event.meta_labeler_score,
             agent_trace=agent_trace,
             hurdle_gross_return_pct=hurdle_gross_return_pct,

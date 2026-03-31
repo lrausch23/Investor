@@ -151,6 +151,7 @@ class TradeDecisionEvent(BaseEvent):
     meta_labeler_score: float | None = None
     sizing_rationale: str | None = None
     enriched_signal_id: str = ""
+    urgency: str = "normal"
 
 
 @dataclass(frozen=True)
@@ -169,6 +170,8 @@ class OrderExecutionEvent(BaseEvent):
     filled_price: float | None = None
     filled_at: str | None = None
     message: str = ""
+    routing_strategy: str = ""
+    routing_rationale: str = ""
 
 
 @dataclass(frozen=True)

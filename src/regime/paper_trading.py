@@ -21,6 +21,7 @@ from .discovery import _quick_regime_screen
 from .fundamental_data import fetch_financial_statements
 from .hurdle_rate import check_duration_gate, check_hurdle_rate, get_hurdle_settings
 from .market_data_client import download_daily_bars, get_ticker_info
+from .order_routing import decide_routing
 from .persistence import (
     close_paper_position,
     count_todays_trades,
@@ -61,6 +62,15 @@ CachedRegimeMap = dict[str, CachedRegimeValue]
 DEFAULT_SIZING_METHOD = "risk_budget"
 DEFAULT_SIZING_BASE_RISK_FRACTION = 0.02
 DEFAULT_SIZING_ATR_MULTIPLIER = 2.0
+
+
+def _routing_time_in_force_from_plan(plan: dict[str, Any]) -> str:
+    strategy = str(plan.get("routing_strategy") or "")
+    if "IOC" in strategy or str(plan.get("order_type") or "").lower() == "marketable_limit":
+        return "IOC"
+    if "Patient" in strategy or "Passive" in strategy:
+        return "GTC"
+    return "DAY"
 
 
 def _normalize_close_series(frame: pd.DataFrame | None) -> pd.Series:
@@ -478,6 +488,14 @@ def generate_buy_plans(
         if quantity <= 0:
             continue
         planned_keys.add(key)
+        routing = decide_routing(
+            ticker=ticker,
+            action="Buy",
+            quantity=quantity,
+            last_price=proposed_price,
+            urgency="patient",
+        )
+        routed_price = float(routing.limit_price or proposed_price)
         if sizing_method == "risk_budget" and atr_14 is not None and atr_14 > 0:
             risk_per_share = float(atr_14) * atr_multiplier
             rationale = (
@@ -514,11 +532,13 @@ def generate_buy_plans(
                 quantity,
                 rationale,
                 theme_id=theme_id or None,
-                proposed_price=proposed_price,
+                proposed_price=routed_price,
                 regime_label=str(item.get("regime_label") or ""),
                 regime_probability=float(item.get("regime_probability") or 0.0) if item.get("regime_probability") is not None else None,
                 crowd_score=int(item.get("crowd_score")) if item.get("crowd_score") is not None else None,
                 source="discovery",
+                order_type=routing.order_type,
+                routing_strategy=routing.strategy_name,
                 meta_labeler_score=float(item.get("meta_labeler_probability")) if item.get("meta_labeler_probability") is not None else None,
                 sizing_method="risk_budget" if sizing_method == "risk_budget" and atr_14 is not None and atr_14 > 0 else "equal_dollar",
                 hurdle_gross_return_pct=hurdle_result.gross_return_pct if hurdle_result else None,
@@ -593,6 +613,13 @@ def generate_holdings_plans(
         quantity = math.floor(role_budget / proposed_price)
         if quantity <= 0:
             continue
+        routing = decide_routing(
+            ticker=ticker,
+            action="Buy",
+            quantity=quantity,
+            last_price=proposed_price,
+            urgency="normal",
+        )
         seen.add(key)
         parts: list[str] = []
         if ai_verdict:
@@ -614,10 +641,12 @@ def generate_holdings_plans(
                 quantity,
                 rationale,
                 theme_id=theme_id,
-                proposed_price=proposed_price,
+                proposed_price=float(routing.limit_price or proposed_price),
                 regime_label=str(row.get("regime") or ""),
                 regime_probability=float(row.get("probability") or 0.0) if row.get("probability") is not None else None,
                 source="holdings",
+                order_type=routing.order_type,
+                routing_strategy=routing.strategy_name,
                 meta_labeler_score=float(ml_prob) if ml_prob is not None else None,
             )
         )
@@ -650,10 +679,12 @@ def generate_exit_plans(
         current_price = prices.get(ticker)
         stop_price = float(position.get("stop_price") or 0.0)
         trigger_reason: str | None = None
+        is_stop_triggered = False
         regime_label: str | None = None
         regime_probability: float | None = None
         if current_price is not None and stop_price > 0 and current_price <= stop_price:
             trigger_reason = f"Stop price hit (${current_price:.2f} <= ${stop_price:.2f})."
+            is_stop_triggered = True
         row = cached_rows.get(ticker)
         if row:
             regime_label = str(row.get("regime") or "").strip() or None
@@ -702,6 +733,14 @@ def generate_exit_plans(
                     f"Tax savings: ${ltcg_result.total_tax_savings:.2f}."
                 )
         proposed_price = current_price or float(position.get("entry_price") or 0.0)
+        routing = decide_routing(
+            ticker=ticker,
+            action="Sell",
+            quantity=quantity,
+            last_price=float(proposed_price or 0.0),
+            urgency="urgent" if is_stop_triggered else "normal",
+            is_stop_triggered=is_stop_triggered,
+        )
         created.append(
             create_trade_plan(
                 portfolio_id,
@@ -710,10 +749,12 @@ def generate_exit_plans(
                 quantity,
                 trigger_reason,
                 theme_id=int(position["theme_id"]) if position.get("theme_id") is not None else None,
-                proposed_price=proposed_price if proposed_price > 0 else None,
+                proposed_price=float(routing.limit_price or proposed_price) if proposed_price > 0 else None,
                 regime_label=regime_label,
                 regime_probability=regime_probability,
                 source="exit_signal",
+                order_type=routing.order_type,
+                routing_strategy=routing.strategy_name,
                 ltcg_override_active=ltcg_result.override_active if ltcg_result else None,
                 ltcg_protected_quantity=ltcg_result.protected_quantity if ltcg_result else None,
                 ltcg_tax_savings=ltcg_result.total_tax_savings if ltcg_result else None,
@@ -836,7 +877,10 @@ def auto_approve_plans(portfolio_id: int) -> dict[str, Any]:
             ticker=ticker,
             action=action,
             quantity=quantity,
+            order_type=str(plan.get("order_type") or "limit"),
             limit_price=proposed_price,
+            time_in_force=_routing_time_in_force_from_plan(plan),
+            routing_strategy=str(plan.get("routing_strategy") or ""),
             theme_id=int(plan["theme_id"]) if plan.get("theme_id") is not None else None,
             source=str(plan.get("source") or "manual"),
             notes=str(plan.get("rationale") or ""),
@@ -928,8 +972,11 @@ def execute_approved_plans_via_adapter(
             ticker=ticker,
             action=action,
             quantity=quantity,
+            order_type=str(plan.get("order_type") or "limit"),
             limit_price=float(plan.get("proposed_price") or 0.0) or None,
             stop_price=float(stop_price) if stop_price is not None else None,
+            time_in_force=_routing_time_in_force_from_plan(plan),
+            routing_strategy=str(plan.get("routing_strategy") or ""),
             theme_id=int(plan["theme_id"]) if plan.get("theme_id") is not None else None,
             role=role,
             source=str(plan.get("source") or "manual"),
