@@ -74,6 +74,7 @@ def test_check_entry_signals_veto_skips_candidate(monkeypatch) -> None:
     monkeypatch.setattr(discovery_module, "get_theme", lambda theme_id: theme)
     monkeypatch.setattr(discovery_module, "list_themes", lambda include_closed=False: [theme])
     monkeypatch.setattr(discovery_module, "get_watchlist", lambda theme_id=None, status=None: [candidate])
+    monkeypatch.setattr(discovery_module, "get_setting", lambda key: "false" if key == "fundamental_gate_enabled" else None)
     monkeypatch.setattr(discovery_module, "update_watchlist_status", lambda *args, **kwargs: {"id": 1, "status": "Entry Signal"})
 
     class StubMeta:
@@ -98,6 +99,7 @@ def test_check_entry_signals_promotes_when_meta_confirms(monkeypatch) -> None:
     monkeypatch.setattr(discovery_module, "get_theme", lambda theme_id: theme)
     monkeypatch.setattr(discovery_module, "list_themes", lambda include_closed=False: [theme])
     monkeypatch.setattr(discovery_module, "get_watchlist", lambda theme_id=None, status=None: [candidate])
+    monkeypatch.setattr(discovery_module, "get_setting", lambda key: "false" if key == "fundamental_gate_enabled" else None)
     monkeypatch.setattr(discovery_module, "update_watchlist_status", lambda *args, **kwargs: {"id": 1, "status": "Entry Signal"})
 
     class StubMeta:
@@ -121,6 +123,7 @@ def test_check_entry_signals_error_degrades_gracefully(monkeypatch) -> None:
     monkeypatch.setattr(discovery_module, "get_theme", lambda theme_id: theme)
     monkeypatch.setattr(discovery_module, "list_themes", lambda include_closed=False: [theme])
     monkeypatch.setattr(discovery_module, "get_watchlist", lambda theme_id=None, status=None: [candidate])
+    monkeypatch.setattr(discovery_module, "get_setting", lambda key: "false" if key == "fundamental_gate_enabled" else None)
     monkeypatch.setattr(discovery_module, "update_watchlist_status", lambda *args, **kwargs: {"id": 1, "status": "Entry Signal"})
 
     class StubMeta:
@@ -140,6 +143,7 @@ def test_check_entry_signals_not_ready_ignores_meta_labeler(monkeypatch) -> None
     monkeypatch.setattr(discovery_module, "get_theme", lambda theme_id: theme)
     monkeypatch.setattr(discovery_module, "list_themes", lambda include_closed=False: [theme])
     monkeypatch.setattr(discovery_module, "get_watchlist", lambda theme_id=None, status=None: [candidate])
+    monkeypatch.setattr(discovery_module, "get_setting", lambda key: "false" if key == "fundamental_gate_enabled" else None)
     monkeypatch.setattr(discovery_module, "update_watchlist_status", lambda *args, **kwargs: {"id": 1, "status": "Entry Signal"})
 
     class StubMeta:

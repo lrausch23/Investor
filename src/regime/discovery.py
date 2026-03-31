@@ -16,6 +16,7 @@ from .market_data_client import get_ticker_info
 from .persistence import (
     add_ticker_to_theme,
     get_supply_chain,
+    get_setting,
     get_theme,
     get_watchlist,
     get_watchlist_entry,
@@ -24,6 +25,7 @@ from .persistence import (
     list_themes,
     save_supply_chain_layers,
     update_watchlist_status,
+    update_watchlist_fundamental_gate,
     upsert_watchlist_candidate,
 )
 
@@ -391,6 +393,8 @@ def check_entry_signals(
     regime_results: dict[str, Any] | None = None,
 ) -> list[dict]:
     triggered: list[dict] = []
+    gate_settings = None
+    gate_enabled = str(get_setting("fundamental_gate_enabled") or "true").lower() == "true"
     themes = [get_theme(theme_id)] if theme_id is not None else list_themes(include_closed=False)
     for theme in themes:
         if not theme:
@@ -402,9 +406,34 @@ def check_entry_signals(
             probability = float(item.get("regime_probability") or 0.0)
             crowd = int(item.get("crowd_score") or 50)
             if label == "Bull" and probability >= thresholds.entry_signal_min_probability and crowd <= thresholds.entry_signal_max_crowd_score:
+                ticker = str(item.get("ticker") or "").upper()
+                if gate_enabled:
+                    try:
+                        from .fundamental_gating import get_fundamental_gate_settings, run_fundamental_gate
+
+                        if gate_settings is None:
+                            gate_settings = get_fundamental_gate_settings()
+                        gate = run_fundamental_gate(
+                            ticker,
+                            piotroski_min=int(gate_settings["piotroski_min"]),
+                            require_roic_above_wacc=bool(gate_settings["require_roic_above_wacc"]),
+                            roic_lookback_years=int(gate_settings["roic_lookback_years"]),
+                            pass_on_insufficient_data=bool(gate_settings["pass_on_insufficient_data"]),
+                        )
+                        update_watchlist_fundamental_gate(
+                            int(item["id"]),
+                            passed=bool(gate.passed),
+                            piotroski_score=gate.piotroski.score if gate.piotroski else None,
+                            roic_pct=gate.roic.roic_avg if gate.roic else None,
+                            details=gate,
+                        )
+                        if not gate.passed:
+                            logger.info("Fundamental gate BLOCKED %s: %s", ticker, "; ".join(gate.veto_reasons))
+                            continue
+                    except Exception as exc:
+                        logger.warning("Fundamental gate failed for discovery candidate %s; continuing without veto gate.", ticker, exc_info=exc)
                 if meta_labeler_engine is not None and callable(getattr(meta_labeler_engine, "is_ready", None)) and meta_labeler_engine.is_ready():
                     try:
-                        ticker = str(item.get("ticker") or "").upper()
                         regime_result = (regime_results or {}).get(ticker)
                         if regime_result is not None:
                             from .meta_labeler import extract_meta_features

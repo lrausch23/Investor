@@ -380,6 +380,21 @@ def _migrate_trade_plan_source_check(conn: sqlite3.Connection) -> None:
     conn.execute("DROP TABLE _paper_trade_plan_old")
 
 
+def _migrate_discovery_watchlist_fundamental_gate(conn: sqlite3.Connection) -> None:
+    """Add fundamental gate columns to discovery_watchlist."""
+    columns = (
+        ("fundamental_gate_passed", "INTEGER"),
+        ("piotroski_score", "INTEGER"),
+        ("roic_pct", "REAL"),
+        ("fundamental_details", "TEXT NOT NULL DEFAULT ''"),
+    )
+    for column, ddl in columns:
+        try:
+            conn.execute(f"ALTER TABLE discovery_watchlist ADD COLUMN {column} {ddl}")
+        except Exception:
+            pass
+
+
 def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
     row = conn.execute(
         "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
@@ -694,6 +709,10 @@ def _connect() -> sqlite3.Connection:
             crowd_details TEXT NOT NULL DEFAULT '',
             regime_label TEXT,
             regime_probability REAL,
+            fundamental_gate_passed INTEGER,
+            piotroski_score INTEGER,
+            roic_pct REAL,
+            fundamental_details TEXT NOT NULL DEFAULT '',
             status TEXT NOT NULL DEFAULT 'Watching'
                 CHECK (status IN ('Watching', 'Entry Signal', 'Added', 'Passed', 'Expired')),
             discovered_at TEXT NOT NULL,
@@ -768,6 +787,7 @@ def _connect() -> sqlite3.Connection:
     _ensure_paper_schema(conn)
     _migrate_paper_trade_plan_agent_trace(conn)
     _migrate_trade_plan_source_check(conn)
+    _migrate_discovery_watchlist_fundamental_gate(conn)
     _migrate_audit_event_type_check(conn)
     _migrate_alert_log_type_check(conn)
     _migrate_legacy_theses(conn)
@@ -1662,6 +1682,41 @@ def update_watchlist_status(watchlist_id: int, status: str, **kwargs: Any) -> di
         if not cursor.rowcount:
             return None
     return get_watchlist_entry(watchlist_id)
+
+
+def update_watchlist_fundamental_gate(
+    watchlist_id: int,
+    *,
+    passed: bool,
+    piotroski_score: int | None,
+    roic_pct: float | None,
+    details: Any = None,
+) -> None:
+    """Persist fundamental gate diagnostics on a discovery watchlist row."""
+    details_json = ""
+    if details is not None:
+        try:
+            details_json = json.dumps(asdict(details) if is_dataclass(details) else details, default=str)
+        except Exception:
+            details_json = ""
+    with _connect() as conn:
+        conn.execute(
+            """
+            UPDATE discovery_watchlist
+            SET fundamental_gate_passed = ?,
+                piotroski_score = ?,
+                roic_pct = ?,
+                fundamental_details = ?
+            WHERE id = ?
+            """,
+            (
+                1 if passed else 0,
+                int(piotroski_score) if piotroski_score is not None else None,
+                float(roic_pct) if roic_pct is not None else None,
+                details_json,
+                int(watchlist_id),
+            ),
+        )
 
 
 def get_watchlist_by_ticker(ticker: str) -> list[dict[str, Any]]:

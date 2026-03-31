@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import asdict, dataclass
+from typing import Any, cast
 
 from . import AgentBase, get_agent_registry
 from ..events import BaseEvent, EnrichedSignalEvent, FundamentalAssessmentEvent, TradeDecisionEvent
@@ -51,10 +52,17 @@ class AgentOrchestrator(AgentBase):
         if agent is None or not agent.enabled:
             logger.debug("Orchestrator: fundamental agent unavailable for %s", event.ticker)
             return None
+        run_for_orchestrator = getattr(agent, "run_for_orchestrator", None)
+        if not callable(run_for_orchestrator):
+            logger.debug("Orchestrator: fundamental agent missing run_for_orchestrator for %s", event.ticker)
+            return None
         try:
-            result = await asyncio.wait_for(
-                agent.run_for_orchestrator(event),
-                timeout=float(self.config.fundamental_timeout_seconds),
+            result = cast(
+                FundamentalAssessmentEvent | None,
+                await asyncio.wait_for(
+                    cast(Any, run_for_orchestrator)(event),
+                    timeout=float(self.config.fundamental_timeout_seconds),
+                ),
             )
             if result is not None:
                 await self._bus.publish(result)
@@ -97,11 +105,18 @@ class AgentOrchestrator(AgentBase):
         if agent is None or not agent.enabled:
             logger.debug("Orchestrator: portfolio agent unavailable for %s", event.ticker)
             return []
+        run_for_orchestrator = getattr(agent, "run_for_orchestrator", None)
+        if not callable(run_for_orchestrator):
+            logger.debug("Orchestrator: portfolio agent missing run_for_orchestrator for %s", event.ticker)
+            return []
         fundamental_context = fundamental if self.config.fundamental_veto_respected else None
         try:
-            decisions = await asyncio.wait_for(
-                agent.run_for_orchestrator(event, fundamental_context),
-                timeout=float(self.config.portfolio_timeout_seconds),
+            decisions = cast(
+                list[TradeDecisionEvent],
+                await asyncio.wait_for(
+                    cast(Any, run_for_orchestrator)(event, fundamental_context),
+                    timeout=float(self.config.portfolio_timeout_seconds),
+                ),
             )
             return [self._add_agent_trace(decision, event, fundamental_context) for decision in (decisions or [])]
         except asyncio.TimeoutError:

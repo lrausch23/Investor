@@ -194,6 +194,7 @@ def test_entry_signal_fires(temp_modules) -> None:
     store, discovery_module = temp_modules
     theme = store.create_theme("Generative AI", conviction=4, status="Active")
     store.upsert_watchlist_candidate(theme["id"], "WOLF", regime_label="Bull", regime_probability=0.6, crowd_score=30, status="Watching")
+    discovery_module.get_setting = lambda key: "false" if key == "fundamental_gate_enabled" else None
     rows = discovery_module.check_entry_signals(theme["id"])
     assert rows[0]["status"] == "Entry Signal"
 
@@ -202,6 +203,7 @@ def test_entry_signal_blocked_conditions(temp_modules) -> None:
     store, discovery_module = temp_modules
     theme = store.create_theme("Generative AI", conviction=2, status="Active")
     store.upsert_watchlist_candidate(theme["id"], "WOLF", regime_label="Bear", regime_probability=0.8, crowd_score=30, status="Watching")
+    discovery_module.get_setting = lambda key: "false" if key == "fundamental_gate_enabled" else None
     assert discovery_module.check_entry_signals(theme["id"]) == []
 
 

@@ -2462,6 +2462,11 @@
         </div>
         <div class="ui-muted" style="margin-top:8px">${escapeHtml(item.discovery_rationale || "")}</div>
         <div class="ui-muted" style="margin-top:8px">Entry ${escapeHtml(formatCurrency(item.suggested_entry_price, 2))} · Stop ${escapeHtml(formatCurrency(item.suggested_stop_price, 2))} · Prob ${(Number(item.regime_probability || 0) * 100).toFixed(0)}%</div>
+        <div class="ui-muted" style="margin-top:8px">
+          F-Score <span class="${Number(item.piotroski_score) >= 6 ? "cell-ok" : Number.isFinite(Number(item.piotroski_score)) ? "cell-bad" : ""}">${escapeHtml(item.piotroski_score == null ? "—" : item.piotroski_score)}</span>
+          · ROIC ${escapeHtml(item.roic_pct == null ? "—" : `${formatFixed(item.roic_pct, 1)}%`)}
+          · Gate <span class="${item.fundamental_gate_passed === 1 ? "ui-badge ui-badge--safe" : item.fundamental_gate_passed === 0 ? "ui-badge ui-badge--bad" : "ui-badge ui-badge--neutral"}">${escapeHtml(item.fundamental_gate_passed === 1 ? "Pass" : item.fundamental_gate_passed === 0 ? "Fail" : "Pending")}</span>
+        </div>
         <div class="regime-strength-bar" style="margin-top:8px">
           <div class="regime-strength-bar__fill" style="width:${Math.max(0, Math.min(100, Number(item.regime_probability || 0) * 100)).toFixed(1)}%"></div>
         </div>

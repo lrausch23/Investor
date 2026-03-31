@@ -3030,6 +3030,8 @@ def _build_shell_context(
             "watchlist_entry": "/regime/watchlist/__WATCHLIST_ID__",
             "watchlist_promote": "/regime/watchlist/__WATCHLIST_ID__/promote",
             "watchlist_pass": "/regime/watchlist/__WATCHLIST_ID__/pass",
+            "fundamental_gate": "/regime/fundamental-gate/__TICKER__",
+            "fundamental_gate_settings": "/regime/fundamental-gate/settings",
             "paper_portfolios": "/regime/paper-portfolio",
             "paper_portfolio": "/regime/paper-portfolio/__PORTFOLIO_ID__",
             "paper_budget": "/regime/paper-portfolio/__PORTFOLIO_ID__/budget",
@@ -4786,6 +4788,66 @@ def regime_watchlist_pass(
     if payload is None:
         raise HTTPException(status_code=404, detail="Watchlist entry not found.")
     return JSONResponse(content=_json_ready(payload))
+
+
+def _fundamental_gate_settings_payload() -> dict[str, Any]:
+    from src.regime.fundamental_gating import get_fundamental_gate_settings
+
+    return _json_ready(get_fundamental_gate_settings())
+
+
+@router.get("/fundamental-gate/settings")
+def regime_fundamental_gate_settings_get(
+    actor: str = Depends(require_actor),
+):
+    del actor
+    return JSONResponse(content=_fundamental_gate_settings_payload())
+
+
+@router.put("/fundamental-gate/settings")
+async def regime_fundamental_gate_settings_put(
+    request: Request,
+    actor: str = Depends(require_actor),
+):
+    del actor
+    from src.regime.persistence import set_setting
+
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Request body must be a JSON object.")
+    if "piotroski_min" in payload:
+        set_setting("fundamental_piotroski_min", str(max(0, min(9, int(payload["piotroski_min"])))))
+    if "require_roic_above_wacc" in payload:
+        set_setting("fundamental_require_roic", "true" if payload["require_roic_above_wacc"] else "false")
+    if "roic_lookback_years" in payload:
+        set_setting("fundamental_roic_lookback", str(max(1, min(5, int(payload["roic_lookback_years"])))))
+    if "pass_on_insufficient_data" in payload:
+        set_setting("fundamental_pass_on_insufficient", "true" if payload["pass_on_insufficient_data"] else "false")
+    if "gate_enabled" in payload:
+        set_setting("fundamental_gate_enabled", "true" if payload["gate_enabled"] else "false")
+    return JSONResponse(content=_fundamental_gate_settings_payload())
+
+
+@router.get("/fundamental-gate/{ticker}")
+def regime_fundamental_gate(
+    ticker: str,
+    actor: str = Depends(require_actor),
+):
+    del actor
+    from src.regime.fundamental_gating import get_fundamental_gate_settings, run_fundamental_gate
+
+    settings = get_fundamental_gate_settings()
+    gate = run_fundamental_gate(
+        str(ticker or "").upper(),
+        piotroski_min=int(settings["piotroski_min"]),
+        require_roic_above_wacc=bool(settings["require_roic_above_wacc"]),
+        roic_lookback_years=int(settings["roic_lookback_years"]),
+        pass_on_insufficient_data=bool(settings["pass_on_insufficient_data"]),
+    )
+    return JSONResponse(content=_json_ready(asdict(gate)))
 
 
 @router.get("/discovery/signals")

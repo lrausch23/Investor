@@ -59,6 +59,42 @@ class FundamentalAgent(AgentBase):
                 details={"reason": "Meta-labeler score below threshold"},
             )
 
+        gate_enabled = str(runtime["get_setting"]("fundamental_gate_enabled") or "true").lower() == "true" if callable(runtime.get("get_setting")) else True
+        if gate_enabled:
+            try:
+                from ..fundamental_gating import get_fundamental_gate_settings, run_fundamental_gate
+
+                settings = get_fundamental_gate_settings()
+                gate = run_fundamental_gate(
+                    event.ticker,
+                    piotroski_min=int(settings["piotroski_min"]),
+                    require_roic_above_wacc=bool(settings["require_roic_above_wacc"]),
+                    roic_lookback_years=int(settings["roic_lookback_years"]),
+                    pass_on_insufficient_data=bool(settings["pass_on_insufficient_data"]),
+                )
+                if not gate.passed:
+                    return FundamentalAssessmentEvent(
+                        correlation_id=event.correlation_id,
+                        ticker=event.ticker,
+                        regime_label=event.regime_label,
+                        verdict="Veto",
+                        confidence_score=None,
+                        catalyst_sentiment="",
+                        vetoed=True,
+                        veto_reason=f"fundamental_gate: {'; '.join(gate.veto_reasons)}",
+                        source="fundamental_gating",
+                        enriched_signal_id=event.correlation_id,
+                        meta_labeler_score=event.meta_labeler_score,
+                        details={
+                            "piotroski_score": gate.piotroski.score if gate.piotroski else None,
+                            "roic_avg": gate.roic.roic_avg if gate.roic else None,
+                            "wacc": gate.roic.wacc_estimate if gate.roic else None,
+                            "veto_reasons": gate.veto_reasons,
+                        },
+                    )
+            except Exception as exc:
+                logger.warning("Fundamental gate failed for %s; proceeding to LLM: %s", event.ticker, exc)
+
         frontier_provider = str(runtime["get_setting"]("frontier_provider") or "auto") if callable(runtime.get("get_setting")) else "auto"
         qualitative = runtime["build_qualitative_assessment"](
             ticker=event.ticker,
@@ -87,7 +123,7 @@ class FundamentalAgent(AgentBase):
             catalyst_sentiment=str(getattr(qualitative, "catalyst_sentiment", "") or ""),
             vetoed=False,
             veto_reason=None,
-            source=event.source,
+            source=str(getattr(event, "source", "") or "quant_agent"),
             enriched_signal_id=event.correlation_id,
             meta_labeler_score=event.meta_labeler_score,
             details={

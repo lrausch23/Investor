@@ -130,7 +130,7 @@ def _runtime() -> dict[str, object]:
         "extract_meta_features": lambda row: {"feat": float(row["state_probability"])},
         "aggregate_analysts": lambda results, config: SimpleNamespace(signal="confirm", composite_confidence=0.74, sizing_multiplier=1.0, veto_reason=None),
         "EnsembleConfig": EnsembleConfig,
-        "get_setting": lambda key: None,
+        "get_setting": lambda key: "false" if key == "fundamental_gate_enabled" else None,
         "build_qualitative_assessment": lambda **kwargs: SimpleNamespace(
             ticker=kwargs["ticker"],
             catalyst_sentiment="Positive",
