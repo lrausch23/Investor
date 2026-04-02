@@ -157,13 +157,13 @@ def expenses_home(
     rules_exists = rp.exists()
     rules_mtime = utcfromtimestamp(rp.stat().st_mtime) if rules_exists else None
 
-    now_utc = now_utc()
+    current_utc = now_utc()
 
     def _relative_time(ts: dt.datetime | None) -> str:
         if ts is None:
             return "—"
         try:
-            delta = now_utc - ensure_utc(ts)
+            delta = current_utc - ensure_utc(ts)
         except Exception:
             return "—"
         seconds = max(0, int(delta.total_seconds()))
