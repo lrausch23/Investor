@@ -1,4 +1,4 @@
-.PHONY: help venv install env db-reset load-fixtures run dev test typecheck check planner export-plan clean
+.PHONY: help venv install env db-reset uat-reset uat-reset-force uat-archives uat-restore load-fixtures run dev test typecheck check planner export-plan clean
 
 SHELL := /bin/bash
 
@@ -19,6 +19,10 @@ help:
 	@echo "  make install        Install Python deps into venv"
 	@echo "  make env            Create .env from .env.example if missing"
 	@echo "  make db-reset       Reset SQLite DB at DATABASE_URL (default ./data/investor.db)"
+	@echo "  make uat-reset      Archive and reset investor.db + regime_watch.db for UAT"
+	@echo "  make uat-reset-force Archive and reset both DBs without confirmation"
+	@echo "  make uat-archives   List UAT database archives"
+	@echo "  make uat-restore    Restore UAT archives (usage: make uat-restore STAMP=YYYYMMDD_HHMMSS)"
 	@echo "  make load-fixtures  Load sample CSVs from fixtures/"
 	@echo "  make dev            Run FastAPI UI (reload) on http://$(HOST):$(PORT)"
 	@echo "  make run            Run FastAPI UI (no reload) on http://$(HOST):$(PORT)"
@@ -47,6 +51,18 @@ env:
 
 db-reset: install env
 	$(PY) scripts/reset_db.py
+
+uat-reset: install env
+	$(PY) scripts/uat_reset_db.py
+
+uat-reset-force: install env
+	$(PY) scripts/uat_reset_db.py --yes
+
+uat-archives: env
+	$(PY) scripts/uat_reset_db.py --list
+
+uat-restore: install env
+	$(PY) scripts/uat_reset_db.py --restore $(STAMP)
 
 load-fixtures: db-reset
 	$(PY) -m src.cli import-csv --kind securities --path fixtures/securities.csv
