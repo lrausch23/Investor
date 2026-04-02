@@ -121,21 +121,33 @@ def _reset_sqlalchemy_engine() -> None:
     session_module._ENGINE = None
 
 
+def _sqlite_sidecar_paths(path: Path) -> list[Path]:
+    return [
+        path.with_name(f"{path.name}-wal"),
+        path.with_name(f"{path.name}-shm"),
+        path.with_name(f"{path.name}-journal"),
+    ]
+
+
+def _remove_sqlite_files(path: Path) -> None:
+    for candidate in [path, *_sqlite_sidecar_paths(path)]:
+        if candidate.exists():
+            candidate.unlink()
+
+
 def recreate_investor_db(path: Path) -> None:
     from src.db.init_db import init_db
 
     path.parent.mkdir(parents=True, exist_ok=True)
-    if path.exists():
-        path.unlink()
     _set_database_url(path)
     _reset_sqlalchemy_engine()
+    _remove_sqlite_files(path)
     init_db()
 
 
 def delete_regime_db(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    if path.exists():
-        path.unlink()
+    _remove_sqlite_files(path)
 
 
 def summarize_reset(targets: Iterable[DatabaseTarget], timestamp: str) -> list[tuple[DatabaseTarget, Path | None, int | None]]:
@@ -215,10 +227,11 @@ def restore_databases(timestamp: str) -> dict[str, Path]:
             print(f"Warning: No archive found for {target.name} at {timestamp}; skipping restore.")
             continue
         target.path.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(archive, target.path)
         if target.name == "investor.db":
             _set_database_url(target.path)
             _reset_sqlalchemy_engine()
+        _remove_sqlite_files(target.path)
+        shutil.copy2(archive, target.path)
         print(f"Restored {target.path} from {archive}")
         restored[target.name] = target.path
     return restored

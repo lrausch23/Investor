@@ -191,3 +191,49 @@ def test_yes_flag_skips_confirmation(tmp_path: Path, monkeypatch: pytest.MonkeyP
     monkeypatch.setattr("builtins.input", lambda prompt="": (_ for _ in ()).throw(AssertionError("input should not be called")))
     uat_reset_db.reset_databases(yes=True)
     assert investor.exists()
+
+
+def test_reset_removes_sqlite_sidecars(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    targets = _targets(tmp_path)
+    investor = targets[0].path
+    regime = targets[1].path
+    _write_sqlite(investor)
+    _write_sqlite(regime)
+    investor_journal = investor.with_name(f"{investor.name}-journal")
+    regime_wal = regime.with_name(f"{regime.name}-wal")
+    for path in (investor_journal, regime_wal):
+        path.write_text("stale")
+    monkeypatch.setattr(uat_reset_db, "get_targets", lambda: targets)
+    monkeypatch.setattr(uat_reset_db, "get_investor_db_path", lambda: investor)
+    monkeypatch.setattr(uat_reset_db, "get_regime_db_path", lambda: regime)
+    monkeypatch.setattr(uat_reset_db, "app_running", lambda port=None: False)
+    uat_reset_db.reset_databases(yes=True)
+    assert investor.exists()
+    assert not investor_journal.exists()
+    assert not regime.exists()
+    assert not regime_wal.exists()
+
+
+def test_restore_removes_existing_sqlite_sidecars(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    targets = _targets(tmp_path)
+    investor = targets[0].path
+    regime = targets[1].path
+    investor.parent.mkdir(parents=True, exist_ok=True)
+    regime.parent.mkdir(parents=True, exist_ok=True)
+    investor.write_text("current-investor")
+    regime.write_text("current-regime")
+    investor_wal = investor.with_name(f"{investor.name}-wal")
+    regime_shm = regime.with_name(f"{regime.name}-shm")
+    investor_wal.write_text("stale")
+    regime_shm.write_text("stale")
+    investor_archive = investor.parent / "investor_pre_uat_20260402_143000.db"
+    regime_archive = regime.parent / "regime_watch_pre_uat_20260402_143000.db"
+    investor_archive.write_text("archive-investor")
+    regime_archive.write_text("archive-regime")
+    monkeypatch.setattr(uat_reset_db, "get_targets", lambda: targets)
+    monkeypatch.setattr(uat_reset_db, "utc_timestamp", lambda: "20260403_010000")
+    uat_reset_db.restore_databases("20260402_143000")
+    assert investor.read_text() == "archive-investor"
+    assert regime.read_text() == "archive-regime"
+    assert not investor_wal.exists()
+    assert not regime_shm.exists()
