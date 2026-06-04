@@ -183,8 +183,14 @@ def test_create_trade_plan_persists_algo_strategy(temp_modules) -> None:
         routing_strategy="VWAP Algo (Limit (Ask))",
         algo_strategy="VWAP",
         proposed_price=100.5,
+        signal_quality_score=82.0,
+        signal_quality_grade="actionable",
+        signal_quality_reasons=["fresh", "confirmed"],
     )
     assert plan["algo_strategy"] == "VWAP"
+    assert plan["signal_quality_score"] == pytest.approx(82.0)
+    assert plan["signal_quality_grade"] == "actionable"
+    assert "fresh" in plan["signal_quality_reasons"]
 
 
 def test_route_routing_settings_put_roundtrip_algo_fields(temp_modules) -> None:
@@ -228,6 +234,7 @@ def test_generate_buy_plans_persists_algo_strategy(temp_modules, monkeypatch) ->
         status="Entry Signal",
     )
     monkeypatch.setattr(routing, "compute_adv", lambda ticker, lookback_days=20: 5_000.0)
+    monkeypatch.setattr(paper, "_batch_current_prices", lambda tickers: {"NVDA": 100.0})
     plans = paper.generate_buy_plans(portfolio["id"])
     assert plans[0]["algo_strategy"] in {"TWAP", "VWAP"}
 
@@ -372,3 +379,65 @@ def test_live_backend_sets_algo_strategy_and_params(temp_modules, monkeypatch) -
     assert backend._ib.placed_order.algoStrategy == "Twap"
     assert backend._ib.placed_order.algoParams[0].tag == "maxPctVol"
     assert backend._ib.placed_order.algoParams[0].value == "0.10"
+
+
+def test_live_backend_status_falls_back_to_execution_report(temp_modules, monkeypatch) -> None:
+    _store, _broker, _translator, _routing, _paper, _exec_mod, live_mod, _events, _event_bus = temp_modules
+
+    class FakeThread:
+        def run(self, fn, timeout=None):
+            del timeout
+            value = fn()
+            if inspect.isawaitable(value):
+                return asyncio.run(value)
+            return value
+
+    class FakeExecutionFilter:
+        def __init__(self):
+            self.acctCode = ""
+            self.clientId = 0
+            self.time = ""
+
+    class FakeIB:
+        def openTrades(self):
+            return []
+
+        def trades(self):
+            return []
+
+        async def reqAllOpenOrdersAsync(self):
+            return []
+
+        async def reqCompletedOrdersAsync(self, apiOnly=False):
+            del apiOnly
+            return []
+
+        async def reqExecutionsAsync(self, query):
+            assert query.acctCode == "DUP579027"
+            assert query.clientId == 27
+            return [
+                SimpleNamespace(
+                    contract=SimpleNamespace(symbol="AVGO"),
+                    execution=SimpleNamespace(
+                        orderId=43,
+                        shares=5.0,
+                        price=486.30,
+                        avgPrice=486.30,
+                        time=pd.Timestamp("2026-06-03T19:21:47Z").to_pydatetime(),
+                    ),
+                )
+            ]
+
+    fake_ib_module = SimpleNamespace(ExecutionFilter=FakeExecutionFilter)
+    monkeypatch.setitem(sys.modules, "ib_insync", fake_ib_module)
+    monkeypatch.setattr(live_mod, "get_ib_thread", lambda: FakeThread())
+    backend = live_mod.LiveIBBackend(account_id="DUP579027")
+    backend._ib = FakeIB()
+    backend._client_id = 27
+
+    status = backend.get_order_status(43)
+
+    assert status.status.value == "Filled"
+    assert status.filled_qty == pytest.approx(5.0)
+    assert status.avg_fill_price == pytest.approx(486.30)
+    assert status.message == "Filled from IBKR execution report."

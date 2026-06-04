@@ -51,13 +51,19 @@ def test_ibkr_settings_update_paper_port(monkeypatch, tmp_path: Path) -> None:
     assert "IBKR_PORT=7497" in contents
 
 
-def test_ibkr_settings_accepts_live_port() -> None:
+def test_ibkr_settings_accepts_live_port(monkeypatch, tmp_path: Path) -> None:
+    env_path = tmp_path / ".env"
+    env_path.write_text("IBKR_PORT=7497\nIBKR_ACCOUNT_ID=DUP579027\n", encoding="utf-8")
+    monkeypatch.setattr(regime_route, "_env_file_path", lambda: env_path)
     client = _client()
     response = client.post("/regime/ibkr/settings", data={"port": "7496", "account_id": "DUP579027"})
     assert response.status_code == 200
 
 
-def test_ibkr_settings_accepts_non_du_with_live() -> None:
+def test_ibkr_settings_accepts_non_du_with_live(monkeypatch, tmp_path: Path) -> None:
+    env_path = tmp_path / ".env"
+    env_path.write_text("IBKR_PORT=7497\nIBKR_ACCOUNT_ID=DUP579027\n", encoding="utf-8")
+    monkeypatch.setattr(regime_route, "_env_file_path", lambda: env_path)
     client = _client()
     response = client.post(
         "/regime/ibkr/settings",

@@ -48,7 +48,7 @@ def test_get_watchlist_no_status_excludes_expired_passed(temp_modules) -> None:
     assert [row["ticker"] for row in rows] == ["LSCC"]
 
 
-def test_generate_buy_plans_includes_added_tickers(temp_modules) -> None:
+def test_generate_buy_plans_includes_added_tickers(temp_modules, monkeypatch) -> None:
     store, paper, _config = temp_modules
     portfolio = store.create_paper_portfolio("Sandbox", 100000.0)
     theme = store.create_theme("Generative AI", conviction=4, status="Active")
@@ -63,11 +63,12 @@ def test_generate_buy_plans_includes_added_tickers(temp_modules) -> None:
         regime_probability=0.65,
         status="Added",
     )
+    monkeypatch.setattr(paper, "_batch_current_prices", lambda tickers: {"LSCC": 50.0})
     plans = paper.generate_buy_plans(portfolio["id"])
     assert [plan["ticker"] for plan in plans] == ["LSCC"]
 
 
-def test_generate_buy_plans_includes_entry_signal_tickers(temp_modules) -> None:
+def test_generate_buy_plans_includes_entry_signal_tickers(temp_modules, monkeypatch) -> None:
     store, paper, _config = temp_modules
     portfolio = store.create_paper_portfolio("Sandbox", 100000.0)
     theme = store.create_theme("Physical AI", conviction=4, status="Active")
@@ -82,6 +83,7 @@ def test_generate_buy_plans_includes_entry_signal_tickers(temp_modules) -> None:
         regime_probability=0.61,
         status="Entry Signal",
     )
+    monkeypatch.setattr(paper, "_batch_current_prices", lambda tickers: {"WOLF": 20.0})
     plans = paper.generate_buy_plans(portfolio["id"])
     assert [plan["ticker"] for plan in plans] == ["WOLF"]
 
@@ -100,7 +102,7 @@ def test_generate_buy_plans_skips_watching_tickers(temp_modules) -> None:
     assert paper.generate_buy_plans(portfolio["id"]) == []
 
 
-def test_generate_buy_plans_dedup_same_ticker_different_themes(temp_modules) -> None:
+def test_generate_buy_plans_dedup_same_ticker_different_themes(temp_modules, monkeypatch) -> None:
     store, paper, _config = temp_modules
     portfolio = store.create_paper_portfolio("Sandbox", 100000.0)
     theme_a = store.create_theme("Generative AI", conviction=4, status="Active")
@@ -121,6 +123,7 @@ def test_generate_buy_plans_dedup_same_ticker_different_themes(temp_modules) -> 
         suggested_entry_price=50.0,
         status="Added",
     )
+    monkeypatch.setattr(paper, "_batch_current_prices", lambda tickers: {"LSCC": 50.0})
     plans = paper.generate_buy_plans(portfolio["id"])
     assert len(plans) == 2
     assert {(plan["ticker"], int(plan["theme_id"])) for plan in plans} == {
@@ -142,6 +145,7 @@ def test_generate_buy_plans_dedup_same_ticker_same_theme(temp_modules, monkeypat
         status="Added",
     )
     monkeypatch.setattr(paper, "get_watchlist", lambda status=None: [candidate, dict(candidate)])
+    monkeypatch.setattr(paper, "_batch_current_prices", lambda tickers: {"LSCC": 50.0})
     plans = paper.generate_buy_plans(portfolio["id"])
     assert len(plans) == 1
     assert plans[0]["ticker"] == "LSCC"

@@ -37,7 +37,9 @@ Start and attempt to launch IB Gateway too:
 | `IBKR_CLIENT_ID` | Main app IBKR client id |
 | `IBKR_ACCOUNT_ID` | Paper or primary account id |
 | `IBKR_LIVE_ACCOUNT_ID` | Live account id for unlock checks |
+| `IBKR_PAPER_BACKEND` | Use the real local IBKR API for a DU paper account (`true`/`false`) |
 | `IBKR_LIVE_BACKEND` | Enable live backend (`true`/`false`) |
+| `IBKR_EXECUTION_CLIENT_ID_OFFSET` | Offset added to client id for standalone scheduled execution |
 | `IBKR_TIMEOUT` | IBKR connection timeout seconds |
 | `OPENAI_API_KEY` | OpenAI access |
 | `GOOGLE_API_KEY` | Gemini access |

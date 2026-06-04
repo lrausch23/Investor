@@ -60,7 +60,7 @@ def test_compute_paper_performance_downloads_benchmark_once(temp_modules, monkey
     monkeypatch.setattr(paper, "download_daily_bars", fake_download)
     payload = paper.compute_paper_performance(portfolio["id"])
     assert payload["benchmark"]["benchmark_ticker"] == "SPY"
-    assert len(calls) == 1
+    assert [call[0][0] for call in calls] == ["SPY", "QQQ", "SOXX"]
 
 
 def test_kill_switch_missing_portfolio_returns_none(temp_modules) -> None:
@@ -75,6 +75,25 @@ def test_translate_order_request_supports_explicit_market_and_limit(temp_modules
     assert market.order_type.value == "MKT"
     assert limit.order_type.value == "LMT"
     assert limit.limit_price == pytest.approx(125.0)
+
+
+def test_translate_order_request_rounds_stock_prices_to_cents(temp_modules) -> None:
+    _store, _config, broker, _ib_types, translator, _ib_connection, _ibkr, _paper, _scheduled = temp_modules
+    order = translator.translate_order_request(
+        broker.OrderRequest(
+            portfolio_id=1,
+            ticker="NVDA",
+            action="Buy",
+            quantity=11,
+            order_type="limit",
+            limit_price=215.8008,
+            stop_price=211.234,
+        ),
+        103,
+    )
+
+    assert order.limit_price == pytest.approx(215.80)
+    assert order.stop_price == pytest.approx(211.23)
 
 
 def test_market_hours_status_regular_weekday(temp_modules) -> None:

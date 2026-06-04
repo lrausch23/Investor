@@ -5,6 +5,7 @@ import logging
 from typing import Any
 
 from . import AgentBase
+from ..agent_frontier import get_agent_frontier_config
 from ..events import BaseEvent, EnrichedSignalEvent, FundamentalAssessmentEvent
 
 logger = logging.getLogger(__name__)
@@ -34,15 +35,33 @@ class FundamentalAgent(AgentBase):
         if assessment is not None:
             await self._bus.publish(assessment)
 
-    async def run_for_orchestrator(self, event: EnrichedSignalEvent) -> FundamentalAssessmentEvent | None:
+    async def run_for_orchestrator(
+        self,
+        event: EnrichedSignalEvent,
+        *,
+        portfolio_id: int | None = None,
+        agent_key: str = "",
+    ) -> FundamentalAssessmentEvent | None:
         """Run the qualitative assessment directly for orchestrated sequencing."""
         runtime = self._get_runtime()
         if runtime is None:
             logger.warning("FundamentalAgent skipped %s: runtime unavailable", event.ticker)
             return None
-        return await asyncio.to_thread(self._evaluate, runtime, event)
+        return await asyncio.to_thread(self._evaluate, runtime, event, portfolio_id, agent_key)
 
-    def _evaluate(self, runtime: dict[str, Any], event: EnrichedSignalEvent) -> FundamentalAssessmentEvent | None:
+    def _evaluate(
+        self,
+        runtime: dict[str, Any],
+        event: EnrichedSignalEvent,
+        portfolio_id: int | None = None,
+        agent_key: str = "",
+    ) -> FundamentalAssessmentEvent | None:
+        agent_config = get_agent_frontier_config(
+            agent_key=agent_key,
+            portfolio_id=portfolio_id,
+            get_setting_fn=runtime["get_setting"] if callable(runtime.get("get_setting")) else lambda _key: None,
+        )
+        resolved_agent_key = str(agent_config.get("agent_key") or agent_key or "")
         if event.meta_labeler_score is not None and float(event.meta_labeler_score) < self.META_LABELER_VETO_THRESHOLD:
             return FundamentalAssessmentEvent(
                 correlation_id=event.correlation_id,
@@ -57,6 +76,15 @@ class FundamentalAgent(AgentBase):
                 enriched_signal_id=event.correlation_id,
                 meta_labeler_score=event.meta_labeler_score,
                 details={"reason": "Meta-labeler score below threshold"},
+                portfolio_id=portfolio_id,
+                agent_key=resolved_agent_key,
+                llm_used=False,
+                llm_influenced=False,
+                llm_influence="meta_labeler_veto",
+                llm_source="quant_veto",
+                llm_provider=str(agent_config.get("provider") or ""),
+                llm_model=str(agent_config.get("model") or ""),
+                llm_model_display=str(agent_config.get("configured_model") or ""),
             )
 
         gate_enabled = str(runtime["get_setting"]("fundamental_gate_enabled") or "true").lower() == "true" if callable(runtime.get("get_setting")) else True
@@ -95,11 +123,21 @@ class FundamentalAgent(AgentBase):
                             "altman_z_interpretation": gate.altman_z.interpretation if gate.altman_z else "",
                             "veto_reasons": gate.veto_reasons,
                         },
+                        portfolio_id=portfolio_id,
+                        agent_key=resolved_agent_key,
+                        llm_used=False,
+                        llm_influenced=False,
+                        llm_influence="fundamental_gate_veto",
+                        llm_source="fundamental_gating",
+                        llm_provider=str(agent_config.get("provider") or ""),
+                        llm_model=str(agent_config.get("model") or ""),
+                        llm_model_display=str(agent_config.get("configured_model") or ""),
                     )
             except Exception as exc:
                 logger.warning("Fundamental gate failed for %s; proceeding to LLM: %s", event.ticker, exc)
 
-        frontier_provider = str(runtime["get_setting"]("frontier_provider") or "auto") if callable(runtime.get("get_setting")) else "auto"
+        frontier_provider = str(agent_config.get("provider") or "auto")
+        frontier_model = str(agent_config.get("model") or "")
         qualitative = runtime["build_qualitative_assessment"](
             ticker=event.ticker,
             regime_signal=event.composite_action or event.regime_label,
@@ -108,6 +146,7 @@ class FundamentalAgent(AgentBase):
             context_symbols=[event.benchmark] if event.benchmark else None,
             frontier_enabled=True,
             frontier_provider=frontier_provider,
+            frontier_model=frontier_model or None,
             meta_labeler_score=event.meta_labeler_score,
         )
         llm_response = getattr(qualitative, "llm_response", None) or {}
@@ -128,6 +167,20 @@ class FundamentalAgent(AgentBase):
             confidence_value = int(confidence_score) if confidence_score is not None else None
         except Exception:
             confidence_value = None
+        qualitative_source = str(getattr(qualitative, "source", "") or "")
+        llm_used = bool(getattr(qualitative, "llm_used", False) or qualitative_source == "llm")
+        model_display = str(getattr(qualitative, "model_name", "") or agent_config.get("configured_model") or "")
+        llm_payload = {
+            "portfolio_id": portfolio_id,
+            "agent_key": resolved_agent_key,
+            "llm_used": llm_used,
+            "llm_source": qualitative_source,
+            "llm_provider": str(getattr(qualitative, "frontier_provider", "") or frontier_provider),
+            "llm_model": str(getattr(qualitative, "frontier_model", "") or frontier_model),
+            "llm_model_display": model_display,
+            "llm_verdict": verdict,
+            "llm_confidence": float(confidence_value) if confidence_value is not None else None,
+        }
         moat_veto = False
         if gate_enabled and moat_classification.lower() in {"", "none"}:
             moat_veto = True
@@ -151,6 +204,9 @@ class FundamentalAgent(AgentBase):
                 },
                 moat_classification=moat_classification,
                 moat_justification=moat_justification,
+                **llm_payload,
+                llm_influenced=llm_used,
+                llm_influence="vetoed" if llm_used else "moat_veto",
             )
         return FundamentalAssessmentEvent(
             correlation_id=event.correlation_id,
@@ -171,4 +227,25 @@ class FundamentalAgent(AgentBase):
             },
             moat_classification=moat_classification,
             moat_justification=moat_justification,
+            **llm_payload,
+            llm_influenced=llm_used and _verdict_aligns_with_signal(verdict, event.composite_action),
+            llm_influence=(
+                "confirmed" if llm_used and _verdict_aligns_with_signal(verdict, event.composite_action)
+                else "reviewed" if llm_used
+                else qualitative_source or "fallback"
+            ),
         )
+
+
+def _verdict_aligns_with_signal(verdict: str, action: str) -> bool:
+    verdict_text = str(verdict or "").strip().lower()
+    action_text = str(action or "").strip().lower()
+    if not verdict_text or not action_text:
+        return False
+    if action_text in {"buy", "strong buy"}:
+        return any(token in verdict_text for token in ("buy", "accumulate", "increase", "add"))
+    if action_text in {"sell", "strong sell"}:
+        return any(token in verdict_text for token in ("sell", "exit", "reduce", "trim"))
+    if action_text == "hold":
+        return "hold" in verdict_text
+    return False

@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 
 from src.app.routes import regime as regime_route
 from src.regime.event_bus import get_event_bus, reset_event_bus
-from src.regime.events import FundamentalAssessmentEvent
+from src.regime.events import EnrichedSignalEvent, FundamentalAssessmentEvent
 
 
 @pytest.fixture
@@ -186,6 +186,49 @@ def _agent_runtime(llm_response: dict[str, object], *, gate_enabled: str = "true
             source="llm",
         ),
     }
+
+
+def test_fundamental_agent_uses_per_agent_frontier_model(temp_modules) -> None:
+    store, _fundamental_data, _gating, _discovery, agent_module, _llm = temp_modules
+    store.set_setting("fundamental_gate_enabled", "false")
+    store.set_setting("agent_frontier_provider_quant", "ollama")
+    store.set_setting("agent_frontier_model_quant", "deepseek-v4-pro:cloud")
+    calls: list[dict[str, object]] = []
+    runtime = {
+        "get_setting": store.get_setting,
+        "build_qualitative_assessment": lambda **kwargs: calls.append(kwargs) or SimpleNamespace(
+            catalyst_sentiment="Positive",
+            catalysts=[],
+            llm_response={"institutional_report": {"verdict": "Buy", "confidence_score": 8, "moat_classification": "Network", "moat_justification": "Scale"}},
+            source="llm",
+            frontier_provider=kwargs["frontier_provider"],
+            frontier_model=kwargs["frontier_model"],
+            model_name="Ollama: deepseek-v4-pro:cloud",
+            llm_used=True,
+        ),
+    }
+    agent = agent_module.FundamentalAgent(SimpleNamespace(), runtime=runtime)
+    event = EnrichedSignalEvent(
+        ticker="NVDA",
+        source="quant_agent",
+        benchmark="SOXX",
+        regime_label="Bull",
+        composite_action="Buy",
+        regime_probability=0.82,
+        meta_labeler_score=0.72,
+    )
+
+    result = agent._evaluate(runtime, event, portfolio_id=12, agent_key="quant")
+
+    assert calls[0]["frontier_provider"] == "ollama"
+    assert calls[0]["frontier_model"] == "deepseek-v4-pro:cloud"
+    assert result is not None
+    assert result.agent_key == "quant"
+    assert result.portfolio_id == 12
+    assert result.llm_used is True
+    assert result.llm_influenced is True
+    assert result.llm_influence == "confirmed"
+    assert result.llm_model_display == "Ollama: deepseek-v4-pro:cloud"
 
 
 def test_altman_z_safe_zone(temp_modules) -> None:

@@ -18,26 +18,124 @@ from .data_validator import check_database_health, run_pre_trade_validation
 from .discovery import check_entry_signals, expire_stale_candidates, run_full_discovery
 from .investor_adapter import get_investor_db_path, get_portfolio_tickers_filtered, get_latest_prices
 from .attribution import compute_ml_accuracy, compute_theme_attribution
-from .paper_trading import auto_approve_plans, auto_execute_approved, compute_daily_snapshot, expire_stale_plans, generate_daily_plans, record_trade_outcome
+from .paper_trading import (
+    auto_approve_plans,
+    auto_execute_approved,
+    cancel_submitted_orders_by_policy,
+    compute_daily_snapshot,
+    expire_stale_plans,
+    generate_daily_plans,
+    record_trade_outcome,
+)
 from .persistence import (
     get_operating_mode,
     get_daily_snapshots,
     is_live_trading_unlocked,
     get_pending_transition_outcomes,
+    get_paper_portfolio_summary,
     get_paper_positions,
+    get_setting,
     list_paper_portfolios,
     set_setting,
     save_daily_snapshot,
     update_transition_outcome,
 )
-from .config import DEFAULT_IBKR_CONFIG
+from .config import (
+    DEFAULT_IBKR_CONFIG,
+    ibkr_backend_account_id,
+    ibkr_execution_mode,
+    should_use_ibkr_paper_backend,
+    should_use_real_ibkr_backend,
+)
 from .vix_freeze import check_vix_freeze
 from .broker_adapter import PaperBrokerAdapter
 from .config import DEFAULT_RISK_GUARDRAILS
 from .ib_connection import get_ib_backend, get_mock_ib_backend
 from .ibkr_adapter import IBKRBrokerAdapter, poll_pending_orders
+from .ib_types import ET, MarketHoursStatus, get_market_hours_status, next_market_open
 from src.app.routes.regime_cache import load_payload
 from .persistence import save_alert
+from .beta_agents import parse_portfolio_ids
+
+
+def _parse_preferred_run_window(raw: str | None) -> tuple[dt.time, dt.time]:
+    text = str(raw or "10:05-15:30 America/New_York").strip()
+    window = text.split()[0] if text else "10:05-15:30"
+    try:
+        start_text, end_text = window.split("-", maxsplit=1)
+        start_hour, start_minute = start_text.split(":", maxsplit=1)
+        end_hour, end_minute = end_text.split(":", maxsplit=1)
+        return dt.time(int(start_hour), int(start_minute)), dt.time(int(end_hour), int(end_minute))
+    except Exception:
+        return dt.time(10, 5), dt.time(15, 30)
+
+
+def _preferred_market_window_status(now: dt.datetime | None = None) -> dict[str, Any]:
+    start, end = _parse_preferred_run_window(get_setting("regime_beta_preferred_run_window"))
+    current = (now or dt.datetime.now(dt.timezone.utc)).astimezone(ET)
+    status = get_market_hours_status(current)
+    wall = current.timetz().replace(tzinfo=None)
+    schedule_enabled = str(get_setting("regime_beta_schedule_enabled") or "").strip().lower() in {"1", "true", "yes", "on"}
+    in_window = status == MarketHoursStatus.REGULAR and start <= wall <= end
+    reason = "inside_preferred_market_window"
+    if status != MarketHoursStatus.REGULAR:
+        reason = f"market_{status.value}"
+    elif wall < start:
+        reason = "before_preferred_window"
+    elif wall > end:
+        reason = "after_preferred_window"
+    if not schedule_enabled:
+        in_window = True
+        reason = "schedule_window_not_enforced"
+    return {
+        "current_et": current.isoformat(),
+        "trade_date": current.date().isoformat(),
+        "market_status": status.value,
+        "window_start": start.strftime("%H:%M"),
+        "window_end": end.strftime("%H:%M"),
+        "timezone": "America/New_York",
+        "schedule_enabled": schedule_enabled,
+        "in_window": in_window,
+        "reason": reason,
+        "next_market_open": next_market_open(current).isoformat() if not in_window else None,
+    }
+
+
+def _ibkr_adapter_for_portfolio(portfolio_id: int, portfolio: dict[str, Any]) -> tuple[IBKRBrokerAdapter | None, dict[str, Any]]:
+    config = DEFAULT_IBKR_CONFIG
+    execution_mode = ibkr_execution_mode(config)
+    real_backend = should_use_real_ibkr_backend(config)
+    paper_backend_ready = should_use_ibkr_paper_backend(config)
+    if execution_mode == "ibkr_paper_misconfigured":
+        return None, {
+            "execution_mode": execution_mode,
+            "real_backend": False,
+            "paper_backend_ready": False,
+            "account_id": str(config.account_id),
+            "reason": "IBKR paper backend is enabled, but account/host/port do not describe a local paper account.",
+        }
+    account_id = ibkr_backend_account_id(config) if real_backend else str(config.account_id)
+    backend = get_ib_backend(
+        portfolio_id,
+        live=real_backend,
+        account_id=account_id,
+        starting_cash=float(portfolio.get("current_cash") or portfolio.get("starting_budget") or 100000.0),
+        config=config,
+        client_id_offset=int(getattr(config, "execution_client_id_offset", 0) or 0),
+    )
+    adapter = IBKRBrokerAdapter(
+        backend,
+        portfolio_id,
+        host=str(config.host),
+        port=int(config.port),
+        client_id=int(getattr(backend, "_client_id", config.client_id)),
+    )
+    return adapter, {
+        "execution_mode": execution_mode,
+        "real_backend": real_backend,
+        "paper_backend_ready": paper_backend_ready,
+        "account_id": account_id,
+    }
 
 
 def run_daily_backup() -> dict[str, Any]:
@@ -153,6 +251,7 @@ def run_scheduled_paper_plans() -> dict[str, Any]:
     }
     active_tickers = sorted(cached_regime.keys())
     validation = run_pre_trade_validation(active_tickers, vix=vix_status.get("vix"))
+    window_status = _preferred_market_window_status(now)
     if not validation["valid"]:
         save_alert(
             "data_validation_failed",
@@ -162,38 +261,55 @@ def run_scheduled_paper_plans() -> dict[str, Any]:
             data=validation,
         )
     results: list[dict[str, Any]] = []
+    enabled_portfolio_ids = set(parse_portfolio_ids(get_setting("autonomous_portfolio_ids")))
     for portfolio in list_paper_portfolios(include_closed=False):
         if str(portfolio.get("status") or "") != "Active":
             continue
         portfolio_id = int(portfolio["id"])
+        if enabled_portfolio_ids and portfolio_id not in enabled_portfolio_ids:
+            continue
         monitoring_alerts = sweep_monitoring_alerts(portfolio_id)
         expired = expire_stale_plans(portfolio_id)
-        generated = generate_daily_plans(portfolio_id, cached_regime=cached_regime, cached_payload=cached_payload)
-        auto_result = auto_approve_plans(portfolio_id)
         exec_result = None
         polled = 0
+        policy_cancel = {"cancelled": [], "failed": [], "checked": 0}
+        broker_status: dict[str, Any] = {}
+        ibkr_adapter: IBKRBrokerAdapter | None = None
         if str(portfolio.get("broker_type") or "paper").lower() == "ibkr":
-            backend = get_ib_backend(
-                portfolio_id,
-                live=bool(DEFAULT_IBKR_CONFIG.live_backend),
-                account_id=str(DEFAULT_IBKR_CONFIG.account_id),
-                starting_cash=float(portfolio.get("current_cash") or portfolio.get("starting_budget") or 100000.0),
-            )
-            adapter = IBKRBrokerAdapter(
-                backend,
-                portfolio_id,
-                host=str(DEFAULT_IBKR_CONFIG.host),
-                port=int(DEFAULT_IBKR_CONFIG.port),
-                client_id=int(getattr(backend, "_client_id", DEFAULT_IBKR_CONFIG.client_id)),
-            )
+            ibkr_adapter, broker_status = _ibkr_adapter_for_portfolio(portfolio_id, portfolio)
             try:
-                polled = len(poll_pending_orders(adapter, portfolio_id))
+                polled = len(poll_pending_orders(ibkr_adapter, portfolio_id)) if ibkr_adapter is not None else 0
             except Exception:
                 polled = 0
-        if auto_result.get("approved", 0) > 0 and get_operating_mode() == "autonomous":
+            if ibkr_adapter is not None:
+                policy_cancel = cancel_submitted_orders_by_policy(portfolio_id, ibkr_adapter)
+        else:
+            policy_cancel = cancel_submitted_orders_by_policy(portfolio_id, PaperBrokerAdapter(portfolio_id))
+        if not bool(window_status.get("in_window")):
+            generated = {"buy_plans": [], "exit_plans": [], "skipped": True, "reason": window_status.get("reason")}
+            auto_result = {"approved": 0, "skipped": 0, "blocked": 0, "details": [], "skipped_reason": window_status.get("reason")}
+            exec_result = {"skipped": True, "reason": window_status.get("reason"), "window": window_status}
+        else:
+            generated = generate_daily_plans(portfolio_id, cached_regime=cached_regime, cached_payload=cached_payload)
+            auto_result = auto_approve_plans(portfolio_id)
+        if auto_result.get("approved", 0) > 0 and get_operating_mode() == "autonomous" and bool(window_status.get("in_window")):
             broker_type = str(portfolio.get("broker_type") or "paper").lower()
-            if broker_type == "ibkr" and is_live_trading_unlocked():
-                exec_result = {"skipped": True, "reason": "Live account — manual execution required"}
+            if broker_type == "ibkr":
+                execution_mode = str(broker_status.get("execution_mode") or "simulated")
+                if ibkr_adapter is None:
+                    exec_result = {"skipped": True, "reason": broker_status.get("reason") or "IBKR adapter unavailable", "broker": broker_status}
+                elif is_live_trading_unlocked():
+                    exec_result = {"skipped": True, "reason": "Live trading is unlocked; autonomous IBKR execution is paused.", "broker": broker_status}
+                elif execution_mode == "ibkr_paper":
+                    exec_result = auto_execute_approved(portfolio_id, ibkr_adapter, DEFAULT_RISK_GUARDRAILS, actor="scheduler")
+                elif execution_mode == "ibkr_live":
+                    exec_result = {"skipped": True, "reason": "Live account — manual execution required", "broker": broker_status}
+                else:
+                    exec_result = {
+                        "skipped": True,
+                        "reason": "IBKR paper backend is disabled; no internal simulator fallback for IBKR portfolios.",
+                        "broker": broker_status,
+                    }
             else:
                 exec_adapter = PaperBrokerAdapter(portfolio_id)
                 exec_result = auto_execute_approved(portfolio_id, exec_adapter, DEFAULT_RISK_GUARDRAILS, actor="scheduler")
@@ -207,8 +323,11 @@ def run_scheduled_paper_plans() -> dict[str, Any]:
                 "expired_count": expired,
                 "alert_count": len(monitoring_alerts),
                 "polled_orders": polled,
+                "policy_cancel": policy_cancel,
+                "broker_status": broker_status,
                 "auto_approval": auto_result,
                 "auto_execution": exec_result,
+                "market_window": window_status,
             }
         )
     set_setting("last_paper_plans_at", dt.datetime.now(dt.timezone.utc).isoformat())
@@ -244,21 +363,10 @@ def run_end_of_day_processing() -> dict[str, Any]:
             )
             snapshots.append(saved)
         if str(portfolio.get("broker_type") or "paper").lower() == "ibkr":
-            backend = get_ib_backend(
-                portfolio_id,
-                live=bool(DEFAULT_IBKR_CONFIG.live_backend),
-                account_id=str(DEFAULT_IBKR_CONFIG.account_id),
-                starting_cash=float(portfolio.get("current_cash") or portfolio.get("starting_budget") or 100000.0),
-            )
-            adapter = IBKRBrokerAdapter(
-                backend,
-                portfolio_id,
-                host=str(DEFAULT_IBKR_CONFIG.host),
-                port=int(DEFAULT_IBKR_CONFIG.port),
-                client_id=int(getattr(backend, "_client_id", DEFAULT_IBKR_CONFIG.client_id)),
-            )
+            adapter, _broker_status = _ibkr_adapter_for_portfolio(portfolio_id, portfolio)
             try:
-                poll_pending_orders(adapter, portfolio_id)
+                if adapter is not None:
+                    poll_pending_orders(adapter, portfolio_id)
             except Exception:
                 pass
         for position in get_paper_positions(portfolio_id, status="Closed"):
@@ -279,7 +387,13 @@ def run_end_of_day_processing() -> dict[str, Any]:
     performance = run_performance_snapshot()
     for snapshot in snapshots:
         daily_pnl = float(snapshot.get("unrealized_pnl") or 0.0) + float(snapshot.get("realized_pnl") or 0.0)
-        check_loss_breach(int(snapshot["portfolio_id"]), daily_pnl, float(DEFAULT_RISK_GUARDRAILS.daily_loss_limit))
+        daily_loss_limit = float(DEFAULT_RISK_GUARDRAILS.daily_loss_limit)
+        daily_loss_limit_pct = float(getattr(DEFAULT_RISK_GUARDRAILS, "daily_loss_limit_pct", 0.0) or 0.0)
+        summary = get_paper_portfolio_summary(int(snapshot["portfolio_id"]))
+        equity = float(summary.get("current_cash") or 0.0) + float(summary.get("total_market_value") or 0.0)
+        if daily_loss_limit_pct > 0 and equity > 0:
+            daily_loss_limit = min(daily_loss_limit, equity * daily_loss_limit_pct)
+        check_loss_breach(int(snapshot["portfolio_id"]), daily_pnl, daily_loss_limit)
     health = check_database_health()
     if not health["healthy"]:
         save_alert(

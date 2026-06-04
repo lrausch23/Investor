@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from decimal import Decimal, ROUND_HALF_UP
 
 from .broker_adapter import AccountSummary, OrderRequest, OrderResult, PositionInfo
 from .ib_types import (
@@ -31,10 +32,16 @@ _TIF_MAP = {
 }
 
 
+def _round_stock_price(value: float | None) -> float | None:
+    if value is None:
+        return None
+    return float(Decimal(str(value)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+
+
 def translate_order_request(request: OrderRequest, next_order_id: int) -> IBOrder:
     action = IBOrderAction.BUY if str(request.action or "").lower() == "buy" else IBOrderAction.SELL
     order_type = _ORDER_TYPE_MAP.get(str(request.order_type or "").lower(), IBOrderType.LIMIT)
-    limit_price = float(request.limit_price) if request.limit_price is not None and float(request.limit_price) > 0 else None
+    limit_price = _round_stock_price(float(request.limit_price)) if request.limit_price is not None and float(request.limit_price) > 0 else None
     if order_type == IBOrderType.LIMIT and limit_price is None:
         order_type = IBOrderType.MARKET
         logger.warning("Limit order for %s has no limit_price, falling back to MARKET", request.ticker)
@@ -46,7 +53,7 @@ def translate_order_request(request: OrderRequest, next_order_id: int) -> IBOrde
         order_type=order_type,
         quantity=float(request.quantity or 0.0),
         limit_price=limit_price,
-        stop_price=float(request.stop_price) if request.stop_price is not None else None,
+        stop_price=_round_stock_price(float(request.stop_price)) if request.stop_price is not None else None,
         time_in_force=tif,
         outside_rth=False,
         algo_strategy=str(request.algo_strategy or "").strip() or None,

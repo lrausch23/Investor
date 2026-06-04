@@ -1102,11 +1102,11 @@ def build_performance_report(
                         benchmark_curve.append((benchmark_period_prices[i + 1][0], float(g)))
                 except Exception:
                     benchmark_curve = []
-        if benchmark_coverage_start and benchmark_coverage_start > start_date:
+        if benchmark_coverage_start and (benchmark_coverage_start - start_date).days > 7:
             warnings.append(
                 f"{benchmark_label} benchmark coverage starts at {benchmark_coverage_start} (missing earlier prices for selected period)."
             )
-        if benchmark_coverage_end and benchmark_coverage_end < end_date:
+        if benchmark_coverage_end and (end_date - benchmark_coverage_end).days > 7:
             warnings.append(
                 f"{benchmark_label} benchmark coverage ends at {benchmark_coverage_end} (missing later prices for selected period)."
             )

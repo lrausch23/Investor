@@ -132,6 +132,17 @@ class FundamentalAssessmentEvent(BaseEvent):
     details: dict[str, Any] = field(default_factory=dict)
     moat_classification: str = ""
     moat_justification: str = ""
+    portfolio_id: int | None = None
+    agent_key: str = ""
+    llm_used: bool = False
+    llm_influenced: bool = False
+    llm_influence: str = ""
+    llm_source: str = ""
+    llm_provider: str = ""
+    llm_model: str = ""
+    llm_model_display: str = ""
+    llm_verdict: str = ""
+    llm_confidence: float | None = None
 
 
 @dataclass(frozen=True)
@@ -152,6 +163,16 @@ class TradeDecisionEvent(BaseEvent):
     sizing_rationale: str | None = None
     enriched_signal_id: str = ""
     urgency: str = "normal"
+    agent_key: str = ""
+    llm_used: bool = False
+    llm_influenced: bool = False
+    llm_influence: str = ""
+    llm_source: str = ""
+    llm_provider: str = ""
+    llm_model: str = ""
+    llm_model_display: str = ""
+    llm_verdict: str = ""
+    llm_confidence: float | None = None
 
 
 @dataclass(frozen=True)

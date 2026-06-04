@@ -295,6 +295,7 @@ def test_buy_plans_gates_disabled_passthrough(temp_modules, monkeypatch: pytest.
     monkeypatch.setattr(paper_trading, "allocate_budget", lambda portfolio_id, config=None: {"themes": [{"theme_id": theme["id"], "by_role": {"Critical-Path": 10000.0}}]})
     monkeypatch.setattr(paper_trading, "_lookup_atr", lambda ticker: None)
     monkeypatch.setattr(paper_trading, "_lookup_beta", lambda ticker: None)
+    monkeypatch.setattr(paper_trading, "_batch_current_prices", lambda tickers: {"NVDA": 100.0})
     hurdle_rate.set_hurdle_settings({"hurdle_enabled": False, "duration_gate_enabled": False})
     plans = paper_trading.generate_buy_plans(portfolio["id"])
     assert len(plans) == 1

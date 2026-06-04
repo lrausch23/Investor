@@ -189,6 +189,34 @@ class IBKRBrokerAdapter(BrokerAdapter):
             )
         return translate_account_summary(self._backend.get_account_summary(), portfolio_id=self._portfolio_id)
 
+    def get_current_quote(self, ticker: str) -> dict[str, Any] | None:
+        if not self._ensure_connected(ticker=str(ticker or ""), action="quote"):
+            return None
+        getter = getattr(self._backend, "get_market_quote", None)
+        if not callable(getter):
+            return None
+        try:
+            quote = getter(str(ticker or "").upper())
+        except Exception:
+            logger.warning("Unable to fetch IBKR quote for %s", ticker, exc_info=True)
+            return None
+        return quote if isinstance(quote, dict) else None
+
+    def get_current_price(self, ticker: str, action: str = "") -> float | None:
+        quote = self.get_current_quote(ticker)
+        if not quote:
+            return None
+        normalized_action = str(action or "").strip().lower()
+        preferred = ["ask", "market_price", "last", "close"] if normalized_action == "buy" else ["bid", "market_price", "last", "close"]
+        for key in preferred:
+            try:
+                value = float(quote.get(key) or 0.0)
+            except Exception:
+                value = 0.0
+            if value > 0:
+                return value
+        return None
+
     def health(self) -> dict[str, Any]:
         return self._manager.health_check() | {"market_hours": get_market_hours_status().value}
 
@@ -202,7 +230,20 @@ def poll_pending_orders(adapter: IBKRBrokerAdapter, portfolio_id: int) -> list[O
         broker_order_id = str(plan.get("broker_order_id") or "")
         if plan_status not in {"Submitted", "Partially Filled"} or not broker_order_id:
             continue
-        result = adapter.get_order_status(broker_order_id)
+        try:
+            result = adapter.get_order_status(broker_order_id)
+        except Exception as exc:
+            log_audit_event(
+                order_id=broker_order_id,
+                portfolio_id=portfolio_id,
+                event_type="error",
+                ticker=str(plan.get("ticker") or ""),
+                action=str(plan.get("action") or ""),
+                quantity=float(plan.get("quantity") or 0.0),
+                actor="system",
+                details=f"order_status_unavailable: {exc}",
+            )
+            continue
         if result is None:
             continue
         current_broker_status = str(plan.get("broker_status") or "")

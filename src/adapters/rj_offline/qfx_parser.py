@@ -361,23 +361,29 @@ def parse_transactions(text: str) -> list[QfxTransaction]:
                     )
                     continue
                 # For investment txns, the core fields live under INVTRAN.
-                invtran = node.first("INVTRAN") or node
+                detail = node.first("INVBUY") or node.first("INVSELL") or node
+                invtran = detail.first("INVTRAN") or node.first("INVTRAN") or detail
                 fitid = _first_text(invtran, "FITID")
                 dt_trade = parse_ofx_date(_first_text(invtran, "DTTRADE"))
                 dt_posted = parse_ofx_date(_first_text(invtran, "DTSETTLE")) or parse_ofx_date(_first_text(invtran, "DTPOSTED"))
                 memo = _first_text(invtran, "MEMO")
 
-                secid = node.first("SECID") or (node.first("INVBUY").first("SECID") if node.first("INVBUY") else None)  # type: ignore[union-attr]
-                if secid is None and node.first("INVSELL"):
-                    secid = node.first("INVSELL").first("SECID")  # type: ignore[union-attr]
+                secid = detail.first("SECID") or node.first("SECID")
                 uid = _clean_text(_first_text(secid, "UNIQUEID")).upper() if secid else None
 
-                amount = _as_float(_first_text(node, "TOTAL"))
-                units = _as_float(_first_text(node, "UNITS"))
-                unit_price = _as_float(_first_text(node, "UNITPRICE"))
-                commission = _as_float(_first_text(node, "COMMISSION"))
-                fees = _as_float(_first_text(node, "FEES"))
-                name = _first_text(node, "SECNAME") or _first_text(node, "NAME")
+                def _first_float(*values: str | None) -> float | None:
+                    for value in values:
+                        parsed = _as_float(value)
+                        if parsed is not None:
+                            return parsed
+                    return None
+
+                amount = _first_float(_first_text(detail, "TOTAL"), _first_text(node, "TOTAL"))
+                units = _first_float(_first_text(detail, "UNITS"), _first_text(node, "UNITS"))
+                unit_price = _first_float(_first_text(detail, "UNITPRICE"), _first_text(node, "UNITPRICE"))
+                commission = _first_float(_first_text(detail, "COMMISSION"), _first_text(node, "COMMISSION"))
+                fees = _first_float(_first_text(detail, "FEES"), _first_text(node, "FEES"))
+                name = _first_text(detail, "SECNAME") or _first_text(detail, "NAME") or _first_text(node, "SECNAME") or _first_text(node, "NAME")
 
                 out.append(
                     QfxTransaction(

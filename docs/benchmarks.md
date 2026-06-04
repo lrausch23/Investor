@@ -5,8 +5,9 @@ Investor reports (e.g., `Reports → Performance`) can compare portfolio perform
 To make reports reliable (and usable offline), Investor uses a **cache-first** benchmark candle pipeline:
 
 1. **SQLite cache** (authoritative, offline)
-2. **Stooq** (preferred network source for daily candles)
-3. **Yahoo Finance** (optional fallback; disabled by default due to HTTP 429s)
+2. **IBKR** (when the local gateway/shared backend is connected)
+3. **Stooq** (network source for daily candles)
+4. **Yahoo Finance** (optional fallback; disabled by default due to HTTP 429s)
 
 ## Data Contract
 
@@ -35,7 +36,7 @@ Create `benchmarks.yaml` in the repo root (or `~/.bucketmgr/benchmarks.yaml`):
 
 ```yaml
 benchmarks:
-  provider_order: [cache, stooq]
+  provider_order: [cache, ibkr, stooq]
   cache:
     type: sqlite
     path: data/benchmarks/benchmarks.sqlite
@@ -50,6 +51,7 @@ benchmarks:
 
 Notes:
 - `provider_order` is cache-first; cache is always authoritative.
+- IBKR uses the existing local gateway/shared backend. If it is unavailable, the client skips it and continues to the next enabled provider.
 - Yahoo is intentionally slow and conservative to avoid rate limits.
 
 ## CLI

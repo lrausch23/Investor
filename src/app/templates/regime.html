@@ -90,6 +90,11 @@
       Trading
       <span class="regime-tab__badge regime-tab__badge--action" id="regimeTradingBadge" style="display:none">0</span>
     </button>
+    <button class="regime-tab" data-regime-tab="agents" aria-selected="false" type="button">
+      <span class="regime-tab__icon">🤖</span>
+      Agents
+      <span class="regime-tab__badge regime-tab__badge--action" id="regimeAgentBadge" style="display:none">0</span>
+    </button>
     <button class="regime-tab" data-regime-tab="research" aria-selected="false" type="button">
       <span class="regime-tab__icon">🔬</span>
       Research
@@ -273,6 +278,10 @@
     <div id="regimeAuditTrailMount" style="margin-top:12px"></div>
     <div id="regimeAlertHistoryMount" style="margin-top:12px"></div>
   </section>
+  </div>
+
+  <div class="regime-tab-panel" data-regime-panel="agents">
+    <div id="regimeAgentDashboardMount" style="margin-top:14px"></div>
   </div>
 
   <div class="regime-tab-panel" data-regime-panel="research">

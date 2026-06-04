@@ -65,6 +65,14 @@
     );
   }
 
+  function esc(s) {
+    return String(s || "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  }
+
   function drawdownSeries(values) {
     let peak = null;
     return values.map((v) => {
@@ -179,9 +187,21 @@
 
     const pCurve = (data.portfolio && data.portfolio.curve) || [];
     const bCurve = (data.benchmark && data.benchmark.curve) || [];
+    const extraBenchmarks = Array.isArray(data.additional_benchmarks) ? data.additional_benchmarks : [];
     // Format: [["YYYY-MM-DD", 1.0], ...]
     const pPts = Array.isArray(pCurve) ? pCurve : [];
     const bPts = Array.isArray(bCurve) ? bCurve : [];
+    const extraPalette = ["#7c3aed", "#0f766e", "#ea580c", "#be123c", "#475569"];
+    const extraPts = extraBenchmarks
+      .map((b, idx) => {
+        const curve = b && Array.isArray(b.curve) ? b.curve : [];
+        return {
+          label: String((b && b.label) || `Benchmark ${idx + 2}`),
+          color: extraPalette[idx % extraPalette.length],
+          pts: curve,
+        };
+      })
+      .filter((s) => s.pts.length >= 2);
     const freq = String(data.frequency || "month_end");
     const periodsPerYear = freq === "daily" ? 252.0 : 12.0;
     const volWindowSize = freq === "daily" ? 63 : 6;
@@ -210,11 +230,19 @@
       const hit = binarySearchOnOrBefore(bPts, d);
       return hit ? Number(hit[1]) : NaN;
     });
+    const extraGrowth = extraPts.map((series) => ({
+      ...series,
+      growth: xDates.map((d) => {
+        const hit = binarySearchOnOrBefore(series.pts, d);
+        return hit ? Number(hit[1]) : NaN;
+      }),
+    }));
 
     // Chart mode transforms (UI-only; derived from existing growth series).
     let mode = perfChartMode || "growth";
     let pVals = pGrowth.slice();
     let bVals = bGrowth.slice();
+    let extraVals = extraGrowth.map((s) => ({ ...s, vals: s.growth.slice() }));
     let yLabelFmt = (v) => v.toFixed(2) + "×";
     let tooltipValFmt = fmtVal;
     let tooltipExtraFmt = fmtPctFrom1;
@@ -223,6 +251,7 @@
     if (mode === "drawdown") {
       pVals = drawdownSeries(pGrowth);
       bVals = drawdownSeries(bGrowth);
+      extraVals = extraGrowth.map((s) => ({ ...s, vals: drawdownSeries(s.growth) }));
       yLabelFmt = (v) => (v * 100.0).toFixed(0) + "%";
       tooltipValFmt = (v) => (Number.isFinite(v) ? (v * 100.0).toFixed(2) + "%" : "—");
       tooltipExtraFmt = () => "";
@@ -237,6 +266,10 @@
       } else {
         pVals = rollingVolFromGrowth(pGrowth, windowSize, periodsPerYear);
         bVals = rollingVolFromGrowth(bGrowth, windowSize, periodsPerYear);
+        extraVals = extraGrowth.map((s) => ({
+          ...s,
+          vals: rollingVolFromGrowth(s.growth, windowSize, periodsPerYear),
+        }));
         yLabelFmt = (v) => (v * 100.0).toFixed(0) + "%";
         tooltipValFmt = (v) => (Number.isFinite(v) ? (v * 100.0).toFixed(2) + "%" : "—");
         tooltipExtraFmt = () => "";
@@ -247,6 +280,7 @@
     const yVals = [];
     pVals.forEach((v) => yVals.push(v));
     bVals.forEach((v) => yVals.push(v));
+    extraVals.forEach((series) => series.vals.forEach((v) => yVals.push(v)));
     const finite = yVals.filter((v) => Number.isFinite(v));
     const yMin = Math.min(...finite);
     const yMax = Math.max(...finite);
@@ -284,6 +318,10 @@
 
     const pPath = linePathAligned(pVals, xScale, yScale);
     const bPath = linePathAligned(bVals, xScale, yScale);
+    const extraPaths = extraVals.map((series) => ({
+      ...series,
+      path: linePathAligned(series.vals, xScale, yScale),
+    }));
 
     const portfolioLabel = (data.portfolio && data.portfolio.label) || "Portfolio";
     const benchLabel = (data.benchmark && data.benchmark.label) || "Benchmark";
@@ -357,6 +395,13 @@
           ? `<path d="${bPath}" fill="none" stroke="#2563eb" stroke-width="2" vector-effect="non-scaling-stroke" />`
           : ""
       }
+      ${extraPaths
+        .map((series) =>
+          series.path
+            ? `<path d="${series.path}" fill="none" stroke="${series.color}" stroke-width="1.8" vector-effect="non-scaling-stroke" />`
+            : ""
+        )
+        .join("")}
       ${eventsMarkup}
       <g id="perfKeyPoints">
         ${marker(xScale(startIdx), yScale(pVals[startIdx]), "#fff", "#111827", `Start ${xDates[startIdx]} · ${portfolioLabel} ${tooltipValFmt(pVals[startIdx])}`)}
@@ -391,13 +436,26 @@
       const ex = Number.isFinite(pv) && Number.isFinite(bv) ? pv - bv : NaN;
       const flow = evByDate.get(d);
       const flowTxt = Number.isFinite(flow) && flow !== 0 ? ` · Cashflow ${flow >= 0 ? "+" : ""}${fmtUsd(flow)}` : "";
+      const extraTxt = extraVals
+        .map((series) => {
+          const v = series.vals[i];
+          if (!Number.isFinite(v)) return "";
+          return mode === "growth"
+            ? `${series.label} ${fmtVal(v)} (${fmtPctFrom1(v)})`
+            : `${series.label} ${tooltipValFmt(v)}`;
+        })
+        .filter(Boolean)
+        .join(" · ");
+      const extraSuffix = extraTxt ? ` · ${extraTxt}` : "";
       if (mode === "growth") {
         legendEl.textContent =
           `${d} · Portfolio ${fmtVal(pv)} (${fmtPctFrom1(pv)}) · Benchmark ${fmtVal(bv)} (${fmtPctFrom1(bv)})` +
+          extraSuffix +
           (Number.isFinite(ex) ? ` · Excess ${ex >= 0 ? "+" : ""}${ex.toFixed(4)}×` : "") +
           flowTxt;
       } else {
-        legendEl.textContent = `${d} · Portfolio ${tooltipValFmt(pv)} · Benchmark ${tooltipValFmt(bv)}` + flowTxt;
+        legendEl.textContent =
+          `${d} · Portfolio ${tooltipValFmt(pv)} · Benchmark ${tooltipValFmt(bv)}` + extraSuffix + flowTxt;
       }
     }
 
@@ -451,11 +509,24 @@
           Number.isFinite(flow) && flow !== 0
             ? `<div class="perf-chart-tooltip__row"><span class="perf-chart-tooltip__k">Cashflow</span><span class="perf-chart-tooltip__v">${flow > 0 ? "Deposit" : "Withdrawal"} <span class="ui-muted">(${flow >= 0 ? "+" : ""}${fmtUsd(flow)})</span></span></div>`
             : "";
+        const extraRows = extraVals
+          .map((series) => {
+            const v = series.vals[idx];
+            if (!Number.isFinite(v)) return "";
+            const valueHtml =
+              mode === "growth"
+                ? `${fmtVal(v)} <span class="ui-muted">(${fmtPctFrom1(v)})</span>`
+                : tooltipValFmt(v);
+            return `<div class="perf-chart-tooltip__row"><span class="perf-chart-tooltip__k">${esc(series.label)}</span><span class="perf-chart-tooltip__v">${valueHtml}</span></div>`;
+          })
+          .filter(Boolean)
+          .join("");
         if (mode === "growth") {
           tooltip.innerHTML =
             `<div class="perf-chart-tooltip__date">${xDates[idx]}</div>` +
             `<div class="perf-chart-tooltip__row"><span class="perf-chart-tooltip__k">${portfolioLabel}</span><span class="perf-chart-tooltip__v">${fmtVal(pv)} <span class="ui-muted">(${fmtPctFrom1(pv)})</span></span></div>` +
             `<div class="perf-chart-tooltip__row"><span class="perf-chart-tooltip__k">${benchLabel}</span><span class="perf-chart-tooltip__v">${fmtVal(bv)} <span class="ui-muted">(${fmtPctFrom1(bv)})</span></span></div>` +
+            extraRows +
             (Number.isFinite(ex)
               ? `<div class="perf-chart-tooltip__row"><span class="perf-chart-tooltip__k">Excess</span><span class="perf-chart-tooltip__v">${ex >= 0 ? "+" : ""}${ex.toFixed(4)}×</span></div>`
               : "") +
@@ -465,6 +536,7 @@
             `<div class="perf-chart-tooltip__date">${xDates[idx]}</div>` +
             `<div class="perf-chart-tooltip__row"><span class="perf-chart-tooltip__k">${portfolioLabel}</span><span class="perf-chart-tooltip__v">${tooltipValFmt(pv)}</span></div>` +
             `<div class="perf-chart-tooltip__row"><span class="perf-chart-tooltip__k">${benchLabel}</span><span class="perf-chart-tooltip__v">${tooltipValFmt(bv)}</span></div>` +
+            extraRows +
             flowRow;
         }
         tooltip.style.display = "";

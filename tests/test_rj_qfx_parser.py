@@ -49,3 +49,52 @@ def test_qfx_stable_txn_id_prefers_fitid():
     assert any(x.startswith("RJ:FITID:F1") for x in ids)
     assert any(x.startswith("RJ:FITID:F2") for x in ids)
 
+
+def test_qfx_parses_nested_invbuy_fields_used_by_rj():
+    txt = """
+OFXHEADER:100
+<OFX>
+  <INVSTMTMSGSRSV1>
+    <INVSTMTTRNRS>
+      <INVSTMTRS>
+        <INVTRANLIST>
+          <BUYSTOCK>
+            <INVBUY>
+              <INVTRAN>
+                <FITID>BUY-GLW-1
+                <DTTRADE>20260203120000.000[-5:EST]
+                <DTSETTLE>20260204120000.000[-5:EST]
+                <MEMO>Purchased 500 shares @ $115.45 CORNING INCORPORATED
+              </INVTRAN>
+              <SECID>
+                <UNIQUEID>219350105
+                <UNIQUEIDTYPE>CUSIP
+              </SECID>
+              <UNITS>500
+              <UNITPRICE>115.45
+              <COMMISSION>0.00
+              <FEES>0.00
+              <TOTAL>-57725.00
+            </INVBUY>
+            <BUYTYPE>BUY
+          </BUYSTOCK>
+        </INVTRANLIST>
+      </INVSTMTRS>
+    </INVSTMTTRNRS>
+  </INVSTMTMSGSRSV1>
+</OFX>
+"""
+    txs = parse_transactions(txt)
+
+    assert len(txs) == 1
+    tx = txs[0]
+    assert tx.fitid == "BUY-GLW-1"
+    assert tx.dt_trade == dt.date(2026, 2, 3)
+    assert tx.dt_posted == dt.date(2026, 2, 4)
+    assert tx.raw_type == "BUYSTOCK"
+    assert tx.unique_id == "219350105"
+    assert tx.units == 500.0
+    assert tx.unit_price == 115.45
+    assert tx.commission == 0.0
+    assert tx.fees == 0.0
+    assert tx.amount == -57725.0

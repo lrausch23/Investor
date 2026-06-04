@@ -175,16 +175,32 @@ class IBKRMarketDataProvider:
                 contract = SimpleNamespace(symbol=str(symbol).upper(), secType="STK", exchange="SMART", currency="USD")
 
             await ib.qualifyContractsAsync(contract)
-            bars = await ib.reqHistoricalDataAsync(
-                contract,
-                endDateTime=end.strftime("%Y%m%d 23:59:59"),
-                durationStr=f"{duration_days} D",
-                barSizeSetting="1 day",
-                whatToShow="ADJUSTED_TRADES",
-                useRTH=True,
-                formatDate=1,
-            )
-            return list(bars or [])
+            attempts: list[str] = []
+            for what_to_show in ("ADJUSTED_TRADES", "TRADES", "MIDPOINT"):
+                try:
+                    bars = await ib.reqHistoricalDataAsync(
+                        contract,
+                        endDateTime=end.strftime("%Y%m%d 23:59:59"),
+                        durationStr=f"{duration_days} D",
+                        barSizeSetting="1 day",
+                        whatToShow=what_to_show,
+                        useRTH=True,
+                        formatDate=1,
+                    )
+                    rows = list(bars or [])
+                    if rows:
+                        if what_to_show != "ADJUSTED_TRADES":
+                            logger.info(
+                                "IBKR market data fallback for %s used whatToShow=%s",
+                                str(symbol).upper(),
+                                what_to_show,
+                            )
+                        return rows
+                    attempts.append(f"{what_to_show}: no data")
+                except Exception as exc:
+                    attempts.append(f"{what_to_show}: {exc}")
+                    continue
+            raise ProviderError("IBKR returned no data. " + " | ".join(attempts[:3]))
 
         try:
             bars = get_ib_thread().run(_fetch, timeout=20)

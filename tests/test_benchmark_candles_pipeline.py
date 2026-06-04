@@ -108,6 +108,24 @@ def test_provider_fallback_when_stooq_fails(monkeypatch: pytest.MonkeyPatch, tmp
     assert "yahoo" in meta.used_providers
 
 
+def test_stooq_provider_reports_api_key_gate(monkeypatch: pytest.MonkeyPatch):
+    from src.investor.marketdata.benchmarks import StooqProvider
+    from src.importers.adapters import ProviderError
+
+    class _Resp:
+        status_code = 200
+        content = (
+            b"Get your apikey:\n\n"
+            b"1. Open https://stooq.com/q/d/?s=aapl.us&get_apikey\n"
+            b"2. Enter the captcha code.\n"
+        )
+
+    monkeypatch.setattr("src.investor.marketdata.benchmarks.http_request", lambda *args, **kwargs: _Resp())
+
+    with pytest.raises(ProviderError, match="API key/captcha"):
+        StooqProvider().fetch(symbol="AAPL", start=dt.date(2025, 1, 2), end=dt.date(2025, 1, 10))
+
+
 def test_symbol_proxy_mapping_gspc(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     from src.investor.marketdata.benchmarks import BenchmarkDataClient
     from src.investor.marketdata.config import BenchmarksConfig

@@ -171,6 +171,7 @@ def test_request_frontier_decision_best_falls_back_to_ollama(monkeypatch) -> Non
 
 def test_configured_frontier_model_supports_ollama(monkeypatch) -> None:
     monkeypatch.setenv("OLLAMA_MODEL", "qwen3:32b")
+    monkeypatch.setattr(llm_layer, "_apply_saved_model", lambda provider: None)
     assert llm_layer.configured_frontier_model("ollama") == "Ollama: qwen3:32b"
 
 
@@ -189,6 +190,18 @@ def test_provider_request_best_restores_ollama_model(monkeypatch) -> None:
     llm_layer._provider_request("prompt", "ollama", use_best=True)
     assert seen == ["qwen3:32b"]
     assert llm_layer.os.getenv("OLLAMA_MODEL") == "custom-model"
+
+
+def test_request_frontier_decision_uses_model_override(monkeypatch) -> None:
+    monkeypatch.setenv("OLLAMA_MODEL", "global-model")
+    seen: list[str] = []
+    monkeypatch.setattr(llm_layer, "_request_ollama", lambda prompt: seen.append(str(llm_layer.os.getenv("OLLAMA_MODEL"))) or {"ok": True})
+
+    result = llm_layer.request_frontier_decision("prompt", enabled=True, provider="ollama", model="agent-model")
+
+    assert result == {"ok": True}
+    assert seen == ["agent-model"]
+    assert llm_layer.os.getenv("OLLAMA_MODEL") == "global-model"
 
 
 @pytest.fixture()

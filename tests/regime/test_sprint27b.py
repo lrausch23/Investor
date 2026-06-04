@@ -26,7 +26,7 @@ def temp_modules(tmp_path, monkeypatch):
     return store, paper, scheduled, config
 
 
-def test_generate_buy_plans_from_entry_signals(temp_modules) -> None:
+def test_generate_buy_plans_from_entry_signals(temp_modules, monkeypatch) -> None:
     store, paper, _scheduled, _config = temp_modules
     portfolio = store.create_paper_portfolio("Sandbox", 100000.0)
     theme = store.create_theme("AI", conviction=4, status="Active")
@@ -41,6 +41,7 @@ def test_generate_buy_plans_from_entry_signals(temp_modules) -> None:
         regime_probability=0.61,
         status="Entry Signal",
     )
+    monkeypatch.setattr(paper, "_batch_current_prices", lambda tickers: {"WOLF": 20.0})
     plans = paper.generate_buy_plans(portfolio["id"])
     assert len(plans) == 1
     assert plans[0]["ticker"] == "WOLF"
@@ -109,7 +110,7 @@ def test_execute_approved_buy(temp_modules, monkeypatch) -> None:
     payload = paper.execute_approved_plans(portfolio["id"])
     assert len(payload["executed"]) == 1
     portfolio_row = store.get_paper_portfolio(portfolio["id"])
-    assert float(portfolio_row["current_cash"]) == pytest.approx(100000.0 - 1010.0)
+    assert float(portfolio_row["current_cash"]) == pytest.approx(100000.0 - 1000.0)
     positions = store.get_paper_positions(portfolio["id"], status="Open")
     assert len(positions) == 1
     assert positions[0]["ticker"] == "NVDA"

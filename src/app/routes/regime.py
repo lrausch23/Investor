@@ -119,6 +119,10 @@ def _load_hmm_runtime() -> tuple[dict[str, Any] | None, str | None]:
             DEFAULT_TICKERS,
             IBKRConfig,
             RiskGuardrails,
+            ibkr_backend_account_id,
+            ibkr_execution_mode,
+            should_use_ibkr_paper_backend,
+            should_use_real_ibkr_backend,
             validate_ibkr_readiness,
         )
         from src.regime.broker_adapter import (
@@ -293,6 +297,7 @@ def _load_hmm_runtime() -> tuple[dict[str, Any] | None, str | None]:
             compute_theme_attribution,
         )
         from src.regime.alerts import format_alert_summary
+        from src.regime.agent_dashboard import compute_agent_portfolio_dashboard, compute_beta_agent_dashboard
         from src.regime.notifications import dispatch_notification, notification_preferences_payload
         from src.regime.monitoring import sweep_monitoring_alerts
         from src.regime.paper_trading import (
@@ -300,6 +305,8 @@ def _load_hmm_runtime() -> tuple[dict[str, Any] | None, str | None]:
             auto_approve_plans,
             auto_execute_approved,
             compute_benchmark_comparison,
+            compute_benchmark_set,
+            compute_beta_target_progress,
             compute_daily_snapshot,
             compute_paper_performance,
             execute_approved_plans,
@@ -358,6 +365,7 @@ def _load_hmm_runtime() -> tuple[dict[str, Any] | None, str | None]:
             get_execution_quality_ticker_diagnostic,
             get_execution_quality_trades,
         )
+        from src.regime.signal_quality import evaluate_signal_quality
     except ImportError:
         return None, (
             "Regime analytics are unavailable because hmm-market-regime-tool is not installed "
@@ -368,6 +376,10 @@ def _load_hmm_runtime() -> tuple[dict[str, Any] | None, str | None]:
         "DEFAULT_TICKERS": DEFAULT_TICKERS,
         "IBKRConfig": IBKRConfig,
         "DEFAULT_IBKR_CONFIG": DEFAULT_IBKR_CONFIG,
+        "ibkr_backend_account_id": ibkr_backend_account_id,
+        "ibkr_execution_mode": ibkr_execution_mode,
+        "should_use_ibkr_paper_backend": should_use_ibkr_paper_backend,
+        "should_use_real_ibkr_backend": should_use_real_ibkr_backend,
         "validate_ibkr_readiness": validate_ibkr_readiness,
         "get_ib_thread": get_ib_thread,
         "RiskGuardrails": RiskGuardrails,
@@ -520,6 +532,10 @@ def _load_hmm_runtime() -> tuple[dict[str, Any] | None, str | None]:
         "expire_stale_trade_plans": expire_stale_trade_plans,
         "compute_paper_performance": compute_paper_performance,
         "compute_benchmark_comparison": compute_benchmark_comparison,
+        "compute_benchmark_set": compute_benchmark_set,
+        "compute_beta_target_progress": compute_beta_target_progress,
+        "compute_agent_portfolio_dashboard": compute_agent_portfolio_dashboard,
+        "compute_beta_agent_dashboard": compute_beta_agent_dashboard,
         "compute_theme_attribution": compute_theme_attribution,
         "compute_source_attribution": compute_source_attribution,
         "compute_regime_attribution": compute_regime_attribution,
@@ -601,6 +617,7 @@ def _load_hmm_runtime() -> tuple[dict[str, Any] | None, str | None]:
         "fit_probability_calibrator": fit_probability_calibrator,
         "compute_unified_confidence": compute_unified_confidence,
         "compute_position_size": compute_position_size,
+        "evaluate_signal_quality": evaluate_signal_quality,
     }
     try:
         registry = runtime["get_registry"]()
@@ -1371,12 +1388,28 @@ def _get_broker_adapter(runtime: dict[str, Any], portfolio_id: int) -> Any:
     broker_type = str(portfolio.get("broker_type") or "paper").strip().lower()
     if broker_type == "ibkr":
         config = runtime["DEFAULT_IBKR_CONFIG"]
-        backend = runtime["get_ib_backend"](
-            portfolio_id,
-            live=bool(config.live_backend),
-            account_id=str(config.live_account_id or config.account_id) if bool(config.live_backend) else str(config.account_id),
-            starting_cash=float(portfolio.get("current_cash") or portfolio.get("starting_budget") or 100000.0),
-        )
+        execution_mode = runtime.get("ibkr_execution_mode", lambda cfg: "simulated")(config)
+        if execution_mode == "ibkr_paper_misconfigured":
+            raise RuntimeError("IBKR paper backend is enabled, but account/host/port are not a local paper account.")
+        real_backend = bool(runtime.get("should_use_real_ibkr_backend", lambda cfg: bool(getattr(cfg, "live_backend", False)))(config))
+        account_id = str(runtime.get("ibkr_backend_account_id", lambda cfg: cfg.account_id)(config)) if real_backend else str(config.account_id)
+        execution_client_id_offset = int(getattr(config, "execution_client_id_offset", 0) or 0)
+        try:
+            backend = runtime["get_ib_backend"](
+                portfolio_id,
+                live=real_backend,
+                account_id=account_id,
+                starting_cash=float(portfolio.get("current_cash") or portfolio.get("starting_budget") or 100000.0),
+                config=config,
+                client_id_offset=execution_client_id_offset,
+            )
+        except TypeError:
+            backend = runtime["get_ib_backend"](
+                portfolio_id,
+                live=real_backend,
+                account_id=account_id,
+                starting_cash=float(portfolio.get("current_cash") or portfolio.get("starting_budget") or 100000.0),
+            )
         return runtime["IBKRBrokerAdapter"](
             backend,
             portfolio_id,
@@ -2605,6 +2638,21 @@ def _build_regime_dashboard_payload(
             }
         )
         row_payload = payload["rows"][-1]
+        evaluate_signal_quality_fn = runtime.get("evaluate_signal_quality")
+        if callable(evaluate_signal_quality_fn):
+            try:
+                quality = evaluate_signal_quality_fn(
+                    row_payload,
+                    action=str(row_payload.get("composite_signal") or row_payload.get("action") or ""),
+                    source="regime_dashboard",
+                    current_price=float(row_payload.get("current_price") or 0.0) or None,
+                    source_timestamp=dt.datetime.now(dt.timezone.utc).isoformat(),
+                )
+                row_payload["signal_quality"] = _json_ready(quality.to_dict())
+                row_payload["signal_quality_score"] = float(getattr(quality, "score", 0.0) or 0.0)
+                row_payload["signal_quality_grade"] = str(getattr(quality, "grade", "") or "")
+            except Exception as exc:
+                logger.debug("Unable to compute signal quality for %s.", ticker, exc_info=exc)
         row_payload["stop_proximity"] = _stop_proximity(row_payload)
         compute_position_size_fn = runtime.get("compute_position_size")
         if callable(compute_position_size_fn):
@@ -3160,16 +3208,19 @@ def _build_shell_context(
             "paper_audit_summary": "/regime/paper-portfolio/__PORTFOLIO_ID__/audit/summary",
             "ibkr_settings": "/regime/ibkr/settings",
             "ibkr_test_connection": "/regime/ibkr/test-connection",
+            "ibkr_account_snapshot": "/regime/ibkr/account-snapshot",
             "ibkr_status": "/regime/ibkr/status",
             "ibkr_live_unlock": "/regime/ibkr/live-unlock",
             "market_data_settings": "/regime/market-data/settings",
             "market_data_test_macro": "/regime/market-data/test-macro",
             "frontier_models": "/regime/frontier/models",
             "frontier_settings": "/regime/frontier/settings",
+            "agent_frontier_settings": "/regime/agents/frontier-settings",
             "ensemble_analysts": "/regime/ensemble/analysts",
             "ensemble_weights": "/regime/ensemble/weights",
             "agents_status": "/regime/agents/status",
             "agents_consensus": "/regime/agents/consensus",
+            "agent_dashboard": "/regime/beta/agent-dashboard",
             "orchestrator_settings": "/regime/orchestrator/settings",
             "autonomy_settings": "/regime/autonomy/settings",
             "tax_settings": "/regime/tax-settings",
@@ -3328,7 +3379,9 @@ def regime_ibkr_settings(
                 "client_id": config.client_id,
                 "account_id": config.account_id,
                 "live_account_id": config.live_account_id,
+                "paper_backend": config.paper_backend,
                 "live_backend": config.live_backend,
+                "execution_client_id_offset": config.execution_client_id_offset,
                 "timeout": config.timeout,
             },
             "readiness": readiness,
@@ -3349,7 +3402,9 @@ async def regime_ibkr_settings_update(
     client_id = int(form.get("client_id") or 1)
     account_id = str(form.get("account_id") or "").strip()
     live_account_id = str(form.get("live_account_id") or "").strip()
+    paper_backend = str(form.get("paper_backend") or "false").lower() in ("true", "1", "yes", "on")
     live_backend = str(form.get("live_backend") or "false").lower() in ("true", "1", "yes", "on")
+    execution_client_id_offset = int(form.get("execution_client_id_offset") or 20)
     timeout = int(form.get("timeout") or 10)
 
     if port not in (7497, 4002, 7496, 4001):
@@ -3360,6 +3415,8 @@ async def regime_ibkr_settings_update(
         raise HTTPException(status_code=422, detail="Client ID must be between 1 and 32.")
     if not (5 <= timeout <= 60):
         raise HTTPException(status_code=422, detail="Timeout must be between 5 and 60 seconds.")
+    if not (0 <= execution_client_id_offset <= 900):
+        raise HTTPException(status_code=422, detail="Execution client ID offset must be between 0 and 900.")
 
     _update_env_file(
         {
@@ -3368,7 +3425,9 @@ async def regime_ibkr_settings_update(
             "IBKR_CLIENT_ID": str(client_id),
             "IBKR_ACCOUNT_ID": account_id,
             "IBKR_LIVE_ACCOUNT_ID": live_account_id,
+            "IBKR_PAPER_BACKEND": "true" if paper_backend else "false",
             "IBKR_LIVE_BACKEND": "true" if live_backend else "false",
+            "IBKR_EXECUTION_CLIENT_ID_OFFSET": str(execution_client_id_offset),
             "IBKR_TIMEOUT": str(timeout),
         }
     )
@@ -3614,6 +3673,67 @@ async def regime_frontier_settings_update(
             "model": runtime["get_setting"]("frontier_model") or "",
         }
     )
+
+
+@router.get("/agents/frontier-settings")
+def regime_agent_frontier_settings(
+    session: Session = Depends(db_session),
+    actor: str = Depends(require_actor),
+):
+    del session, actor
+    runtime, runtime_error = _load_hmm_runtime()
+    if runtime is None:
+        raise HTTPException(status_code=503, detail=runtime_error or "Regime analytics are unavailable.")
+    from src.regime.agent_frontier import agent_frontier_settings_rows
+    from src.regime.beta_agents import parse_portfolio_ids
+
+    rows = agent_frontier_settings_rows(
+        portfolio_ids=parse_portfolio_ids(runtime["get_setting"]("regime_beta_portfolio_ids")),
+        get_setting_fn=runtime["get_setting"],
+        configured_model_fn=runtime.get("configured_frontier_model"),
+    )
+    return JSONResponse(content=_json_ready({"agents": rows}))
+
+
+@router.put("/agents/frontier-settings")
+async def regime_agent_frontier_settings_update(
+    request: Request,
+    session: Session = Depends(db_session),
+    actor: str = Depends(require_actor),
+):
+    del session, actor
+    runtime, runtime_error = _load_hmm_runtime()
+    if runtime is None:
+        raise HTTPException(status_code=503, detail=runtime_error or "Regime analytics are unavailable.")
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = dict(await _read_run_request(request))
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Request body must be a JSON object.")
+    agent_key = str(payload.get("agent_key") or "").strip()
+    provider = str(payload.get("provider") or "").strip().lower()
+    model = str(payload.get("model") or "").strip()
+    if not agent_key:
+        raise HTTPException(status_code=400, detail="agent_key is required.")
+    from src.regime.agent_frontier import set_agent_frontier_config
+
+    saved = set_agent_frontier_config(
+        agent_key,
+        provider=provider or "auto",
+        model=model,
+        get_setting_fn=runtime["get_setting"],
+        set_setting_fn=runtime["set_setting"],
+        delete_setting_fn=runtime["delete_setting"],
+    )
+    configured_model = ""
+    if callable(runtime.get("configured_frontier_model")):
+        try:
+            configured_model = runtime["configured_frontier_model"](saved["provider"], saved.get("model") or None)
+        except TypeError:
+            configured_model = runtime["configured_frontier_model"](saved["provider"])
+    saved["configured_model"] = configured_model
+    return JSONResponse(content=_json_ready(saved))
 
 
 def _ensemble_settings_payload(runtime: dict[str, Any]) -> dict[str, str]:
@@ -4363,12 +4483,133 @@ def regime_ibkr_test_connection(
     return JSONResponse(content=result)
 
 
+@router.get("/ibkr/account-snapshot")
+def regime_ibkr_account_snapshot(
+    portfolio_id: int | None = None,
+    actor: str = Depends(require_actor),
+):
+    del actor
+    from src.regime.config import IBKRConfig
+    from src.regime.ib_connection import get_ib_backend
+    from src.regime.persistence import get_paper_portfolio, get_paper_portfolio_summary, get_setting
+
+    config = IBKRConfig()
+    resolved_portfolio_id = portfolio_id
+    if resolved_portfolio_id is None:
+        raw_portfolio_id = get_setting("regime_beta_portfolio_id")
+        try:
+            resolved_portfolio_id = int(raw_portfolio_id) if raw_portfolio_id else None
+        except Exception:
+            resolved_portfolio_id = None
+    backend_key = int(resolved_portfolio_id or 97)
+    try:
+        backend = get_ib_backend(
+            backend_key,
+            live=True,
+            account_id=str(config.account_id),
+            starting_cash=100000.0,
+            config=config,
+        )
+        account = backend.get_account_summary()
+        broker_positions_raw = backend.get_positions()
+    except Exception as exc:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "connected": False,
+                "error": str(exc),
+                "config": {
+                    "host": config.host,
+                    "port": config.port,
+                    "account_id": config.account_id,
+                    "paper_backend": config.paper_backend,
+                    "live_backend": config.live_backend,
+                    "execution_client_id_offset": config.execution_client_id_offset,
+                },
+            },
+        )
+
+    broker_positions = [
+        {
+            "account_id": str(position.account_id),
+            "ticker": str(position.contract_symbol).upper(),
+            "quantity": float(position.quantity),
+            "avg_cost": float(position.avg_cost),
+            "market_value": float(position.market_value),
+            "unrealized_pnl": float(position.unrealized_pnl),
+        }
+        for position in broker_positions_raw
+    ]
+    app_portfolio = get_paper_portfolio(resolved_portfolio_id) if resolved_portfolio_id is not None else None
+    app_summary = get_paper_portfolio_summary(resolved_portfolio_id) if resolved_portfolio_id is not None and app_portfolio else None
+    app_positions = list((app_summary or {}).get("positions") or [])
+    broker_by_ticker = {str(row.get("ticker") or "").upper(): row for row in broker_positions}
+    app_by_ticker = {str(row.get("ticker") or "").upper(): row for row in app_positions}
+    reconciliation_rows: list[dict[str, Any]] = []
+    for ticker in sorted(set(broker_by_ticker) | set(app_by_ticker)):
+        broker_row = broker_by_ticker.get(ticker) or {}
+        app_row = app_by_ticker.get(ticker) or {}
+        broker_qty = float(broker_row.get("quantity") or 0.0)
+        app_qty = float(app_row.get("quantity") or 0.0)
+        source = "matched"
+        if ticker in broker_by_ticker and ticker not in app_by_ticker:
+            source = "broker_only"
+        elif ticker in app_by_ticker and ticker not in broker_by_ticker:
+            source = "app_only"
+        elif abs(broker_qty - app_qty) > 1e-6:
+            source = "quantity_mismatch"
+        reconciliation_rows.append(
+            {
+                "ticker": ticker,
+                "status": source,
+                "ibkr_quantity": broker_qty,
+                "app_quantity": app_qty,
+                "quantity_delta": broker_qty - app_qty,
+                "ibkr_market_value": broker_row.get("market_value"),
+                "app_market_value": app_row.get("current_value") or app_row.get("market_value"),
+            }
+        )
+    return JSONResponse(
+        content=_json_ready(
+            {
+                "connected": True,
+                "account": {
+                    "account_id": str(account.account_id),
+                    "net_liquidation": float(account.net_liquidation),
+                    "total_cash": float(account.total_cash),
+                    "buying_power": float(account.buying_power),
+                    "gross_position_value": float(account.gross_position_value),
+                    "maintenance_margin": float(account.maintenance_margin),
+                    "available_funds": float(account.available_funds),
+                    "unrealized_pnl": account.unrealized_pnl,
+                },
+                "positions": broker_positions,
+                "app_portfolio": app_portfolio,
+                "app_summary": app_summary,
+                "reconciliation": {
+                    "rows": reconciliation_rows,
+                    "broker_only_count": len([row for row in reconciliation_rows if row["status"] == "broker_only"]),
+                    "app_only_count": len([row for row in reconciliation_rows if row["status"] == "app_only"]),
+                    "mismatch_count": len([row for row in reconciliation_rows if row["status"] == "quantity_mismatch"]),
+                },
+                "config": {
+                    "host": config.host,
+                    "port": config.port,
+                    "account_id": config.account_id,
+                    "paper_backend": config.paper_backend,
+                    "live_backend": config.live_backend,
+                },
+            }
+        )
+    )
+
+
 @router.get("/ibkr/status")
 def regime_ibkr_status(
     actor: str = Depends(require_actor),
 ):
     del actor
-    from src.regime.config import IBKRConfig, validate_ibkr_readiness
+    from src.regime.config import IBKRConfig, ibkr_execution_mode, validate_ibkr_readiness
     from src.regime.ib_thread import get_ib_thread
     from src.regime.persistence import is_live_trading_unlocked
 
@@ -4385,7 +4626,10 @@ def regime_ibkr_status(
                 "port": config.port,
                 "account_id": config.account_id,
                 "live_account_id": config.live_account_id or None,
+                "paper_backend": config.paper_backend,
                 "live_backend": config.live_backend,
+                "execution_client_id_offset": config.execution_client_id_offset,
+                "execution_mode": ibkr_execution_mode(config),
             },
         }
     )
@@ -5735,19 +5979,33 @@ async def regime_paper_monitoring(
             connected = False
     if not connected:
         summary_data = runtime["get_paper_portfolio_summary"](portfolio_id)
+        cash = float(portfolio.get("current_cash") or portfolio.get("starting_budget") or 100000.0)
+        market_value = float(summary_data.get("total_market_value") or 0.0)
+        total_equity = cash + market_value
+        realized_pnl = float(summary_data.get("realized_pnl") or 0.0)
+        unrealized_pnl = float(summary_data.get("unrealized_pnl") or 0.0)
+        exposure_pct = (market_value / total_equity) if total_equity > 0 else 0.0
         summary = {
             "portfolio_id": portfolio_id,
-            "equity": float(summary_data.get("current_value") or portfolio.get("starting_budget") or 100000.0),
-            "cash": float(portfolio.get("current_cash") or portfolio.get("starting_budget") or 100000.0),
+            "equity": total_equity,
+            "cash": cash,
             "buying_power": 0.0,
-            "exposure_pct": float(summary_data.get("exposure_pct") or 0.0),
+            "exposure_pct": exposure_pct,
             "maintenance_margin": 0.0,
-            "unrealized_pnl": float(summary_data.get("unrealized_pnl") or 0.0),
-            "daily_pnl": 0.0,
-            "net_liquidation": float(summary_data.get("current_value") or portfolio.get("starting_budget") or 100000.0),
-            "total_cash": float(portfolio.get("current_cash") or portfolio.get("starting_budget") or 100000.0),
+            "unrealized_pnl": unrealized_pnl,
+            "daily_pnl": realized_pnl + unrealized_pnl,
+            "net_liquidation": total_equity,
+            "total_cash": cash,
         }
-        positions = [_json_ready(p) for p in runtime["get_paper_positions"](portfolio_id, status="Open")]
+        raw_positions = summary_data.get("positions") or runtime["get_paper_positions"](portfolio_id, status="Open")
+        positions = []
+        for position in raw_positions:
+            normalized_position = dict(position)
+            if normalized_position.get("avg_cost") is None:
+                normalized_position["avg_cost"] = normalized_position.get("entry_price")
+            if normalized_position.get("market_value") is None:
+                normalized_position["market_value"] = normalized_position.get("current_value")
+            positions.append(_json_ready(normalized_position))
         connection = {"connected": False, "market_hours": "closed", "note": "IBKR connection unavailable — showing cached data"}
     pending_orders = [
         plan for plan in runtime["get_trade_plans"](portfolio_id, status="all")
@@ -5758,6 +6016,10 @@ async def regime_paper_monitoring(
     summary_daily_pnl = float(summary.get("daily_pnl") if isinstance(summary, dict) else getattr(summary, "daily_pnl", 0.0) or 0.0)
     max_total_exposure_pct = float(getattr(guardrails, "max_total_exposure_pct", 0.0) or 0.0)
     daily_loss_limit = float(getattr(guardrails, "daily_loss_limit", 0.0) or 0.0)
+    daily_loss_limit_pct = float(getattr(guardrails, "daily_loss_limit_pct", 0.0) or 0.0)
+    summary_equity = float(summary.get("equity") if isinstance(summary, dict) else getattr(summary, "equity", 0.0) or 0.0)
+    if daily_loss_limit_pct > 0 and summary_equity > 0:
+        daily_loss_limit = min(daily_loss_limit, summary_equity * daily_loss_limit_pct)
     max_trades_per_day = int(getattr(guardrails, "max_trades_per_day", 0) or 0)
     payload = {
         "account": _json_ready(summary),
@@ -6198,6 +6460,100 @@ def regime_paper_performance(
     if not benchmark:
         benchmark = runtime["compute_benchmark_comparison"](portfolio_id)
     return JSONResponse(content={"performance": _json_ready(performance), "benchmark": _json_ready(benchmark)})
+
+
+def _resolve_beta_portfolio(runtime: dict[str, Any]) -> tuple[int | None, dict[str, Any] | None]:
+    raw_portfolio_id = runtime["get_setting"]("regime_beta_portfolio_id")
+    portfolio_id = None
+    try:
+        portfolio_id = int(raw_portfolio_id) if raw_portfolio_id not in (None, "") else None
+    except Exception:
+        portfolio_id = None
+    portfolio = runtime["get_paper_portfolio"](portfolio_id) if portfolio_id is not None else None
+    if portfolio is None:
+        for candidate in runtime["list_paper_portfolios"](include_closed=False):
+            if str(candidate.get("name") or "").lower().startswith("regime agent beta"):
+                portfolio = candidate
+                portfolio_id = int(candidate["id"])
+                break
+    return portfolio_id, portfolio
+
+
+@router.get("/beta/status")
+def regime_beta_status(
+    session: Session = Depends(db_session),
+    actor: str = Depends(require_actor),
+):
+    del session, actor
+    runtime, runtime_error = _load_hmm_runtime()
+    if runtime is None:
+        raise HTTPException(status_code=503, detail=runtime_error or "Regime analytics are unavailable.")
+    portfolio_id, portfolio = _resolve_beta_portfolio(runtime)
+    from src.regime.agents import get_agent_registry
+
+    registry = get_agent_registry()
+    target = runtime["compute_beta_target_progress"](int(portfolio_id)) if portfolio_id is not None else {}
+    performance = runtime["compute_paper_performance"](int(portfolio_id)) if portfolio_id is not None else {}
+    raw_schedule_status = runtime["get_setting"]("regime_beta_market_session_last_status")
+    try:
+        schedule_status = json.loads(raw_schedule_status) if raw_schedule_status else None
+    except Exception:
+        schedule_status = raw_schedule_status
+    return JSONResponse(
+        content=_json_ready(
+            {
+                "status": runtime["get_setting"]("regime_beta_status") or ("active" if portfolio else "not_deployed"),
+                "portfolio": portfolio,
+                "target": target,
+                "performance": performance,
+                "agents": registry.status(),
+                "agent_count": len(registry.all_agents()),
+                "autonomy": {
+                    "operating_mode": runtime["get_operating_mode"](),
+                    "auto_approve_threshold": runtime["get_auto_approve_threshold"](),
+                    "daily_capital_ceiling_pct": runtime["get_daily_capital_ceiling_pct"](),
+                },
+                "schedule": {
+                    "enabled": runtime["get_setting"]("regime_beta_schedule_enabled") == "true",
+                    "label": runtime["get_setting"]("regime_beta_schedule_label"),
+                    "preferred_window": runtime["get_setting"]("regime_beta_preferred_run_window"),
+                    "last_cycle_date": runtime["get_setting"]("regime_beta_last_market_session_cycle_date"),
+                    "last_cycle_at": runtime["get_setting"]("regime_beta_last_market_session_cycle_at"),
+                    "last_checked_at": runtime["get_setting"]("regime_beta_market_session_last_checked_at"),
+                    "last_status": schedule_status,
+                },
+                "ibkr": runtime["validate_ibkr_readiness"]() if "validate_ibkr_readiness" in runtime else None,
+                "market_data": runtime["get_setting"]("market_data_provider_config"),
+            }
+        )
+    )
+
+
+@router.get("/beta/agent-dashboard")
+def regime_beta_agent_dashboard(
+    session: Session = Depends(db_session),
+    actor: str = Depends(require_actor),
+):
+    del session, actor
+    runtime, runtime_error = _load_hmm_runtime()
+    if runtime is None:
+        raise HTTPException(status_code=503, detail=runtime_error or "Regime analytics are unavailable.")
+    portfolio_id, portfolio = _resolve_beta_portfolio(runtime)
+    if portfolio_id is None or portfolio is None:
+        return JSONResponse(content={"status": "not_deployed", "portfolio": None, "agents": []})
+    from src.regime.agents import get_agent_registry
+
+    registry = get_agent_registry()
+    if "compute_beta_agent_dashboard" in runtime:
+        payload = runtime["compute_beta_agent_dashboard"](
+            agents_status=registry.status(),
+        )
+    else:
+        payload = runtime["compute_agent_portfolio_dashboard"](
+            int(portfolio_id),
+            agents_status=registry.status(),
+        )
+    return JSONResponse(content=_json_ready(payload))
 
 
 def _require_paper_portfolio(runtime: dict[str, Any], portfolio_id: int) -> dict[str, Any]:

@@ -214,6 +214,54 @@ def test_paper_portfolio_still_uses_paper_adapter(monkeypatch) -> None:
     assert adapter["adapter"] == "paper"
 
 
+def test_ibkr_route_adapter_uses_execution_client_offset() -> None:
+    captured: dict[str, object] = {}
+
+    class Backend:
+        _client_id = 28
+
+    def fake_get_ib_backend(*args, **kwargs):
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+        return Backend()
+
+    runtime = {
+        "get_paper_portfolio": lambda portfolio_id: {
+            "id": int(portfolio_id),
+            "broker_type": "ibkr",
+            "current_cash": 25000.0,
+            "starting_budget": 25000.0,
+        },
+        "DEFAULT_IBKR_CONFIG": SimpleNamespace(
+            live_backend=False,
+            paper_backend=True,
+            live_account_id="",
+            account_id="DUP579027",
+            host="127.0.0.1",
+            port=7497,
+            client_id=1,
+            execution_client_id_offset=20,
+        ),
+        "ibkr_execution_mode": lambda config: "ibkr_paper",
+        "should_use_real_ibkr_backend": lambda config: True,
+        "ibkr_backend_account_id": lambda config: config.account_id,
+        "get_ib_backend": fake_get_ib_backend,
+        "IBKRBrokerAdapter": lambda backend, portfolio_id, **kwargs: {
+            "backend": backend,
+            "portfolio_id": portfolio_id,
+            "client_id": kwargs.get("client_id"),
+        },
+        "PaperBrokerAdapter": lambda portfolio_id: {"adapter": "paper", "portfolio_id": portfolio_id},
+    }
+
+    adapter = regime_route._get_broker_adapter(runtime, 7)
+
+    assert captured["args"] == (7,)
+    assert captured["kwargs"]["live"] is True
+    assert captured["kwargs"]["client_id_offset"] == 20
+    assert adapter["client_id"] == 28
+
+
 def test_scheduler_skips_auto_execute_for_live_unlocked_ibkr(monkeypatch) -> None:
     monkeypatch.setattr("src.regime.scheduled_runner.list_paper_portfolios", lambda include_closed=False: [{"id": 2, "name": "Live", "broker_type": "ibkr", "status": "Active", "current_cash": 100000.0, "starting_budget": 100000.0}])
     monkeypatch.setattr("src.regime.scheduled_runner.expire_stale_plans", lambda portfolio_id: 0)

@@ -123,6 +123,64 @@ def _stale_run_minutes() -> int:
         return 15
 
 
+def _recover_or_block_unfinished_sync_run(
+    *,
+    session: Session,
+    connection: ExternalConnection,
+    connection_id: int,
+    actor: str,
+) -> str | None:
+    existing = (
+        session.query(SyncRun)
+        .filter(SyncRun.connection_id == connection_id, SyncRun.finished_at.is_(None))
+        .order_by(SyncRun.started_at.desc())
+        .first()
+    )
+    if existing is None or existing.started_at is None:
+        return None
+
+    now = dt.datetime.now(dt.timezone.utc)
+    age = now - existing.started_at
+    pages_fetched = int(existing.pages_fetched or 0)
+    stale_minutes = _stale_run_minutes()
+    is_stale = (
+        age >= dt.timedelta(minutes=stale_minutes) and pages_fetched == 0
+    ) or age >= dt.timedelta(hours=6)
+    if not is_stale:
+        return f"Sync already running (started {existing.started_at.isoformat()})."
+
+    mins = max(1, int(age.total_seconds() // 60))
+    if pages_fetched > 0:
+        note = f"Orphaned run auto-aborted after {mins} minutes (pages fetched: {pages_fetched})."
+    else:
+        note = f"Stale run aborted after {mins} minutes."
+    existing.finished_at = now
+    existing.status = "ERROR"
+    existing.error_json = note
+    cov = dict(existing.coverage_json or {})
+    warns = list(cov.get("warnings") or [])
+    if note not in warns:
+        warns.append(note)
+    cov["warnings"] = warns
+    cov["error"] = "Stale run aborted"
+    cov["aborted_at"] = now.isoformat()
+    existing.coverage_json = cov
+    connection.last_error_json = note
+    session.flush()
+    log_change(
+        session,
+        actor=actor,
+        action="SYNC_RUN_FINISHED",
+        entity="SyncRun",
+        entity_id=str(existing.id),
+        old=None,
+        new={"status": existing.status, "error": note},
+        note="Stale run auto-aborted before new sync",
+    )
+    session.commit()
+    return None
+
+
 @router.get("/connections")
 def connections_list(
     request: Request,
@@ -1338,46 +1396,15 @@ def connection_run_sync(
     # Guard against double-submits: SQLite will frequently error with "database is locked" if we try to run
     # two syncs concurrently in the same local DB.
     try:
-        existing = (
-            session.query(SyncRun)
-            .filter(SyncRun.connection_id == connection_id, SyncRun.finished_at.is_(None))
-            .order_by(SyncRun.started_at.desc())
-            .first()
+        blocking_msg = _recover_or_block_unfinished_sync_run(
+            session=session,
+            connection=conn,
+            connection_id=connection_id,
+            actor=actor,
         )
-        if existing is not None and existing.started_at is not None:
-            age = dt.datetime.now(dt.timezone.utc) - existing.started_at
-            stale_minutes = _stale_run_minutes()
-            if age >= dt.timedelta(minutes=stale_minutes) and int(existing.pages_fetched or 0) == 0:
-                mins = max(1, int(age.total_seconds() // 60))
-                note = f"Stale run aborted after {mins} minutes."
-                existing.finished_at = dt.datetime.now(dt.timezone.utc)
-                existing.status = "ERROR"
-                existing.error_json = note
-                cov = dict(existing.coverage_json or {})
-                warns = list(cov.get("warnings") or [])
-                if note not in warns:
-                    warns.append(note)
-                cov["warnings"] = warns
-                cov["error"] = "Stale run aborted"
-                cov["aborted_at"] = existing.finished_at.isoformat() if existing.finished_at else None
-                existing.coverage_json = cov
-                conn.last_error_json = note
-                session.flush()
-                log_change(
-                    session,
-                    actor=actor,
-                    action="SYNC_RUN_FINISHED",
-                    entity="SyncRun",
-                    entity_id=str(existing.id),
-                    old=None,
-                    new={"status": existing.status, "error": note},
-                    note="Stale run auto-aborted before new sync",
-                )
-                session.commit()
-                existing = None
-            if existing is not None and age < dt.timedelta(hours=6):
-                msg = urllib.parse.quote(f"Sync already running (started {existing.started_at.isoformat()}).")
-                return RedirectResponse(url=f"/sync/connections/{connection_id}?error={msg}", status_code=303)
+        if blocking_msg:
+            msg = urllib.parse.quote(blocking_msg)
+            return RedirectResponse(url=f"/sync/connections/{connection_id}?error={msg}", status_code=303)
     except Exception:
         pass
     mode_u = mode.strip().upper()
@@ -1856,17 +1883,15 @@ def plaid_backfill_transactions(
     session.flush()
 
     try:
-        existing = (
-            session.query(SyncRun)
-            .filter(SyncRun.connection_id == connection_id, SyncRun.finished_at.is_(None))
-            .order_by(SyncRun.started_at.desc())
-            .first()
+        blocking_msg = _recover_or_block_unfinished_sync_run(
+            session=session,
+            connection=conn,
+            connection_id=connection_id,
+            actor=actor,
         )
-        if existing is not None and existing.started_at is not None:
-            age = dt.datetime.now(dt.timezone.utc) - existing.started_at
-            if age < dt.timedelta(hours=6):
-                msg = urllib.parse.quote(f"Sync already running (started {existing.started_at.isoformat()}).")
-                return RedirectResponse(url=f"/sync/connections/{connection_id}?error={msg}", status_code=303)
+        if blocking_msg:
+            msg = urllib.parse.quote(blocking_msg)
+            return RedirectResponse(url=f"/sync/connections/{connection_id}?error={msg}", status_code=303)
     except Exception:
         pass
 

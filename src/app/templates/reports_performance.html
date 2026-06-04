@@ -5,7 +5,11 @@
   {% set report_breadcrumbs = [{"label": "Reports", "href": "/reports"}, {"label": "Performance", "href": None}] %}
   {% set report_title = "Performance" %}
   {% set report_badge = "Report" %}
-  {% set report_context = "<b>Period:</b> " ~ period_label ~ " <span class='ui-muted'>·</span> <b>Frequency:</b> " ~ ("Monthly" if freq == "month_end" else "Daily") ~ " <span class='ui-muted'>·</span> <b>Benchmark:</b> " ~ (benchmark_symbol or "SPY") %}
+  {% set extra_bench_context = "" %}
+  {% if additional_benchmark_symbols and additional_benchmark_symbols|length > 0 %}
+    {% set extra_bench_context = " <span class='ui-muted'>·</span> <b>Additional:</b> " ~ (additional_benchmark_symbols|join(", ")) %}
+  {% endif %}
+  {% set report_context = "<b>Period:</b> " ~ period_label ~ " <span class='ui-muted'>·</span> <b>Frequency:</b> " ~ ("Monthly" if freq == "month_end" else "Daily") ~ " <span class='ui-muted'>·</span> <b>Benchmark:</b> " ~ (benchmark_symbol or "SPY") ~ extra_bench_context %}
   {% include "partials/reports/_header.html" %}
 
   {% set primary = report.combined if report.combined else (report.rows[0] if report.rows and report.rows|length > 0 else None) %}
@@ -54,16 +58,25 @@
           <input name="benchmark" value="{{ benchmark_symbol or 'SPY' }}" list="benchList" placeholder="e.g., SPY" />
           <datalist id="benchList">
             <option value="SPY"></option>
+            <option value="QQQ"></option>
+            <option value="IWM"></option>
+            <option value="DIA"></option>
+            <option value="VOO"></option>
             <option value="VTI"></option>
             <option value="AGG"></option>
             <option value="BIL"></option>
           </datalist>
         </label>
 
+        <label>Additional benchmarks<br/>
+          <input name="benchmarks" value="{{ additional_benchmark_raw or '' }}" list="benchList" placeholder="e.g., QQQ, IWM, AGG" />
+        </label>
+
         <label>Benchmark provider<br/>
           <select name="bench_provider">
-            <option value="auto" {% if (bench_provider or 'auto') == "auto" %}selected{% endif %}>Auto (Cache → Stooq)</option>
+            <option value="auto" {% if (bench_provider or 'auto') == "auto" %}selected{% endif %}>Auto (Cache → IBKR → Stooq)</option>
             <option value="cache" {% if bench_provider in ["cache", "local"] %}selected{% endif %}>Cache only (offline)</option>
+            <option value="ibkr" {% if bench_provider in ["ibkr", "ibrk"] %}selected{% endif %}>IBKR (Gateway first)</option>
             <option value="stooq" {% if bench_provider == "stooq" %}selected{% endif %}>Stooq</option>
             <option value="yahoo" {% if bench_provider == "yahoo" %}selected{% endif %}>Yahoo only (not recommended)</option>
             <option value="none" {% if bench_provider == "none" %}selected{% endif %}>None (portfolio only)</option>
@@ -213,6 +226,42 @@
     <script type="application/json" id="perfChartData">{{ chart_data_json|safe }}</script>
   </div>
 
+  {% if additional_benchmarks and additional_benchmarks|length > 0 %}
+    <div class="ui-card" style="margin-top:12px">
+      <div class="ui-section-title">Additional Benchmarks</div>
+      <div class="ui-muted" style="margin-top:6px">These overlays use the same date range, frequency, and provider selection as the primary benchmark.</div>
+      <div class="table-wrap" style="margin-top:10px">
+        <table>
+          <thead>
+            <tr>
+              <th scope="col">Benchmark</th>
+              <th scope="col" class="num">TWR</th>
+              <th scope="col" class="num">Sharpe</th>
+              <th scope="col" class="num">Excess TWR</th>
+              <th scope="col">Source / status</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for b in additional_benchmarks %}
+              <tr>
+                <td>
+                  {% set extra_color = ["#7c3aed", "#0f766e", "#ea580c", "#be123c", "#475569"][loop.index0 % 5] %}
+                  <span aria-hidden="true" style="display:inline-block;width:18px;height:3px;background:{{ extra_color }};vertical-align:middle;margin-right:6px"></span><b>{{ b.symbol }}</b>
+                </td>
+                <td class="num">{% if b.twr is not none %}{{ "%.2f"|format(b.twr * 100.0) }}%{% else %}—{% endif %}</td>
+                <td class="num">{% if b.sharpe is not none %}{{ "%.2f"|format(b.sharpe) }}{% else %}—{% endif %}</td>
+                <td class="num">{% if b.excess_twr is not none %}{{ "%.2f"|format(b.excess_twr * 100.0) }}%{% else %}—{% endif %}</td>
+                <td class="ui-muted">
+                  {% if b.warning %}{{ b.warning }}{% else %}{{ b.provider }}{% if b.rows %} · {{ b.rows }} row(s){% endif %}{% endif %}
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  {% endif %}
+
   <div class="ui-card" style="margin-top:12px">
     <div class="ui-section-title">Comparison</div>
     <div class="table-wrap" style="margin-top:10px">
@@ -261,7 +310,7 @@
       <div class="ui-muted" style="margin-top:8px">
         <div><b>IRR</b> is cashflow-weighted (XIRR). <b>TWR</b> is time-weighted return from holdings snapshots, adjusted for cashflows. <b>Sharpe</b> uses the return series (monthly or daily) with <code>RISK_FREE_RATE_ANNUAL</code> (default 0).</div>
         <div style="margin-top:8px">
-          Benchmark candles are cache-first (SQLite under <code>data/benchmarks/</code>). Missing ranges are fetched from Stooq (preferred) and fall back to Yahoo Finance only when needed.
+          Benchmark candles are cache-first (SQLite under <code>data/benchmarks/</code>). Missing ranges use IBKR when the gateway is connected, then Stooq, with Yahoo Finance as an optional fallback.
         </div>
       </div>
     </details>

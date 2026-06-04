@@ -31,6 +31,43 @@ from src.db.models import (
 
 router = APIRouter(prefix="/holdings", tags=["holdings"])
 
+
+def _write_simple_price_csv(dest: Path, df) -> None:
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    with dest.open("w", encoding="utf-8", newline="") as f:
+        f.write("Date,Close\n")
+        for ts, row in df.iterrows():
+            try:
+                d = ts.date().isoformat()
+                px = float(row.get("close") or 0.0)
+                if px > 0:
+                    f.write(f"{d},{px}\n")
+            except Exception:
+                continue
+
+
+def _public_host_allowed(host: str) -> bool:
+    from src.core.net import allowed_outbound_hosts, outbound_host_allowlist_enabled
+
+    if not outbound_host_allowlist_enabled():
+        return True
+    return str(host or "").strip().lower() in allowed_outbound_hosts()
+
+
+def _looks_like_connection_outage(msg: str) -> bool:
+    s = str(msg or "").strip().lower()
+    return any(
+        token in s
+        for token in (
+            "gateway not connected",
+            "connect failed",
+            "timeout",
+            "timed out",
+            "handshake failed",
+            "market data unavailable",
+        )
+    )
+
 @router.get("/drilldown.json")
 def holdings_drilldown_json(
     request: Request,
@@ -382,22 +419,24 @@ def holdings_refresh_prices(
     actor: str = Depends(require_actor),
     scope: str = Form(default="household"),
     account_id: str = Form(default=""),
-    provider: str = Form(default="yahoo"),
+    provider: str = Form(default="ibkr"),
 ):
     """
     Refresh local price cache for symbols currently displayed on the Holdings page.
-    Uses Stooq daily candles (preferred) or Yahoo Finance chart API (may rate limit).
+    Uses IBKR by default when the shared gateway is connected, with Yahoo fallback for resilience.
     """
     from src.core.benchmarks import download_yahoo_price_history_csv
     from src.core.dashboard_service import parse_scope
     from src.core.external_holdings import build_holdings_view
+    from src.importers.adapters import ProviderError
     from src.investor.marketdata.benchmarks import StooqProvider
+    from src.regime.ibkr_market_data import IBKRMarketDataProvider
     from market_data.symbols import normalize_ticker
 
     sc = parse_scope(scope)
     acct_id = int(account_id) if str(account_id).strip().isdigit() else None
     today = dt.date.today()
-    provider_norm = (provider or "stooq").strip().lower()
+    provider_norm = (provider or "ibkr").strip().lower()
 
     # Build holdings WITHOUT price override to avoid confusing the refresh list.
     view = build_holdings_view(session, scope=sc, account_id=acct_id, today=today, prices_dir=None)
@@ -415,10 +454,14 @@ def holdings_refresh_prices(
     start = today - dt.timedelta(days=45)
     prices_dir = Path("./data/prices")
     fetched_at = dt.datetime.now(dt.timezone.utc).isoformat()
+    base = f"/holdings?scope={sc}" + (f"&account_id={acct_id}" if acct_id is not None else "")
+    yahoo_allowed = _public_host_allowed("query1.finance.yahoo.com")
 
     updated = 0
     skipped = 0
     failed: list[tuple[str, str]] = []
+    yahoo_fallbacks: list[str] = []
+
     def _safe_err(msg: str) -> str:
         s = (msg or "").strip()
         if not s:
@@ -427,6 +470,11 @@ def holdings_refresh_prices(
         s = s.replace("https://", "").replace("http://", "")
         return (s[:220] + "…") if len(s) > 220 else s
 
+    if provider_norm == "yahoo" and not yahoo_allowed:
+        msg = "Yahoo refresh is blocked by ALLOWED_OUTBOUND_HOSTS. Add query1.finance.yahoo.com or use IBKR/cache."
+        return RedirectResponse(url=f"{base}&error={msg}", status_code=303)
+
+    ibkr = IBKRMarketDataProvider()
     stooq = StooqProvider()
     for sym, provider_ticker in priceable:
         try:
@@ -434,28 +482,80 @@ def holdings_refresh_prices(
             if provider_norm == "cache":
                 skipped += 1
                 continue
-            if provider_norm == "stooq":
-                df = stooq.fetch(symbol=provider_ticker, start=start, end=today)
-                # Write a simple, load_price_csv-compatible file.
-                dest.parent.mkdir(parents=True, exist_ok=True)
-                with dest.open("w", encoding="utf-8", newline="") as f:
-                    f.write("Date,Close\n")
-                    for ts, row in df.iterrows():
-                        try:
-                            d = ts.date().isoformat()
-                            px = float(row.get("close") or 0.0)
-                            if px > 0:
-                                f.write(f"{d},{px}\n")
-                        except Exception:
-                            continue
-                meta = {
-                    "provider": "stooq_daily",
-                    "provider_ticker": provider_ticker,
-                    "original_ticker": sym,
-                    "first_date": str(start),
-                    "last_date": str(today),
-                    "fetched_at": fetched_at,
-                }
+            if provider_norm == "ibkr":
+                try:
+                    df = ibkr.fetch(symbol=provider_ticker, start=start, end=today)
+                    _write_simple_price_csv(dest, df)
+                    meta = {
+                        "provider": "ibkr_adjusted_trades",
+                        "provider_ticker": provider_ticker,
+                        "original_ticker": sym,
+                        "first_date": str(start),
+                        "last_date": str(today),
+                        "fetched_at": fetched_at,
+                    }
+                except ProviderError as ibkr_err:
+                    if not yahoo_allowed and _looks_like_connection_outage(str(ibkr_err)):
+                        msg = (
+                            f"IBKR refresh unavailable: {_safe_err(str(ibkr_err))}. "
+                            "Yahoo fallback is blocked by ALLOWED_OUTBOUND_HOSTS; "
+                            "add query1.finance.yahoo.com or fix the IBKR gateway/API connection."
+                        )
+                        return RedirectResponse(url=f"{base}&error={msg}", status_code=303)
+                    res = download_yahoo_price_history_csv(
+                        symbol=provider_ticker,
+                        start_date=start,
+                        end_date=today,
+                        dest_path=dest,
+                    )
+                    yahoo_fallbacks.append(sym)
+                    meta = {
+                        "provider": "yahoo_chart",
+                        "provider_ticker": provider_ticker,
+                        "original_ticker": sym,
+                        "first_date": str(res.start_date),
+                        "last_date": str(res.end_date),
+                        "fetched_at": fetched_at,
+                        "fallback_from": "ibkr",
+                        "fallback_reason": _safe_err(str(ibkr_err)),
+                    }
+            elif provider_norm == "stooq":
+                try:
+                    df = stooq.fetch(symbol=provider_ticker, start=start, end=today)
+                    _write_simple_price_csv(dest, df)
+                    meta = {
+                        "provider": "stooq_daily",
+                        "provider_ticker": provider_ticker,
+                        "original_ticker": sym,
+                        "first_date": str(start),
+                        "last_date": str(today),
+                        "fetched_at": fetched_at,
+                    }
+                except ProviderError as stooq_err:
+                    if not yahoo_allowed and _looks_like_connection_outage(str(stooq_err)):
+                        msg = (
+                            f"Stooq refresh unavailable: {_safe_err(str(stooq_err))}. "
+                            "Yahoo fallback is blocked by ALLOWED_OUTBOUND_HOSTS; "
+                            "add query1.finance.yahoo.com or use IBKR/cache."
+                        )
+                        return RedirectResponse(url=f"{base}&error={msg}", status_code=303)
+                    res = download_yahoo_price_history_csv(
+                        symbol=provider_ticker,
+                        start_date=start,
+                        end_date=today,
+                        dest_path=dest,
+                    )
+                    yahoo_fallbacks.append(sym)
+                    meta = {
+                        "provider": "yahoo_chart",
+                        "provider_ticker": provider_ticker,
+                        "original_ticker": sym,
+                        "first_date": str(res.start_date),
+                        "last_date": str(res.end_date),
+                        "fetched_at": fetched_at,
+                        "fallback_from": "stooq",
+                        "fallback_reason": _safe_err(str(stooq_err)),
+                    }
             else:
                 res = download_yahoo_price_history_csv(
                     symbol=provider_ticker,
@@ -477,21 +577,23 @@ def holdings_refresh_prices(
             else:
                 failed.append((sym, type(e).__name__))
 
-    base = f"/holdings?scope={sc}" + (f"&account_id={acct_id}" if acct_id is not None else "")
+    fallback_note = ""
+    if yahoo_fallbacks:
+        fallback_note = f" Used Yahoo fallback for {len(yahoo_fallbacks)} symbol(s)."
     if provider_norm == "cache":
         msg = f"Cache-only mode: no network fetch performed (skipped {skipped} symbol(s))."
         return RedirectResponse(url=f"{base}&ok={msg}", status_code=303)
     if failed and updated:
         sample = "; ".join([f"{s}: {m}" for s, m in failed[:4]])
         suffix = "…" if len(failed) > 4 else ""
-        msg = f"Updated {updated} price file(s); failed {len(failed)}: {sample}{suffix}"
+        msg = f"Updated {updated} price file(s); failed {len(failed)}: {sample}{suffix}{fallback_note}"
         return RedirectResponse(url=f"{base}&ok={msg}", status_code=303)
     if failed and not updated:
         sample = "; ".join([f"{s}: {m}" for s, m in failed[:4]])
         suffix = "…" if len(failed) > 4 else ""
         msg = f"Price refresh failed for {len(failed)} symbol(s): {sample}{suffix}"
         return RedirectResponse(url=f"{base}&error={msg}", status_code=303)
-    return RedirectResponse(url=f"{base}&ok=Updated {updated} price file(s).", status_code=303)
+    return RedirectResponse(url=f"{base}&ok=Updated {updated} price file(s).{fallback_note}", status_code=303)
 
 
 @router.get("/securities")

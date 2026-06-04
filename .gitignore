@@ -5,6 +5,8 @@ __pycache__/
 .env.plaid
 investments.db
 investments.db-*
+investor.db
+scripts/com.investor.regime-beta.plist
 .mypy_cache/
 .ruff_cache/
 .DS_Store

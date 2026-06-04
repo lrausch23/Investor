@@ -58,6 +58,19 @@ _PAPER_TRADE_PLAN_COLUMNS: dict[str, str] = {
     "ltcg_override_active": "INTEGER",
     "ltcg_protected_quantity": "REAL",
     "ltcg_tax_savings": "REAL",
+    "signal_quality_score": "REAL",
+    "signal_quality_grade": "TEXT NOT NULL DEFAULT ''",
+    "signal_quality_reasons": "TEXT NOT NULL DEFAULT '[]'",
+    "agent_key": "TEXT NOT NULL DEFAULT ''",
+    "llm_used": "INTEGER NOT NULL DEFAULT 0",
+    "llm_influenced": "INTEGER NOT NULL DEFAULT 0",
+    "llm_influence": "TEXT NOT NULL DEFAULT ''",
+    "llm_source": "TEXT NOT NULL DEFAULT ''",
+    "llm_provider": "TEXT NOT NULL DEFAULT ''",
+    "llm_model": "TEXT NOT NULL DEFAULT ''",
+    "llm_model_display": "TEXT NOT NULL DEFAULT ''",
+    "llm_verdict": "TEXT NOT NULL DEFAULT ''",
+    "llm_confidence": "REAL",
 }
 
 _SIGNAL_SNAPSHOT_COLUMNS: dict[str, str] = {
@@ -319,6 +332,19 @@ def _create_paper_trade_plan_table(conn: sqlite3.Connection) -> None:
             ltcg_override_active INTEGER,
             ltcg_protected_quantity REAL,
             ltcg_tax_savings REAL,
+            signal_quality_score REAL,
+            signal_quality_grade TEXT NOT NULL DEFAULT '',
+            signal_quality_reasons TEXT NOT NULL DEFAULT '[]',
+            agent_key TEXT NOT NULL DEFAULT '',
+            llm_used INTEGER NOT NULL DEFAULT 0,
+            llm_influenced INTEGER NOT NULL DEFAULT 0,
+            llm_influence TEXT NOT NULL DEFAULT '',
+            llm_source TEXT NOT NULL DEFAULT '',
+            llm_provider TEXT NOT NULL DEFAULT '',
+            llm_model TEXT NOT NULL DEFAULT '',
+            llm_model_display TEXT NOT NULL DEFAULT '',
+            llm_verdict TEXT NOT NULL DEFAULT '',
+            llm_confidence REAL,
             notes TEXT NOT NULL DEFAULT '',
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
@@ -2483,8 +2509,25 @@ def create_trade_plan(
     ltcg_override_active: bool | None = None,
     ltcg_protected_quantity: float | None = None,
     ltcg_tax_savings: float | None = None,
+    signal_quality_score: float | None = None,
+    signal_quality_grade: str = "",
+    signal_quality_reasons: list[str] | tuple[str, ...] | str | None = None,
+    agent_key: str = "",
+    llm_used: bool = False,
+    llm_influenced: bool = False,
+    llm_influence: str = "",
+    llm_source: str = "",
+    llm_provider: str = "",
+    llm_model: str = "",
+    llm_model_display: str = "",
+    llm_verdict: str = "",
+    llm_confidence: float | None = None,
 ) -> dict[str, Any]:
     now = datetime.now(timezone.utc).isoformat()
+    if isinstance(signal_quality_reasons, str):
+        signal_quality_reasons_json = signal_quality_reasons
+    else:
+        signal_quality_reasons_json = json.dumps(list(signal_quality_reasons or []))
     with _connect() as conn:
         cursor = conn.execute(
             """
@@ -2494,9 +2537,12 @@ def create_trade_plan(
                 arrival_price, vwap_benchmark, close_price, meta_labeler_score, sizing_method, agent_trace,
                 hurdle_gross_return_pct, hurdle_net_return_pct, hurdle_passed, duration_gate_passed, expected_regime_duration,
                 anti_churn_passed, ltcg_override_active, ltcg_protected_quantity, ltcg_tax_savings,
+                signal_quality_score, signal_quality_grade, signal_quality_reasons,
+                agent_key, llm_used, llm_influenced, llm_influence, llm_source, llm_provider, llm_model,
+                llm_model_display, llm_verdict, llm_confidence,
                 created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 int(portfolio_id),
@@ -2528,6 +2574,19 @@ def create_trade_plan(
                 None if ltcg_override_active is None else (1 if ltcg_override_active else 0),
                 float(ltcg_protected_quantity) if ltcg_protected_quantity is not None else None,
                 float(ltcg_tax_savings) if ltcg_tax_savings is not None else None,
+                float(signal_quality_score) if signal_quality_score is not None else None,
+                str(signal_quality_grade or ""),
+                signal_quality_reasons_json,
+                str(agent_key or ""),
+                1 if llm_used else 0,
+                1 if llm_influenced else 0,
+                str(llm_influence or ""),
+                str(llm_source or ""),
+                str(llm_provider or ""),
+                str(llm_model or ""),
+                str(llm_model_display or ""),
+                str(llm_verdict or ""),
+                float(llm_confidence) if llm_confidence is not None else None,
                 now,
                 now,
             ),

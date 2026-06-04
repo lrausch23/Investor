@@ -32,6 +32,81 @@ from src.db.models import (
 router = APIRouter(prefix="/reports", tags=["reports"])
 
 _RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,80}$")
+_DEFAULT_BENCHMARK_PROVIDER_ORDER = ["cache", "ibkr", "stooq", "yahoo"]
+_BENCHMARK_SYMBOL_RE = re.compile(r"[^A-Z0-9.^_-]+")
+
+
+def _normalize_benchmark_provider(raw: str | None) -> str:
+    value = (raw or "auto").strip().lower()
+    if value == "ibrk":
+        return "ibkr"
+    return value or "auto"
+
+
+def _benchmark_provider_order_for_selection(
+    selected_provider: str | None,
+    configured_order: list[str] | None,
+) -> list[str]:
+    sel = _normalize_benchmark_provider(selected_provider)
+    if sel in {"cache", "local"}:
+        return ["cache"]
+    if sel == "ibkr":
+        return ["cache", "ibkr", "stooq", "yahoo"]
+    if sel == "stooq":
+        return ["cache", "stooq", "yahoo"]
+    if sel == "yahoo":
+        return ["cache", "yahoo"]
+    order = [str(item or "").strip().lower() for item in (configured_order or []) if str(item or "").strip()]
+    return order or list(_DEFAULT_BENCHMARK_PROVIDER_ORDER)
+
+
+def _parse_additional_benchmark_symbols(
+    raw: str | None,
+    primary_symbol: str | None,
+    *,
+    limit: int = 5,
+) -> list[str]:
+    primary = (primary_symbol or "").strip().upper()
+    out: list[str] = []
+    for token in re.split(r"[\s,;]+", raw or ""):
+        symbol = _BENCHMARK_SYMBOL_RE.sub("", token.strip().upper())[:24]
+        if not symbol or symbol == primary or symbol in out:
+            continue
+        out.append(symbol)
+        if len(out) >= int(limit):
+            break
+    return out
+
+
+def _benchmark_series_from_dataframe(bench_df: object) -> list[tuple[dt.date, float]] | None:
+    if bench_df is None:
+        return None
+    try:
+        if bool(getattr(bench_df, "empty", True)):
+            return None
+        columns = [str(c) for c in list(getattr(bench_df, "columns", []))]
+        col = "adj_close" if "adj_close" in columns else "close"
+        vals = bench_df[col].copy()  # type: ignore[index]
+        if col == "adj_close" and "close" in columns:
+            vals = vals.fillna(bench_df["close"])  # type: ignore[index]
+        out: list[tuple[dt.date, float]] = []
+        for d, v in vals.items():
+            if v is None:
+                continue
+            price = float(v)
+            if price <= 0.0:
+                continue
+            if isinstance(d, dt.datetime):
+                dd = d.date()
+            elif isinstance(d, dt.date):
+                dd = d
+            else:
+                dd = dt.date.fromisoformat(str(d)[:10])
+            out.append((dd, price))
+        return out or None
+    except Exception:
+        return None
+
 
 def _static_version() -> str:
     # Similar to Holdings/Sync: override per-request so UI changes are visible without a server restart.
@@ -956,7 +1031,7 @@ def reports_performance(
     ok_msg = request.query_params.get("ok")
     error_msg = request.query_params.get("error")
     refresh_benchmark = str(request.query_params.get("refresh_benchmark") or "").strip().lower() in {"1", "true", "yes", "on"}
-    bench_provider = (request.query_params.get("bench_provider") or "auto").strip().lower()
+    bench_provider = _normalize_benchmark_provider(request.query_params.get("bench_provider") or "auto")
     # Prior-period comparison is disabled for now; keep in code for a future opt-in UI.
     compare_prior = False
 
@@ -1004,6 +1079,15 @@ def reports_performance(
         account_id = None
 
     benchmark_symbol = (request.query_params.get("benchmark") or "SPY").strip().upper()
+    additional_benchmark_raw = (
+        request.query_params.get("benchmarks")
+        or request.query_params.get("additional_benchmarks")
+        or ""
+    ).strip()
+    additional_benchmark_symbols = _parse_additional_benchmark_symbols(
+        additional_benchmark_raw,
+        benchmark_symbol,
+    )
     # Add a small buffer before start_date so month-end anchoring can use the prior trading day if needed.
     bench_anchor_start = start_date
     if prior_start is not None and prior_end is not None:
@@ -1014,6 +1098,8 @@ def reports_performance(
     bench_series: list[tuple[dt.date, float]] | None = None
     bench_meta = None
     benchmark_warning: str | None = None
+    additional_benchmark_inputs: list[dict[str, object]] = []
+    bench_client = None
     if bench_provider in {"none", "off", "disabled"}:
         bench_df = None
         bench_series = None
@@ -1021,39 +1107,56 @@ def reports_performance(
         cfg, _cfg_path = load_marketdata_config()
         # Allow per-request provider override while keeping the cache-first strategy.
         bench_cfg = cfg.benchmarks.model_copy(deep=True)
-        sel = (bench_provider or "auto").strip().lower()
-        if sel in {"cache", "local"}:
-            bench_cfg.provider_order = ["cache"]
-        elif sel == "stooq":
-            bench_cfg.provider_order = ["cache", "stooq", "yahoo"]
-        elif sel == "yahoo":
-            bench_cfg.provider_order = ["cache", "yahoo"]
-        else:
-            # auto: cache -> stooq -> yahoo
-            bench_cfg.provider_order = bench_cfg.provider_order or ["cache", "stooq", "yahoo"]
+        bench_cfg.provider_order = _benchmark_provider_order_for_selection(bench_provider, bench_cfg.provider_order)
+        bench_client = BenchmarkDataClient(config=bench_cfg)
 
         try:
-            client = BenchmarkDataClient(config=bench_cfg)
-            bench_df, bench_meta = client.get(
+            bench_df, bench_meta = bench_client.get(
                 symbol=benchmark_symbol,
                 start=bench_fetch_start,
                 end=bench_fetch_end,
                 refresh=bool(refresh_benchmark),
             )
-            # Build a simple (date, close) series for performance math (prefers adj_close when available).
-            if bench_df is not None and not bench_df.empty:
-                col = "adj_close" if "adj_close" in bench_df.columns else "close"
-                vals = bench_df[col].copy()
-                if col == "adj_close" and "close" in bench_df.columns:
-                    vals = vals.fillna(bench_df["close"])
-                bench_series = [(d.date(), float(v)) for d, v in vals.items() if v is not None and float(v) > 0.0]
+            bench_series = _benchmark_series_from_dataframe(bench_df)
         except Exception as e:
             benchmark_warning = str(e) if isinstance(e, ProviderError) else f"{type(e).__name__}: {e}"
             bench_series = None
 
+        for extra_symbol in additional_benchmark_symbols:
+            extra_df = None
+            extra_meta = None
+            extra_series: list[tuple[dt.date, float]] | None = None
+            extra_warning: str | None = None
+            try:
+                extra_df, extra_meta = bench_client.get(
+                    symbol=extra_symbol,
+                    start=bench_fetch_start,
+                    end=bench_fetch_end,
+                    refresh=bool(refresh_benchmark),
+                )
+                extra_series = _benchmark_series_from_dataframe(extra_df)
+            except Exception as e:
+                extra_warning = str(e) if isinstance(e, ProviderError) else f"{type(e).__name__}: {e}"
+            additional_benchmark_inputs.append(
+                {
+                    "symbol": extra_symbol,
+                    "series": extra_series,
+                    "provider": (" → ".join(extra_meta.used_providers) if extra_meta is not None else "Benchmark"),
+                    "rows": (len(extra_df) if extra_df is not None else None),
+                    "warning": extra_warning or (extra_meta.warning if extra_meta is not None else None),
+                }
+            )
+
     if refresh_benchmark and ok_msg is None and error_msg is None:
-        if bench_series is not None and len(bench_series) > 0:
-            ok_msg = f"Benchmark cache ready for {benchmark_symbol}."
+        ready_symbols = [benchmark_symbol] if bench_series is not None and len(bench_series) > 0 else []
+        ready_symbols.extend(
+            str(x.get("symbol") or "")
+            for x in additional_benchmark_inputs
+            if x.get("series")
+        )
+        ready_symbols = [s for s in ready_symbols if s]
+        if ready_symbols:
+            ok_msg = f"Benchmark cache ready for {', '.join(ready_symbols)}."
             if bench_meta and bench_meta.warning:
                 ok_msg = f"{ok_msg} {bench_meta.warning}"
         elif benchmark_warning:
@@ -1098,6 +1201,61 @@ def reports_performance(
     twr_curves = report.get("twr_curves") or {}
     portfolio_curve = twr_curves.get(primary_pid) or []
     bench_curve = report.get("benchmark_curve") or []
+    additional_benchmarks: list[dict[str, object]] = []
+    for item in additional_benchmark_inputs:
+        extra_symbol = str(item.get("symbol") or "").strip().upper()
+        if not extra_symbol:
+            continue
+        extra_series = item.get("series")
+        extra_curve: list[tuple[str, float]] = []
+        extra_twr = None
+        extra_sharpe = None
+        extra_excess = None
+        extra_warning = str(item.get("warning") or "").strip() or None
+        if extra_series:
+            try:
+                extra_report = build_performance_report(
+                    session,
+                    scope=scope,
+                    start_date=start_date,
+                    end_date=end_date,
+                    frequency=freq,
+                    benchmark_series=extra_series,  # type: ignore[arg-type]
+                    benchmark_label=extra_symbol,
+                    account_ids=[int(account_id)] if account_id is not None else None,
+                    include_combined=(account_id is None),
+                    include_series=True,
+                )
+                extra_curve = list(extra_report.get("benchmark_curve") or [])
+                extra_row = extra_report.get("combined") or ((extra_report.get("rows") or [None])[0])
+                if extra_row is not None:
+                    extra_twr = getattr(extra_row, "benchmark_twr", None)
+                    extra_sharpe = getattr(extra_row, "benchmark_sharpe", None)
+                if primary_row is not None and extra_twr is not None:
+                    p_twr = getattr(primary_row, "twr", None)
+                    if p_twr is not None:
+                        extra_excess = float(p_twr) - float(extra_twr)
+                report_warnings = [str(w) for w in (extra_report.get("warnings") or []) if str(w).strip()]
+                if report_warnings and not extra_warning:
+                    extra_warning = "; ".join(report_warnings[:2])
+            except Exception as e:
+                extra_warning = f"{type(e).__name__}: {e}"
+        elif not extra_warning:
+            extra_warning = "No benchmark prices returned."
+
+        additional_benchmarks.append(
+            {
+                "symbol": extra_symbol,
+                "label": extra_symbol,
+                "provider": str(item.get("provider") or "Benchmark"),
+                "rows": item.get("rows"),
+                "curve": extra_curve,
+                "twr": extra_twr,
+                "sharpe": extra_sharpe,
+                "excess_twr": extra_excess,
+                "warning": extra_warning,
+            }
+        )
 
     prior: dict[str, object] | None = None
     if compare_prior and prior_start is not None and prior_end is not None:
@@ -1148,6 +1306,11 @@ def reports_performance(
     chart_data = {
         "portfolio": {"label": str(getattr(primary_row, "portfolio_name", "Portfolio")) if primary_row else "Portfolio", "curve": portfolio_curve},
         "benchmark": {"label": str(report.get("benchmark_label") or benchmark_info.get("symbol") or "Benchmark"), "curve": bench_curve},
+        "additional_benchmarks": [
+            {"label": str(x.get("label") or x.get("symbol") or "Benchmark"), "curve": x.get("curve") or []}
+            for x in additional_benchmarks
+            if x.get("curve")
+        ],
         "frequency": str(report.get("frequency") or freq),
     }
 
@@ -1525,6 +1688,9 @@ def reports_performance(
             "custom_end": custom_end,
             "benchmark_info": benchmark_info,
             "benchmark_symbol": benchmark_symbol,
+            "additional_benchmark_raw": additional_benchmark_raw,
+            "additional_benchmark_symbols": additional_benchmark_symbols,
+            "additional_benchmarks": additional_benchmarks,
             "bench_provider": bench_provider,
             "report": report,
             "chart_data": chart_data,
@@ -1552,7 +1718,7 @@ def reports_performance_csv(
     scope = _parse_reports_scope(request.query_params.get("scope"))
     period = (request.query_params.get("period") or "ytd").strip().lower()
     freq = (request.query_params.get("freq") or "month_end").strip().lower()
-    bench_provider = (request.query_params.get("bench_provider") or "auto").strip().lower()
+    bench_provider = _normalize_benchmark_provider(request.query_params.get("bench_provider") or "auto")
     account_id_raw = (request.query_params.get("account_id") or "").strip()
     account_id = int(account_id_raw) if account_id_raw.isdigit() else None
 
@@ -1579,13 +1745,7 @@ def reports_performance_csv(
     if bench_provider not in {"none", "off", "disabled"}:
         cfg, _cfg_path = load_marketdata_config()
         bench_cfg = cfg.benchmarks.model_copy(deep=True)
-        sel = (bench_provider or "auto").strip().lower()
-        if sel in {"cache", "local"}:
-            bench_cfg.provider_order = ["cache"]
-        elif sel == "stooq":
-            bench_cfg.provider_order = ["cache", "stooq", "yahoo"]
-        elif sel == "yahoo":
-            bench_cfg.provider_order = ["cache", "yahoo"]
+        bench_cfg.provider_order = _benchmark_provider_order_for_selection(bench_provider, bench_cfg.provider_order)
         try:
             client = BenchmarkDataClient(config=bench_cfg)
             bench_df, _bench_meta = client.get(
@@ -1594,12 +1754,7 @@ def reports_performance_csv(
                 end=bench_fetch_end,
                 refresh=False,
             )
-            if bench_df is not None and not bench_df.empty:
-                col = "adj_close" if "adj_close" in bench_df.columns else "close"
-                vals = bench_df[col].copy()
-                if col == "adj_close" and "close" in bench_df.columns:
-                    vals = vals.fillna(bench_df["close"])
-                bench_series = [(d.date(), float(v)) for d, v in vals.items() if v is not None and float(v) > 0.0]
+            bench_series = _benchmark_series_from_dataframe(bench_df)
         except Exception:
             bench_series = None
     report = build_performance_report(

@@ -193,7 +193,7 @@ def test_generate_daily_plans_includes_holdings_plans(temp_modules) -> None:
     assert result["created_count"] == 1
 
 
-def test_generate_daily_plans_discovery_priority_over_holdings(temp_modules) -> None:
+def test_generate_daily_plans_discovery_priority_over_holdings(temp_modules, monkeypatch) -> None:
     store, paper, _llm, _config, _db_path = temp_modules
     portfolio = store.create_paper_portfolio("Sandbox", 100000.0)
     theme = store.create_theme("Generative AI", conviction=4, status="Active")
@@ -208,6 +208,7 @@ def test_generate_daily_plans_discovery_priority_over_holdings(temp_modules) -> 
         status="Entry Signal",
     )
     payload = {"rows": [_holding_row("NVDA", ai_verdict="Entry", theme_id=theme["id"])]}
+    monkeypatch.setattr(paper, "_batch_current_prices", lambda tickers: {"NVDA": 100.0})
     result = paper.generate_daily_plans(portfolio["id"], cached_regime={}, cached_payload=payload)
     assert len(result["buy_plans"]) == 1
     assert result["buy_plans"][0]["source"] == "discovery"

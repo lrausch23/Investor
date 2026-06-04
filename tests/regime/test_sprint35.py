@@ -261,6 +261,27 @@ def test_route_frontier_settings_put(monkeypatch) -> None:
     assert runtime["get_setting"]("frontier_model") == "claude-sonnet"
 
 
+def test_route_agent_frontier_settings_put(monkeypatch) -> None:
+    runtime, _calls = _settings_runtime()
+    runtime["set_setting"]("frontier_provider", "ollama")
+    runtime["set_setting"]("frontier_model", "fallback-model")
+    monkeypatch.setattr(regime_route, "_load_hmm_runtime", lambda: (runtime, None))
+    client = TestClient(create_app())
+
+    response = client.put(
+        "/regime/agents/frontier-settings",
+        json={"agent_key": "quant", "provider": "openai", "model": "gpt-4o-mini"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["agent_key"] == "quant"
+    assert payload["provider"] == "openai"
+    assert payload["model"] == "gpt-4o-mini"
+    assert runtime["get_setting"]("agent_frontier_provider_quant") == "openai"
+    assert runtime["get_setting"]("agent_frontier_model_quant") == "gpt-4o-mini"
+
+
 def test_route_frontier_settings_empty_returns_defaults(monkeypatch) -> None:
     runtime, _calls = _settings_runtime()
     monkeypatch.setattr(regime_route, "_load_hmm_runtime", lambda: (runtime, None))

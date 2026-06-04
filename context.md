@@ -6,6 +6,7 @@ Investor is a local-first, audit-focused MVP for bucketized portfolio + tax plan
 
 - Stack: FastAPI + Jinja/HTMX + SQLite + SQLAlchemy; pytest.
 - Goal: correct, explainable holdings + cash + cashflow metrics across accounts/taxpayers, with idempotent imports and minimal user confusion.
+- Regime agent beta target: test whether each paper-trading agent can sustain a 2%+ average monthly pre-tax gain over a rolling 6-12 month period, judged against benchmarks and risk controls.
 - Connectors / ingestion:
   - `IB_FLEX_OFFLINE`: local Flex exports (no network).
   - `IB_FLEX_WEB`: on-demand manual refresh via IB Flex Web Service (network-gated).
@@ -35,4 +36,3 @@ Investor is a local-first, audit-focused MVP for bucketized portfolio + tax plan
 - Ask for the Chase UI timeframe + the exact export(s) used to produce the “Performance” screen values.
 - Add a read-only “cashflow diagnostics” section on the connection detail page (counts/sums by `Transaction.type`, top descriptions for transfers).
 - If mismatch persists, refine transfer classification to prefer deterministic fields (`Tran Code` / descriptions) while preserving sweep exclusions.
-

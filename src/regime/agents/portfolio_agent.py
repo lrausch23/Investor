@@ -85,14 +85,22 @@ class PortfolioTaxAgent(AgentBase):
         self,
         event: EnrichedSignalEvent,
         fundamental: Any | None = None,
+        *,
+        portfolio_id: int | None = None,
     ) -> list[TradeDecisionEvent]:
         runtime = self._get_runtime()
         if runtime is None:
             logger.warning("PortfolioTaxAgent skipped %s: runtime unavailable", event.ticker)
             return []
-        return await asyncio.to_thread(self._evaluate_with_fundamental, runtime, event, fundamental)
+        return await asyncio.to_thread(self._evaluate_with_fundamental, runtime, event, fundamental, portfolio_id)
 
-    def _evaluate(self, runtime: dict[str, Any], event: EnrichedSignalEvent) -> list[TradeDecisionEvent]:
+    def _evaluate(
+        self,
+        runtime: dict[str, Any],
+        event: EnrichedSignalEvent,
+        fundamental: Any | None = None,
+        portfolio_id: int | None = None,
+    ) -> list[TradeDecisionEvent]:
         action = str(event.composite_action or "").strip()
         if action in {"", "Hold"}:
             return []
@@ -102,9 +110,11 @@ class PortfolioTaxAgent(AgentBase):
 
         decisions: list[TradeDecisionEvent] = []
         for portfolio in runtime["list_paper_portfolios"](include_closed=False):
+            if portfolio_id is not None and int(portfolio.get("id") or 0) != int(portfolio_id):
+                continue
             if str(portfolio.get("status") or "") != "Active":
                 continue
-            decision = self._size_and_check(runtime, event, trade_action, portfolio)
+            decision = self._size_and_check(runtime, event, trade_action, portfolio, self._llm_fields(fundamental))
             if decision is not None:
                 decisions.append(decision)
         return decisions
@@ -114,9 +124,11 @@ class PortfolioTaxAgent(AgentBase):
         runtime: dict[str, Any],
         event: EnrichedSignalEvent,
         fundamental: Any | None,
+        portfolio_id: int | None = None,
     ) -> list[TradeDecisionEvent]:
         if fundamental is not None and bool(getattr(fundamental, "vetoed", False)):
             decisions: list[TradeDecisionEvent] = []
+            llm_fields = self._llm_fields(fundamental)
             action = str(event.composite_action or "").strip()
             if action in {"Buy", "Strong Buy"}:
                 trade_action = "Buy"
@@ -125,6 +137,8 @@ class PortfolioTaxAgent(AgentBase):
             else:
                 trade_action = "Hold"
             for portfolio in runtime["list_paper_portfolios"](include_closed=False):
+                if portfolio_id is not None and int(portfolio.get("id") or 0) != int(portfolio_id):
+                    continue
                 if str(portfolio.get("status") or "") != "Active":
                     continue
                 decisions.append(
@@ -140,10 +154,27 @@ class PortfolioTaxAgent(AgentBase):
                         meta_labeler_score=event.meta_labeler_score,
                         enriched_signal_id=event.correlation_id,
                         urgency="patient" if trade_action == "Buy" else "normal",
+                        **llm_fields,
                     )
                 )
             return decisions
-        return self._evaluate(runtime, event)
+        return self._evaluate(runtime, event, fundamental=fundamental, portfolio_id=portfolio_id)
+
+    def _llm_fields(self, fundamental: Any | None) -> dict[str, Any]:
+        if fundamental is None:
+            return {}
+        return {
+            "agent_key": str(getattr(fundamental, "agent_key", "") or ""),
+            "llm_used": bool(getattr(fundamental, "llm_used", False)),
+            "llm_influenced": bool(getattr(fundamental, "llm_influenced", False)),
+            "llm_influence": str(getattr(fundamental, "llm_influence", "") or ""),
+            "llm_source": str(getattr(fundamental, "llm_source", "") or ""),
+            "llm_provider": str(getattr(fundamental, "llm_provider", "") or ""),
+            "llm_model": str(getattr(fundamental, "llm_model", "") or ""),
+            "llm_model_display": str(getattr(fundamental, "llm_model_display", "") or ""),
+            "llm_verdict": str(getattr(fundamental, "llm_verdict", "") or getattr(fundamental, "verdict", "") or ""),
+            "llm_confidence": getattr(fundamental, "llm_confidence", None),
+        }
 
     def _size_and_check(
         self,
@@ -151,7 +182,9 @@ class PortfolioTaxAgent(AgentBase):
         event: EnrichedSignalEvent,
         trade_action: str,
         portfolio: dict[str, Any],
+        llm_fields: dict[str, Any] | None = None,
     ) -> TradeDecisionEvent | None:
+        llm_fields = dict(llm_fields or {})
         portfolio_id = int(portfolio["id"])
         ticker = str(event.ticker or "").upper()
         if trade_action == "Buy" and runtime["is_wash_sale_restricted"](portfolio_id, ticker):
@@ -167,6 +200,7 @@ class PortfolioTaxAgent(AgentBase):
                 meta_labeler_score=event.meta_labeler_score,
                 enriched_signal_id=event.correlation_id,
                 urgency="patient",
+                **llm_fields,
             )
 
         anti_churn_result = None
@@ -198,6 +232,7 @@ class PortfolioTaxAgent(AgentBase):
                         meta_labeler_score=event.meta_labeler_score,
                         enriched_signal_id=event.correlation_id,
                         urgency="patient",
+                        **llm_fields,
                     )
             hurdle_settings = get_hurdle_settings()
             budget = float(portfolio.get("current_cash") or portfolio.get("starting_budget") or 0.0)
@@ -219,6 +254,7 @@ class PortfolioTaxAgent(AgentBase):
                     meta_labeler_score=event.meta_labeler_score,
                     enriched_signal_id=event.correlation_id,
                     urgency="patient",
+                    **llm_fields,
                 )
             routing = decide_routing(
                 ticker=ticker,
@@ -254,6 +290,7 @@ class PortfolioTaxAgent(AgentBase):
                         meta_labeler_score=event.meta_labeler_score,
                         enriched_signal_id=event.correlation_id,
                         urgency="patient",
+                        **llm_fields,
                     )
             if bool(hurdle_settings.get("duration_gate_enabled", True)):
                 duration_result = check_duration_gate(ticker, event.expected_regime_duration, event.regime_label)
@@ -271,6 +308,7 @@ class PortfolioTaxAgent(AgentBase):
                         meta_labeler_score=event.meta_labeler_score,
                         enriched_signal_id=event.correlation_id,
                         urgency="patient",
+                        **llm_fields,
                     )
         if trade_action == "Sell":
             positions = runtime["get_paper_positions"](portfolio_id, status="Open")
@@ -292,6 +330,7 @@ class PortfolioTaxAgent(AgentBase):
                     meta_labeler_score=event.meta_labeler_score,
                     enriched_signal_id=event.correlation_id,
                     urgency="normal",
+                    **llm_fields,
                 )
             from ..ltcg_override import check_ltcg_override, get_ltcg_override_settings
 
@@ -321,6 +360,7 @@ class PortfolioTaxAgent(AgentBase):
                             meta_labeler_score=event.meta_labeler_score,
                             enriched_signal_id=event.correlation_id,
                             urgency="normal",
+                            **llm_fields,
                         )
                     quantity = float(ltcg_result.sellable_quantity)
                     ltcg_rationale_text = (
@@ -343,6 +383,7 @@ class PortfolioTaxAgent(AgentBase):
                 sizing_rationale=f"Exit {quantity:.0f} shares. {ltcg_rationale_text}",
                 enriched_signal_id=event.correlation_id,
                 urgency="normal",
+                **llm_fields,
             )
 
         budget = float(portfolio.get("current_cash") or portfolio.get("starting_budget") or 0.0)
@@ -381,4 +422,5 @@ class PortfolioTaxAgent(AgentBase):
             sizing_rationale=rationale,
             enriched_signal_id=event.correlation_id,
             urgency="patient",
+            **llm_fields,
         )

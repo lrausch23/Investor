@@ -286,7 +286,7 @@ def test_guardrail_precheck_preserves_check_details(temp_modules, monkeypatch) -
     response = client.post(f"/regime/paper-portfolio/{portfolio['id']}/plans/precheck")
     checks = response.json()["plans"][0]["guardrail_checks"]
     assert checks
-    assert checks[0]["name"] == "max_position_pct"
+    assert "max_position_pct" in {check["name"] for check in checks}
 
 
 def test_kill_switch_rejects_both_pending_and_approved(temp_modules) -> None:

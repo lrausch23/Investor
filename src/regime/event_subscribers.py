@@ -139,6 +139,16 @@ async def trade_decision_subscriber(event: BaseEvent) -> None:
             ltcg_override_active=ltcg_override_active,
             ltcg_protected_quantity=ltcg_protected_quantity,
             ltcg_tax_savings=ltcg_tax_savings,
+            agent_key=event.agent_key,
+            llm_used=event.llm_used,
+            llm_influenced=event.llm_influenced,
+            llm_influence=event.llm_influence,
+            llm_source=event.llm_source,
+            llm_provider=event.llm_provider,
+            llm_model=event.llm_model,
+            llm_model_display=event.llm_model_display,
+            llm_verdict=event.llm_verdict,
+            llm_confidence=event.llm_confidence,
         )
     except Exception as exc:
         logger.error("trade_decision_subscriber: persistence failed: %s", exc)

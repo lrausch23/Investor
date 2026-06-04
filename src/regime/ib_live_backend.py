@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import datetime as dt
 import logging
+import math
 from typing import Any, Callable
 
 from .exceptions import BrokerConnectionError
@@ -94,9 +95,21 @@ class LiveIBBackend(IBConnectionBackend):
                 ib_order.algoStrategy = "Twap" if strategy_name == "TWAP" else "Vwap" if strategy_name == "VWAP" else str(order.algo_strategy)
                 if order.algo_params:
                     ib_order.algoParams = [TagValue(str(tag), str(value)) for tag, value in order.algo_params]
+            ib_order.account = self._account_id
+            ib_order.transmit = True
             trade = self._ib.placeOrder(contract, ib_order)
             self._order_map[order.order_id] = trade
-            return self._trade_to_state(trade, order.order_id)
+            actual_order_id = int(getattr(trade.order, "orderId", 0) or order.order_id)
+            self._order_map[actual_order_id] = trade
+            state = self._trade_to_state(trade, actual_order_id)
+            for _ in range(20):
+                if state.status != IBOrderStatus.PENDING_SUBMIT:
+                    return state
+                await asyncio.sleep(0.25)
+                actual_order_id = int(getattr(trade.order, "orderId", 0) or actual_order_id)
+                self._order_map[actual_order_id] = trade
+                state = self._trade_to_state(trade, actual_order_id)
+            return state
 
         return get_ib_thread().run(_place)
 
@@ -105,11 +118,36 @@ class LiveIBBackend(IBConnectionBackend):
             raise BrokerConnectionError("IBKR backend is not connected.")
 
         async def _cancel() -> IBOrderState:
-            trade = self._order_map.get(int(order_id))
+            normalized_order_id = int(order_id)
+            trade = self._order_map.get(normalized_order_id)
+            if trade is None:
+                for candidate in list(self._ib.openTrades() or []) + list(self._ib.trades() or []):
+                    try:
+                        candidate_order_id = int(getattr(candidate.order, "orderId", 0) or 0)
+                    except Exception:
+                        candidate_order_id = 0
+                    if candidate_order_id == normalized_order_id:
+                        trade = candidate
+                        self._order_map[normalized_order_id] = candidate
+                        break
+            if trade is None:
+                try:
+                    await self._ib.reqAllOpenOrdersAsync()
+                except Exception:
+                    logger.debug("Unable to refresh all open orders before cancelling %s", normalized_order_id, exc_info=True)
+                for candidate in list(self._ib.openTrades() or []):
+                    try:
+                        candidate_order_id = int(getattr(candidate.order, "orderId", 0) or 0)
+                    except Exception:
+                        candidate_order_id = 0
+                    if candidate_order_id == normalized_order_id:
+                        trade = candidate
+                        self._order_map[normalized_order_id] = candidate
+                        break
             if trade is None:
                 return IBOrderState(
-                    int(order_id),
-                    IBOrderStatus.API_CANCELLED,
+                    normalized_order_id,
+                    IBOrderStatus.INACTIVE,
                     0.0,
                     0.0,
                     0.0,
@@ -117,18 +155,143 @@ class LiveIBBackend(IBConnectionBackend):
                     0.0,
                     0.0,
                     dt.datetime.now(dt.timezone.utc).isoformat(),
-                    "Unknown order",
+                    "Unknown order; cancel not sent.",
                 )
+            actual_order_id = int(getattr(trade.order, "orderId", 0) or normalized_order_id)
+            self._order_map[actual_order_id] = trade
             self._ib.cancelOrder(trade.order)
-            await asyncio.sleep(0.5)
-            return self._trade_to_state(trade, int(order_id))
+            for _ in range(20):
+                await asyncio.sleep(0.25)
+                state = self._trade_to_state(trade, actual_order_id)
+                if state.status in {IBOrderStatus.CANCELLED, IBOrderStatus.API_CANCELLED, IBOrderStatus.INACTIVE}:
+                    return state
+            return self._trade_to_state(trade, actual_order_id)
 
         return get_ib_thread().run(_cancel)
 
     def get_order_status(self, order_id: int) -> IBOrderState:
         if self._ib is None:
             raise BrokerConnectionError("IBKR backend is not connected.")
-        return get_ib_thread().run(lambda: self._trade_to_state(self._order_map[int(order_id)], int(order_id)))
+
+        async def _status() -> IBOrderState:
+            trade = self._order_map.get(int(order_id))
+            if trade is not None:
+                actual_order_id = int(getattr(trade.order, "orderId", 0) or order_id)
+                return self._trade_to_state(trade, actual_order_id)
+            for candidate in list(self._ib.openTrades() or []) + list(self._ib.trades() or []):
+                try:
+                    candidate_order_id = int(getattr(candidate.order, "orderId", 0) or 0)
+                except Exception:
+                    candidate_order_id = 0
+                if candidate_order_id == int(order_id):
+                    self._order_map[int(order_id)] = candidate
+                    return self._trade_to_state(candidate, int(order_id))
+            try:
+                await self._ib.reqAllOpenOrdersAsync()
+            except Exception:
+                logger.debug("Unable to refresh all open orders before status lookup %s", order_id, exc_info=True)
+            try:
+                if hasattr(self._ib, "reqCompletedOrdersAsync"):
+                    await self._ib.reqCompletedOrdersAsync(apiOnly=False)
+            except Exception:
+                logger.debug("Unable to refresh completed orders before status lookup %s", order_id, exc_info=True)
+            for candidate in list(self._ib.openTrades() or []) + list(self._ib.trades() or []):
+                try:
+                    candidate_order_id = int(getattr(candidate.order, "orderId", 0) or 0)
+                except Exception:
+                    candidate_order_id = 0
+                if candidate_order_id == int(order_id):
+                    self._order_map[int(order_id)] = candidate
+                    return self._trade_to_state(candidate, int(order_id))
+            execution_state = await self._execution_state_for_order(int(order_id))
+            if execution_state is not None:
+                return execution_state
+            return IBOrderState(
+                order_id=int(order_id),
+                status=IBOrderStatus.INACTIVE,
+                filled_qty=0.0,
+                remaining_qty=0.0,
+                avg_fill_price=0.0,
+                last_fill_price=0.0,
+                commission=0.0,
+                realized_pnl=0.0,
+                timestamp=dt.datetime.now(dt.timezone.utc).isoformat(),
+                message="Order not found in IBKR open or completed orders; treating as inactive.",
+            )
+
+        return get_ib_thread().run(_status)
+
+    async def _execution_state_for_order(self, order_id: int) -> IBOrderState | None:
+        if self._ib is None:
+            return None
+        try:
+            from ib_insync import ExecutionFilter
+        except Exception:
+            return None
+
+        query = ExecutionFilter()
+        query.acctCode = self._account_id
+        client_id = int(getattr(self, "_client_id", 0) or 0)
+        if client_id > 0:
+            query.clientId = client_id
+        query.time = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=2)).strftime("%Y%m%d %H:%M:%S")
+        try:
+            executions = await self._ib.reqExecutionsAsync(query)
+        except Exception:
+            logger.debug("Unable to query IBKR executions for order %s", order_id, exc_info=True)
+            return None
+
+        matches = []
+        for fill in list(executions or []):
+            execution = getattr(fill, "execution", None)
+            if execution is None:
+                continue
+            try:
+                execution_order_id = int(getattr(execution, "orderId", 0) or 0)
+            except Exception:
+                execution_order_id = 0
+            if execution_order_id == int(order_id):
+                matches.append(fill)
+        if not matches:
+            return None
+
+        filled_qty = 0.0
+        weighted_price = 0.0
+        latest_time: dt.datetime | None = None
+        for fill in matches:
+            execution = getattr(fill, "execution", None)
+            if execution is None:
+                continue
+            try:
+                shares = float(getattr(execution, "shares", 0.0) or 0.0)
+                price = float(getattr(execution, "price", 0.0) or getattr(execution, "avgPrice", 0.0) or 0.0)
+            except Exception:
+                continue
+            if shares <= 0 or price <= 0:
+                continue
+            filled_qty += shares
+            weighted_price += shares * price
+            execution_time = getattr(execution, "time", None)
+            if isinstance(execution_time, dt.datetime):
+                if execution_time.tzinfo is None:
+                    execution_time = execution_time.replace(tzinfo=dt.timezone.utc)
+                if latest_time is None or execution_time > latest_time:
+                    latest_time = execution_time
+        if filled_qty <= 0:
+            return None
+        avg_price = weighted_price / filled_qty
+        return IBOrderState(
+            order_id=int(order_id),
+            status=IBOrderStatus.FILLED,
+            filled_qty=filled_qty,
+            remaining_qty=0.0,
+            avg_fill_price=avg_price,
+            last_fill_price=avg_price,
+            commission=0.0,
+            realized_pnl=0.0,
+            timestamp=(latest_time or dt.datetime.now(dt.timezone.utc)).isoformat(),
+            message="Filled from IBKR execution report.",
+        )
 
     def get_positions(self) -> list[IBPosition]:
         if self._ib is None:
@@ -176,6 +339,89 @@ class LiveIBBackend(IBConnectionBackend):
             )
 
         return get_ib_thread().run(_summary)
+
+    def get_market_quote(self, ticker: str) -> dict[str, float | str | None]:
+        if self._ib is None:
+            raise BrokerConnectionError("IBKR backend is not connected.")
+
+        async def _quote() -> dict[str, float | str | None]:
+            from ib_insync import Contract
+
+            symbol = str(ticker or "").strip().upper()
+            contract = Contract(symbol=symbol, secType="STK", exchange="SMART", currency="USD")
+            await self._ib.qualifyContractsAsync(contract)
+
+            def clean(value: Any) -> float | None:
+                try:
+                    numeric = float(value)
+                except Exception:
+                    return None
+                if not math.isfinite(numeric) or numeric <= 0:
+                    return None
+                return numeric
+
+            def payload(quote: Any) -> dict[str, float | str | None]:
+                market_price = None
+                try:
+                    market_price = clean(quote.marketPrice())
+                except Exception:
+                    market_price = None
+                bid = clean(getattr(quote, "bid", None))
+                ask = clean(getattr(quote, "ask", None))
+                last = clean(getattr(quote, "last", None))
+                close = clean(getattr(quote, "close", None))
+                midpoint = ((bid + ask) / 2.0) if bid is not None and ask is not None else None
+                return {
+                    "ticker": symbol,
+                    "bid": bid,
+                    "ask": ask,
+                    "last": last,
+                    "market_price": market_price or midpoint or last or close,
+                    "close": close,
+                    "source": "ibkr",
+                }
+
+            def has_price(data: dict[str, float | str | None]) -> bool:
+                return any(data.get(key) is not None for key in ("bid", "ask", "last", "market_price", "close"))
+
+            try:
+                snapshots = await self._ib.reqTickersAsync(contract)
+                if snapshots:
+                    data = payload(snapshots[0])
+                    if has_price(data):
+                        return data
+            except Exception:
+                logger.debug("IBKR quote snapshot failed for %s", symbol, exc_info=True)
+
+            for market_data_type in (1, 2, 3, 4):
+                quote = None
+                try:
+                    if hasattr(self._ib, "reqMarketDataType"):
+                        self._ib.reqMarketDataType(market_data_type)
+                    quote = self._ib.reqMktData(contract, "", False, False)
+                    for _ in range(15):
+                        await asyncio.sleep(0.2)
+                        data = payload(quote)
+                        if has_price(data):
+                            return data
+                except Exception:
+                    logger.debug("IBKR streaming quote failed for %s type=%s", symbol, market_data_type, exc_info=True)
+                finally:
+                    try:
+                        self._ib.cancelMktData(contract)
+                    except Exception:
+                        pass
+            return {
+                "ticker": symbol,
+                "bid": None,
+                "ask": None,
+                "last": None,
+                "market_price": None,
+                "close": None,
+                "source": "ibkr",
+            }
+
+        return get_ib_thread().run(_quote, timeout=10)
 
     def cancel_all_orders(self) -> list[dict[str, Any]]:
         if self._ib is None:

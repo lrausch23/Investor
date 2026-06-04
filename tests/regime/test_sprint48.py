@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime as dt
 import importlib
 
 from fastapi import FastAPI
@@ -66,7 +67,7 @@ def test_close_tax_lot_partial(temp_modules) -> None:
 def test_add_wash_sale_restriction_and_active_check(temp_modules) -> None:
     store, _broker, _router = temp_modules
     portfolio = store.create_paper_portfolio("Sandbox", 100000.0)
-    store.add_wash_sale_restriction(portfolio["id"], "NVDA", "2026-03-01T00:00:00+00:00", -200.0)
+    store.add_wash_sale_restriction(portfolio["id"], "NVDA", dt.datetime.now(dt.timezone.utc).isoformat(), -200.0)
     assert store.is_wash_sale_restricted(portfolio["id"], "NVDA") is True
 
 
@@ -85,7 +86,7 @@ def test_select_lots_hifo_ordering(temp_modules) -> None:
 def test_guardrail_blocks_wash_sale_buy(temp_modules) -> None:
     store, broker, _router = temp_modules
     portfolio = store.create_paper_portfolio("Sandbox", 100000.0)
-    store.add_wash_sale_restriction(portfolio["id"], "NVDA", "2026-03-01T00:00:00+00:00", -100.0)
+    store.add_wash_sale_restriction(portfolio["id"], "NVDA", dt.datetime.now(dt.timezone.utc).isoformat(), -100.0)
     adapter = broker.PaperBrokerAdapter(portfolio["id"])
     order = broker.OrderRequest(portfolio_id=portfolio["id"], ticker="NVDA", action="Buy", quantity=10)
     result = broker.validate_guardrails(order, adapter)

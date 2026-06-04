@@ -152,6 +152,39 @@ def test_get_ib_backend_live_caches_per_portfolio(temp_modules, monkeypatch) -> 
     assert getattr(backend3, "_client_id", None) == 4
 
 
+def test_get_ib_backend_live_caches_per_execution_client(temp_modules, monkeypatch) -> None:
+    _store, config, _ib_types, ib_connection, _ibkr, _paper, _scheduled = temp_modules
+    import sys
+
+    class _FakeIB:
+        def __init__(self):
+            class _Event:
+                def __iadd__(self, callback):
+                    return self
+
+            self.orderStatusEvent = _Event()
+            self.client = SimpleNamespace(getReqId=lambda: 1)
+            self._connected = False
+
+        def connect(self, *args, **kwargs):
+            self._connected = True
+            return True
+
+        def isConnected(self):
+            return self._connected
+
+        def managedAccounts(self):
+            return [config.DEFAULT_IBKR_CONFIG.account_id]
+
+    monkeypatch.setitem(sys.modules, "ib_insync", SimpleNamespace(IB=_FakeIB))
+    monitor_backend = ib_connection.get_ib_backend(2, live=True, account_id=config.DEFAULT_IBKR_CONFIG.account_id)
+    execution_backend = ib_connection.get_ib_backend(2, live=True, account_id=config.DEFAULT_IBKR_CONFIG.account_id, client_id_offset=20)
+
+    assert monitor_backend is not execution_backend
+    assert getattr(monitor_backend, "_client_id", None) == 3
+    assert getattr(execution_backend, "_client_id", None) == 23
+
+
 def test_ibkr_config_defaults(temp_modules) -> None:
     _store, config, _ib_types, _ib_connection, _ibkr, _paper, _scheduled = temp_modules
     defaults = config.DEFAULT_IBKR_CONFIG

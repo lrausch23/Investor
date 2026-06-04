@@ -86,6 +86,7 @@ async def lifespan(app: FastAPI):
                     fundamental_timeout_seconds=30.0,
                     portfolio_timeout_seconds=10.0,
                 ),
+                runtime_loader=runtime_loader,
             )
         )
         logger.info("Agent topology initialized with %d agents", len(agent_registry.all_agents()))

@@ -51,8 +51,9 @@
     <input type="hidden" name="account_id" value="{{ account_id or '' }}"/>
     <label class="muted">Provider
       <select name="provider">
-        <option value="stooq" selected>Stooq (daily candles)</option>
-        <option value="yahoo">Yahoo Finance (chart API; may rate limit)</option>
+        <option value="ibkr" selected>IBKR (best when gateway is connected)</option>
+        <option value="yahoo">Yahoo Finance (public fallback)</option>
+        <option value="stooq">Stooq (may require API key/captcha)</option>
         <option value="cache">Cache only (no network)</option>
       </select>
     </label>
@@ -63,7 +64,7 @@
     <summary>Pricing details</summary>
     <div class="ui-muted" style="margin-top:6px">
       Uses local cache under <code>data/prices/</code> (first) and falls back to <code>data/prices/yfinance/</code> if present.
-      Refreshing prices requires network enabled + outbound allowlist (Stooq uses <code>stooq.com</code>; Yahoo uses <code>query1.finance.yahoo.com</code>).
+      IBKR uses the shared TWS/Gateway connection when available; public fallback providers require network enabled + outbound allowlist (Yahoo uses <code>query1.finance.yahoo.com</code>; Stooq uses <code>stooq.com</code> and may require a manual API key).
     </div>
   </details>
 </div>

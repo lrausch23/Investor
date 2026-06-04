@@ -328,9 +328,19 @@ class StooqProvider:
         text = resp.content.decode("utf-8", errors="replace").strip()
         if not text or text.lower().startswith("no data"):
             raise ProviderError("Stooq returned no data.")
+        text_lower = text.lower()
+        if "get your apikey" in text_lower or "get_apikey" in text_lower or "captcha" in text_lower:
+            raise ProviderError("Stooq requires an API key/captcha for CSV downloads.")
+        first_line = next((line.strip() for line in text.splitlines() if line.strip()), "")
+        if "date" not in first_line.lower() or "," not in first_line:
+            sample = re.sub(r"\s+", " ", first_line)[:120]
+            raise ProviderError(f"Stooq returned a non-CSV response: {sample or 'empty response'}")
         from io import StringIO
 
-        df = pd.read_csv(StringIO(text))
+        try:
+            df = pd.read_csv(StringIO(text))
+        except Exception as e:
+            raise ProviderError(f"Stooq CSV parse failed: {type(e).__name__}: {e}") from e
         # Stooq columns: Date,Open,High,Low,Close,Volume
         if "Date" in df.columns:
             df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
@@ -460,11 +470,7 @@ class BenchmarkDataClient:
                 providers.append(self.cache)  # type: ignore[arg-type]
             elif name == "ibkr":
                 saved_enabled = enabled.get("ibkr")
-                try:
-                    ibkr_available = saved_enabled is not False and self.ibkr.is_available()
-                except Exception:
-                    ibkr_available = False
-                if ibkr_available:
+                if saved_enabled is not False:
                     providers.append(self.ibkr)
             elif name == "stooq":
                 saved_enabled = enabled.get("stooq")
@@ -541,16 +547,39 @@ class BenchmarkDataClient:
                     failures.append(f"{p.name}: {msg or type(e).__name__}")
                     continue
             if not filled:
-                # Leave remaining segments; we'll return whatever cache has (may be partial).
+                # Leave this segment unresolved, but keep trying later missing ranges.
+                # A leading holiday/weekend (for example Jan 1) should not block filling
+                # the real stale tail of the cache.
                 warning = "Benchmark data partially available; some ranges could not be fetched."
-                break
+                continue
 
         df_out = self.cache.read(symbol=canon, start=start, end=end)
         if df_out.empty:
             detail = "; ".join(failures[:6])
             suffix = "…" if len(failures) > 6 else ""
             raise ProviderError(f"Benchmark data unavailable ({detail}{suffix})")
-        if failures and warning is None:
+        suppressed_partial_warning = False
+        if warning == "Benchmark data partially available; some ranges could not be fetched.":
+            try:
+                coverage_start = df_out.index.min().date()
+                coverage_end = df_out.index.max().date()
+                remaining = _ranges_from_cached_dates(
+                    start=start,
+                    end=end,
+                    cached_dates=self.cache.read_dates(symbol=canon, start=start, end=end),
+                )
+                blocking_ranges = []
+                for rem in remaining:
+                    leading_boundary = rem.end < coverage_start and (coverage_start - start).days <= 7
+                    trailing_boundary = rem.start > coverage_end and (end - coverage_end).days <= 7
+                    if not (leading_boundary or trailing_boundary):
+                        blocking_ranges.append(rem)
+                if not blocking_ranges:
+                    warning = None
+                    suppressed_partial_warning = True
+            except Exception:
+                pass
+        if failures and warning is None and not suppressed_partial_warning:
             # Non-blocking notice in case we fell back or had partial fills.
             warning = "Some providers failed; using best available cached data."
         return df_out, BenchmarkFetchMeta(

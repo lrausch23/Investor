@@ -284,6 +284,7 @@ def test_generate_buy_plans_has_routing(temp_modules, monkeypatch) -> None:
         status="Entry Signal",
     )
     monkeypatch.setattr(routing, "compute_adv", lambda ticker, lookback_days=20: 2_000_000.0)
+    monkeypatch.setattr(paper, "_batch_current_prices", lambda tickers: {"NVDA": 100.0})
     plans = paper.generate_buy_plans(portfolio["id"])
     assert plans[0]["order_type"] == "limit"
     assert plans[0]["routing_strategy"]

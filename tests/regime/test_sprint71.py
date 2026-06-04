@@ -201,6 +201,7 @@ def test_buy_plan_has_arrival_price(temp_modules, monkeypatch: pytest.MonkeyPatc
     monkeypatch.setattr(paper_trading, "allocate_budget", lambda portfolio_id, config=None: {"themes": [{"theme_id": theme["id"], "by_role": {"Critical-Path": 10000.0}}]})
     monkeypatch.setattr(paper_trading, "_lookup_atr", lambda ticker: None)
     monkeypatch.setattr(paper_trading, "_lookup_beta", lambda ticker: None)
+    monkeypatch.setattr(paper_trading, "_batch_current_prices", lambda tickers: {"NVDA": 100.0})
     plans = paper_trading.generate_buy_plans(portfolio["id"])
     assert plans
     assert plans[0]["arrival_price"] == pytest.approx(100.0)

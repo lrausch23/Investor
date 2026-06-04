@@ -104,3 +104,48 @@ def test_fetch_pre_check_fast_when_disconnected(monkeypatch) -> None:
         provider.fetch(symbol="SPY", start=dt.date(2025, 1, 2), end=dt.date(2025, 1, 3))
     elapsed = time.perf_counter() - start
     assert elapsed < 0.1
+
+
+def test_fetch_falls_back_from_adjusted_trades_to_trades(monkeypatch) -> None:
+    class FakeIB:
+        def isConnected(self):
+            return True
+
+        async def qualifyContractsAsync(self, contract):
+            return [contract]
+
+        async def reqHistoricalDataAsync(self, contract, endDateTime, durationStr, barSizeSetting, whatToShow, useRTH, formatDate):
+            del contract, endDateTime, durationStr, barSizeSetting, useRTH, formatDate
+            if whatToShow == "ADJUSTED_TRADES":
+                return []
+
+            class Bar:
+                date = dt.date(2025, 1, 2)
+                open = 100.0
+                high = 101.0
+                low = 99.0
+                close = 100.5
+                volume = 1000.0
+
+            return [Bar()]
+
+    class FakeBackend:
+        _ib = FakeIB()
+
+    class FakeThread:
+        def run(self, fn, *args, timeout=30.0):
+            import asyncio
+
+            result = fn(*args)
+            if asyncio.iscoroutine(result):
+                return asyncio.run(result)
+            return result
+
+    monkeypatch.setattr(ibkr_market_data_module, "get_shared_ib_backend", lambda **kwargs: FakeBackend())
+    monkeypatch.setattr(ibkr_market_data_module, "get_ib_thread", lambda: FakeThread())
+
+    provider = ibkr_market_data_module.IBKRMarketDataProvider()
+    frame = provider.fetch(symbol="AAPL", start=dt.date(2025, 1, 2), end=dt.date(2025, 1, 3))
+
+    assert not frame.empty
+    assert float(frame.iloc[-1]["close"]) == 100.5

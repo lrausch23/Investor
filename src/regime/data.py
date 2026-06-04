@@ -68,17 +68,59 @@ def _download_price_history(ticker: str, period: str, interval: str) -> tuple[st
     last_history = pd.DataFrame()
     candidates = ticker_candidates(ticker) or [ticker]
     logger.debug("Downloading price history for %s using candidates=%s", ticker, candidates)
+    end_date = dt.date.today()
+    start_date = _period_to_start_date(period, end_date)
+
+    try:
+        from .ibkr_market_data import IBKRMarketDataProvider, apply_regime_provider_settings
+
+        provider_order, enabled = apply_regime_provider_settings()
+    except Exception:
+        IBKRMarketDataProvider = None  # type: ignore[assignment]
+        provider_order = ["yfinance"]
+        enabled = {"yfinance": True}
 
     for candidate in candidates:
-        history = download_daily_bars(candidate, period=period, auto_adjust=True)
-        if history.empty:
-            logger.debug("No price history returned for candidate %s", candidate)
-            last_history = history
-            continue
-        logger.debug("Resolved ticker %s to candidate %s", ticker, candidate)
-        return candidate, history
+        for provider_name in provider_order or ["yfinance"]:
+            provider_key = str(provider_name or "").strip().lower()
+            if enabled and not bool(enabled.get(provider_key, False)):
+                continue
+            try:
+                if provider_key == "ibkr" and IBKRMarketDataProvider is not None:
+                    provider = IBKRMarketDataProvider()
+                    if not provider.is_available():
+                        continue
+                    history = provider.fetch(symbol=candidate, start=start_date, end=end_date)
+                    history = _standardize_ohlcv_columns(history)
+                elif provider_key == "yfinance":
+                    history = download_daily_bars(candidate, period=period, auto_adjust=True)
+                else:
+                    continue
+            except Exception as exc:
+                logger.warning("Price history fetch for %s from %s failed: %s", candidate, provider_key, exc)
+                continue
+            if history.empty:
+                logger.debug("No price history returned for candidate %s from %s", candidate, provider_key)
+                last_history = history
+                continue
+            logger.info("Resolved ticker %s to candidate %s using %s", ticker, candidate, provider_key)
+            return candidate, history
 
     raise DataFetchError(f"No price history returned for {ticker}.")
+
+
+def _standardize_ohlcv_columns(history: pd.DataFrame) -> pd.DataFrame:
+    if history.empty:
+        return history
+    rename_map = {
+        "open": "Open",
+        "high": "High",
+        "low": "Low",
+        "close": "Close",
+        "adj_close": "Adj Close",
+        "volume": "Volume",
+    }
+    return history.rename(columns={column: rename_map.get(str(column), str(column)) for column in history.columns})
 
 
 def _period_to_start_date(period: str, end_date: dt.date) -> dt.date:

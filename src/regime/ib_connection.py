@@ -31,6 +31,7 @@ class IBConnectionBackend(Protocol):
     def get_order_status(self, order_id: int) -> IBOrderState: ...
     def get_positions(self) -> list[IBPosition]: ...
     def get_account_summary(self) -> IBAccountSummary: ...
+    def get_market_quote(self, ticker: str) -> dict[str, float | str | None]: ...
     def cancel_all_orders(self) -> list[dict[str, object]]: ...
     def flatten_position(self, ticker: str, quantity: float, side: str = "long") -> dict[str, object]: ...
     def flatten_all_positions(self) -> list[dict[str, object]]: ...
@@ -199,6 +200,18 @@ class MockIBBackend:
             unrealized_pnl=sum(float(position.unrealized_pnl) for position in self._positions.values()),
         )
 
+    def get_market_quote(self, ticker: str) -> dict[str, float | str | None]:
+        price = float(self._mark_price)
+        return {
+            "ticker": str(ticker or "").upper(),
+            "bid": round(max(price - 0.01, 0.01), 4),
+            "ask": round(price + 0.01, 4),
+            "last": price,
+            "market_price": price,
+            "close": price,
+            "source": "mock",
+        }
+
     def cancel_all_orders(self) -> list[dict[str, object]]:
         cancelled: list[dict[str, object]] = []
         for order_id, entry in list(self._orders.items()):
@@ -348,7 +361,7 @@ class IBConnectionManager:
 
 
 _MOCK_BACKENDS: dict[int, MockIBBackend] = {}
-_LIVE_BACKENDS: dict[int, IBConnectionBackend] = {}
+_LIVE_BACKENDS: dict[tuple[int, int, str], IBConnectionBackend] = {}
 _LIVE_BACKENDS_LOCK = threading.Lock()
 _SHARED_LIVE_BACKEND: IBConnectionBackend | None = None
 _SHARED_LIVE_BACKEND_LOCK = threading.Lock()
@@ -370,21 +383,23 @@ def get_ib_backend(
     account_id: str = DEFAULT_IBKR_CONFIG.account_id,
     starting_cash: float = 100000.0,
     config: IBKRConfig = DEFAULT_IBKR_CONFIG,
+    client_id_offset: int = 0,
 ) -> IBConnectionBackend:
     if live:
         from .ib_live_backend import LiveIBBackend
 
-        derived_client_id = int(config.client_id) + max(1, int(portfolio_id))
+        derived_client_id = int(config.client_id) + int(client_id_offset) + max(1, int(portfolio_id))
+        backend_key = (int(portfolio_id), int(derived_client_id), str(account_id))
 
         with _LIVE_BACKENDS_LOCK:
-            backend = _LIVE_BACKENDS.get(int(portfolio_id))
+            backend = _LIVE_BACKENDS.get(backend_key)
             if backend is not None and backend.is_connected():
                 return backend
             backend = LiveIBBackend(account_id=account_id)
             setattr(backend, "_client_id", derived_client_id)
             connected = backend.connect(config.host, config.port, derived_client_id)
             if connected:
-                _LIVE_BACKENDS[int(portfolio_id)] = backend
+                _LIVE_BACKENDS[backend_key] = backend
             return backend
     return get_mock_ib_backend(portfolio_id, starting_cash=starting_cash)
 

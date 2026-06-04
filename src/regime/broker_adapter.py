@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
+import math
 import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -484,16 +485,120 @@ def _estimate_order_price(order: OrderRequest, adapter: BrokerAdapter) -> float 
     return None
 
 
+def _adapter_current_price(order: OrderRequest, adapter: BrokerAdapter) -> float | None:
+    getter = getattr(adapter, "get_current_price", None)
+    if not callable(getter):
+        return None
+    try:
+        value = getter(str(order.ticker or "").upper(), str(order.action or ""))
+    except TypeError:
+        try:
+            value = getter(str(order.ticker or "").upper())
+        except Exception:
+            return None
+    except Exception:
+        return None
+    try:
+        price = float(value)
+    except Exception:
+        return None
+    if not math.isfinite(price) or price <= 0:
+        return None
+    return price
+
+
+def _limit_price_deviation_threshold(order: OrderRequest, guardrails: RiskGuardrails) -> float:
+    order_type = str(order.order_type or "").strip().lower()
+    routing = str(order.routing_strategy or "").strip().lower()
+    if order_type == "marketable_limit" or "marketable" in routing or "limit (ask)" in routing:
+        return float(getattr(guardrails, "max_marketable_limit_deviation_pct", 0.03) or 0.03)
+    return float(getattr(guardrails, "max_limit_price_deviation_pct", 0.10) or 0.10)
+
+
 def validate_guardrails(
     order: OrderRequest,
     adapter: BrokerAdapter,
     guardrails: RiskGuardrails = DEFAULT_RISK_GUARDRAILS,
 ) -> GuardrailResult:
     estimated_price = _estimate_order_price(order, adapter)
+    current_price = _adapter_current_price(order, adapter)
     quantity = float(order.quantity or 0.0)
     order_value = (estimated_price * quantity) if estimated_price is not None else None
     summary = adapter.get_account_summary()
     checks: list[GuardrailCheck] = []
+    action = str(order.action or "").strip().lower()
+    if current_price is not None and order.limit_price is not None and float(order.limit_price or 0.0) > 0:
+        limit_price = float(order.limit_price)
+        deviation = abs(limit_price - current_price) / current_price
+        deviation_limit = _limit_price_deviation_threshold(order, guardrails)
+        checks.append(
+            GuardrailCheck(
+                name="fresh_quote_limit_price_deviation",
+                passed=deviation <= deviation_limit,
+                message=(
+                    f"{str(order.ticker or '').upper()} limit ${limit_price:,.2f} vs fresh quote "
+                    f"${current_price:,.2f} ({deviation:.1%} deviation; max {deviation_limit:.1%})."
+                ),
+                actual=deviation,
+                limit=deviation_limit,
+            )
+        )
+    if action == "buy" and str(order.order_type or "").strip().lower() == "market":
+        checks.append(
+            GuardrailCheck(
+                name="agent_market_buy_disabled",
+                passed=False,
+                message="Autonomous buy orders must use limit or marketable_limit routing with a quote collar.",
+            )
+        )
+    portfolio = get_paper_portfolio(order.portfolio_id)
+    if portfolio is not None:
+        if action == "buy" and order_value is not None:
+            current_cash = float(portfolio.get("current_cash") or 0.0)
+            checks.append(
+                GuardrailCheck(
+                    name="portfolio_cash_budget",
+                    passed=order_value <= current_cash,
+                    message=f"Beta portfolio cash ${current_cash:,.2f} vs order value ${order_value:,.2f}.",
+                    actual=order_value,
+                    limit=current_cash,
+                )
+            )
+        if action == "sell":
+            open_quantity = sum(
+                float(row.get("quantity") or 0.0)
+                for row in get_paper_positions(order.portfolio_id, status="Open")
+                if str(row.get("ticker") or "").upper() == str(order.ticker or "").upper()
+            )
+            checks.append(
+                GuardrailCheck(
+                    name="portfolio_sell_position_available",
+                    passed=open_quantity + 1e-9 >= quantity,
+                    message=f"Beta portfolio has {open_quantity:g} {str(order.ticker or '').upper()} shares available vs sell quantity {quantity:g}.",
+                    actual=open_quantity,
+                    limit=quantity,
+                )
+            )
+        if order_value is not None:
+            local_summary = get_paper_portfolio_summary(order.portfolio_id)
+            local_cash = float(local_summary.get("current_cash") or 0.0)
+            local_market_value = float(local_summary.get("total_market_value") or 0.0)
+            local_equity = local_cash + local_market_value
+            projected_market_value = local_market_value
+            if action == "buy":
+                projected_market_value += order_value
+            elif action == "sell":
+                projected_market_value = max(0.0, projected_market_value - order_value)
+            local_exposure_pct = (projected_market_value / local_equity) if local_equity > 0 else 0.0
+            checks.append(
+                GuardrailCheck(
+                    name="portfolio_max_total_exposure_pct",
+                    passed=local_exposure_pct <= guardrails.max_total_exposure_pct,
+                    message=f"Beta portfolio projected exposure {local_exposure_pct:.1%} vs max {guardrails.max_total_exposure_pct:.1%}.",
+                    actual=local_exposure_pct,
+                    limit=guardrails.max_total_exposure_pct,
+                )
+            )
 
     if order_value is not None and summary.equity > 0:
         position_pct = order_value / summary.equity
@@ -517,13 +622,18 @@ def validate_guardrails(
             )
         )
 
+    effective_daily_loss_limit = float(guardrails.daily_loss_limit)
+    daily_loss_limit_pct = float(getattr(guardrails, "daily_loss_limit_pct", 0.0) or 0.0)
+    if daily_loss_limit_pct > 0 and float(summary.equity or 0.0) > 0:
+        effective_daily_loss_limit = min(effective_daily_loss_limit, float(summary.equity) * daily_loss_limit_pct)
+
     checks.append(
         GuardrailCheck(
             name="daily_loss_limit",
-            passed=abs(float(summary.daily_pnl or 0.0)) <= guardrails.daily_loss_limit or float(summary.daily_pnl or 0.0) >= 0,
-            message=f"Daily P&L ${float(summary.daily_pnl or 0.0):,.2f} vs loss limit ${guardrails.daily_loss_limit:,.2f}.",
+            passed=abs(float(summary.daily_pnl or 0.0)) <= effective_daily_loss_limit or float(summary.daily_pnl or 0.0) >= 0,
+            message=f"Daily P&L ${float(summary.daily_pnl or 0.0):,.2f} vs loss limit ${effective_daily_loss_limit:,.2f}.",
             actual=float(summary.daily_pnl or 0.0),
-            limit=guardrails.daily_loss_limit,
+            limit=effective_daily_loss_limit,
         )
     )
 
@@ -640,19 +750,30 @@ def submit_guarded_order(
         return guardrail_result, None
 
     result = adapter.submit_order(order)
-    log_audit_event(
-        order_id=result.order_id or order_id,
-        portfolio_id=order.portfolio_id,
-        event_type="submitted",
-        ticker=order.ticker,
-        action=order.action,
-        quantity=order.quantity,
-        price=guardrail_result.estimated_price,
-        actor=actor,
-        details=order.notes or "",
-        guardrail_result=guardrail_result,
-    )
-    event_type = "filled" if result.status == "filled" else "rejected"
+    normalized_status = str(result.status or "").strip().lower()
+    if normalized_status == "filled":
+        event_type = "filled"
+    elif normalized_status in {"submitted", "pending", "pre_submitted", "presubmitted"}:
+        event_type = "submitted"
+    elif normalized_status == "partially_filled":
+        event_type = "partially_filled"
+    elif normalized_status == "cancelled":
+        event_type = "cancelled"
+    else:
+        event_type = "rejected"
+    if event_type in {"filled", "partially_filled", "cancelled"}:
+        log_audit_event(
+            order_id=result.order_id or order_id,
+            portfolio_id=order.portfolio_id,
+            event_type="submitted",
+            ticker=order.ticker,
+            action=order.action,
+            quantity=order.quantity,
+            price=guardrail_result.estimated_price,
+            actor=actor,
+            details=order.notes or "",
+            guardrail_result=guardrail_result,
+        )
     log_audit_event(
         order_id=result.order_id or order_id,
         portfolio_id=order.portfolio_id,

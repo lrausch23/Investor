@@ -28,6 +28,13 @@ _BEST_MODELS = {
     "claude": "claude-sonnet-4-20250514",
     "ollama": "qwen3:32b",
 }
+_MODEL_ENV_KEYS = {
+    "openai": "OPENAI_MODEL",
+    "gemini": "GEMINI_MODEL",
+    "claude": "ANTHROPIC_MODEL",
+    "ollama": "OLLAMA_MODEL",
+}
+_MODEL_OVERRIDE_ENV = "FRONTIER_MODEL_OVERRIDE_PROVIDER"
 _CODE_FENCE_RE = re.compile(r"^\s*```(?:json)?\s*(.*?)\s*```\s*$", re.DOTALL | re.IGNORECASE)
 META_LABELER_OVERRIDE_THRESHOLD = 0.30
 
@@ -44,6 +51,10 @@ class QualitativeAssessment:
     thesis_check_prompt: str | None
     thesis_check_response: dict[str, Any] | None
     source: str = "llm"
+    frontier_provider: str = "auto"
+    frontier_model: str = ""
+    model_name: str = ""
+    llm_used: bool = False
 
 
 def _strip_code_fences(text: str) -> str:
@@ -375,6 +386,8 @@ def _theme_time_horizon(initial_thesis: str | None) -> str:
 
 
 def _apply_saved_model(provider: str) -> None:
+    if str(os.getenv(_MODEL_OVERRIDE_ENV) or "").strip().lower() == str(provider or "").strip().lower():
+        return
     try:
         from .persistence import get_setting
     except Exception:
@@ -383,12 +396,7 @@ def _apply_saved_model(provider: str) -> None:
     saved_model = str(get_setting("frontier_model") or "").strip()
     if saved_provider != provider or not saved_model:
         return
-    env_key = {
-        "openai": "OPENAI_MODEL",
-        "gemini": "GEMINI_MODEL",
-        "claude": "ANTHROPIC_MODEL",
-        "ollama": "OLLAMA_MODEL",
-    }.get(provider)
+    env_key = _MODEL_ENV_KEYS.get(provider)
     if env_key:
         os.environ[env_key] = saved_model
 
@@ -627,18 +635,24 @@ def _request_ollama(prompt: str) -> dict[str, Any] | None:
         return {"raw_response": text}
 
 
-def _provider_request(prompt: str, provider: str, *, use_best: bool = False) -> dict[str, Any] | None:
+def _provider_request(prompt: str, provider: str, *, use_best: bool = False, model: str | None = None) -> dict[str, Any] | None:
     original: dict[str, str | None] = {
         "OPENAI_MODEL": os.getenv("OPENAI_MODEL"),
         "GEMINI_MODEL": os.getenv("GEMINI_MODEL"),
         "ANTHROPIC_MODEL": os.getenv("ANTHROPIC_MODEL"),
         "OLLAMA_MODEL": os.getenv("OLLAMA_MODEL"),
+        _MODEL_OVERRIDE_ENV: os.getenv(_MODEL_OVERRIDE_ENV),
     }
-    if use_best:
+    model_value = str(model or "").strip()
+    if model_value and provider in _MODEL_ENV_KEYS:
+        os.environ[_MODEL_ENV_KEYS[provider]] = model_value
+        os.environ[_MODEL_OVERRIDE_ENV] = provider
+    elif use_best:
         os.environ["OPENAI_MODEL"] = _BEST_MODELS["openai"]
         os.environ["GEMINI_MODEL"] = _BEST_MODELS["gemini"]
         os.environ["ANTHROPIC_MODEL"] = _BEST_MODELS["claude"]
         os.environ["OLLAMA_MODEL"] = _BEST_MODELS["ollama"]
+        os.environ[_MODEL_OVERRIDE_ENV] = provider
     try:
         if provider == "openai":
             return _request_openai(prompt)
@@ -657,9 +671,11 @@ def _provider_request(prompt: str, provider: str, *, use_best: bool = False) -> 
                 os.environ[key] = value
 
 
-def request_frontier_decision(prompt: str, enabled: bool, provider: str = "auto") -> dict[str, Any] | None:
+def request_frontier_decision(prompt: str, enabled: bool, provider: str = "auto", model: str | None = None) -> dict[str, Any] | None:
     if not enabled:
         return None
+    provider = str(provider or "auto").strip().lower() or "auto"
+    model_value = str(model or "").strip()
     try:
         if provider == "best":
             return (
@@ -669,22 +685,26 @@ def request_frontier_decision(prompt: str, enabled: bool, provider: str = "auto"
                 or _provider_request(prompt, "ollama", use_best=True)
             )
         if provider == "openai":
-            return _request_openai(prompt)
+            return _provider_request(prompt, "openai", model=model_value) if model_value else _request_openai(prompt)
         if provider == "gemini":
-            return _request_gemini(prompt)
+            return _provider_request(prompt, "gemini", model=model_value) if model_value else _request_gemini(prompt)
         if provider == "claude":
-            return _request_claude(prompt)
+            return _provider_request(prompt, "claude", model=model_value) if model_value else _request_claude(prompt)
         if provider == "ollama":
-            return _request_ollama(prompt)
+            return _provider_request(prompt, "ollama", model=model_value) if model_value else _request_ollama(prompt)
         return _request_openai(prompt) or _request_gemini(prompt) or _request_claude(prompt) or _request_ollama(prompt)
     except LLMProviderError:
         logger.warning("Frontier provider request failed; returning fallback decision path.")
         return None
 
 
-def configured_frontier_model(provider: str = "auto") -> str:
+def configured_frontier_model(provider: str = "auto", model: str | None = None) -> str:
     provider_key = str(provider or "auto").strip().lower() or "auto"
+    model_value = str(model or "").strip()
     if provider_key in {"openai", "gemini", "claude", "ollama"}:
+        if model_value:
+            label = {"openai": "OpenAI", "gemini": "Gemini", "claude": "Claude", "ollama": "Ollama"}[provider_key]
+            return f"{label}: {model_value}"
         original: dict[str, str | None] = {
             "OPENAI_MODEL": os.getenv("OPENAI_MODEL"),
             "GEMINI_MODEL": os.getenv("GEMINI_MODEL"),
@@ -731,6 +751,7 @@ def build_qualitative_assessment(
     context_symbols: list[str] | None = None,
     frontier_enabled: bool = False,
     frontier_provider: str = "auto",
+    frontier_model: str | None = None,
     initial_thesis: str | None = None,
     previous_label: str | None = None,
     benchmark_state: str = "Neutral",
@@ -739,6 +760,9 @@ def build_qualitative_assessment(
     catalysts, sentiment_score, sentiment = analyze_catalysts(ticker, context_symbols=context_symbols)
     previous_state = previous_label or state_name
     threshold = _get_override_threshold()
+    provider_key = str(frontier_provider or "auto").strip().lower() or "auto"
+    model_value = str(frontier_model or "").strip()
+    model_name = configured_frontier_model(provider_key, model_value or None)
     if meta_labeler_score is not None and meta_labeler_score < threshold:
         logger.info(
             "Deterministic LLM override for %s: meta_labeler_score=%.3f < %.3f threshold",
@@ -766,6 +790,10 @@ def build_qualitative_assessment(
             thesis_check_prompt=None,
             thesis_check_response=None,
             source="meta_labeler_override",
+            frontier_provider=provider_key,
+            frontier_model=model_value,
+            model_name=model_name,
+            llm_used=False,
         )
     decision_prompt = build_decision_prompt(
         ticker=ticker,
@@ -776,7 +804,12 @@ def build_qualitative_assessment(
         catalysts=catalysts,
         meta_labeler_score=meta_labeler_score,
     )
-    llm_response = request_frontier_decision(decision_prompt, enabled=frontier_enabled, provider=frontier_provider)
+    llm_response = request_frontier_decision(
+        decision_prompt,
+        enabled=frontier_enabled,
+        provider=provider_key,
+        model=model_value or None,
+    )
     fallback_confidence = _fallback_confidence(state_name, latest_probability, sentiment_score)
     source = "llm"
     if llm_response is None:
@@ -802,7 +835,8 @@ def build_qualitative_assessment(
         thesis_check_response = request_frontier_decision(
             thesis_check_prompt,
             enabled=frontier_enabled,
-            provider=frontier_provider,
+            provider=provider_key,
+            model=model_value or None,
         ) or _fallback_thesis_check(previous_label, state_name, initial_thesis, _theme_time_horizon(initial_thesis))
 
     return QualitativeAssessment(
@@ -816,4 +850,8 @@ def build_qualitative_assessment(
         thesis_check_prompt=thesis_check_prompt,
         thesis_check_response=thesis_check_response,
         source=source,
+        frontier_provider=provider_key,
+        frontier_model=model_value,
+        model_name=model_name,
+        llm_used=source == "llm",
     )

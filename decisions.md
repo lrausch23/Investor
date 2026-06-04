@@ -38,3 +38,9 @@ This file captures “do not re-litigate” decisions and the rationale behind t
 - **Decision**: use `.venv/bin/pytest` for local testing.
 - **Why**: system Python 3.13 may break SQLAlchemy imports due to typing changes; venv pins compatible deps.
 
+## Regime agent beta
+
+### Evaluate 2% monthly as a rolling paper-trading target
+- **Decision**: the Regime agent beta targets a 2%+ average monthly pre-tax gain per paper-trading agent over a rolling 6-12 month period, not guaranteed positive performance every month.
+- **Why**: 2% monthly compounds to about 26.8% annually, so a single profitable month is not enough evidence of viability. Results must be judged against benchmarks and risk controls.
+- **Where**: `docs/regime_agent_beta.md`.

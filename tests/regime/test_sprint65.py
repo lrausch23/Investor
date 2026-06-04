@@ -274,6 +274,7 @@ def test_generate_buy_plans_uses_risk_sizing(temp_modules, monkeypatch: pytest.M
     store.upsert_watchlist_candidate(theme["id"], "NVDA", regime_label="Bull", regime_probability=0.9, crowd_score=20, status="Entry Signal", suggested_entry_price=100.0)
     monkeypatch.setattr(paper_trading, "_lookup_atr", lambda ticker: 3.0)
     monkeypatch.setattr(paper_trading, "_lookup_beta", lambda ticker: 1.0)
+    monkeypatch.setattr(paper_trading, "_batch_current_prices", lambda tickers: {"NVDA": 100.0})
     plans = paper_trading.generate_buy_plans(portfolio["id"])
     assert plans
     assert plans[0]["quantity"] == 35
@@ -329,6 +330,7 @@ def test_equal_dollar_sizing_still_works(temp_modules, monkeypatch: pytest.Monke
     store.upsert_watchlist_candidate(theme["id"], "NVDA", regime_label="Bull", regime_probability=0.9, crowd_score=20, status="Entry Signal", suggested_entry_price=100.0)
     monkeypatch.setattr(paper_trading, "_lookup_atr", lambda ticker: 3.0)
     monkeypatch.setattr(paper_trading, "_lookup_beta", lambda ticker: 2.0)
+    monkeypatch.setattr(paper_trading, "_batch_current_prices", lambda tickers: {"NVDA": 100.0})
     plans = paper_trading.generate_buy_plans(portfolio["id"])
     assert plans[0]["quantity"] == 105
     assert plans[0]["sizing_method"] == "equal_dollar"
