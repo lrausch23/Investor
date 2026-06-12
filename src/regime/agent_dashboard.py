@@ -18,6 +18,7 @@ from .persistence import (
     get_paper_portfolio_summary,
     get_llm_attribution_summary,
     get_setting,
+    get_training_history,
     list_paper_portfolios,
     get_trade_plans,
     get_audit_trail,
@@ -369,11 +370,385 @@ def _agent_enabled_map(agents_status: list[dict[str, Any]] | None) -> dict[str, 
     }
 
 
+def _parse_iso_timestamp(value: Any) -> datetime | None:
+    if value in (None, ""):
+        return None
+    try:
+        text = str(value).strip().replace("Z", "+00:00")
+        parsed = datetime.fromisoformat(text)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+    except Exception:
+        return None
+
+
+def _requested_date(value: str | None = None) -> str:
+    text = str(value or "today").strip().lower()
+    if text in {"", "today"}:
+        return datetime.now(timezone.utc).date().isoformat()
+    return text
+
+
+def _row_matches_date(row: dict[str, Any], target_date: str, *fields: str) -> bool:
+    for field in fields:
+        parsed = _parse_iso_timestamp(row.get(field))
+        if parsed is not None:
+            return parsed.date().isoformat() == target_date
+    return False
+
+
+def _configured_or_supplied_portfolio_ids(portfolio_ids: list[int] | None = None) -> list[int]:
+    ids = portfolio_ids or _configured_beta_portfolio_ids()
+    return [int(portfolio_id) for portfolio_id in ids if int(portfolio_id or 0) > 0]
+
+
+def _agent_for_portfolio(portfolio_id: int) -> dict[str, str]:
+    portfolio_ids = _configured_beta_portfolio_ids()
+    try:
+        index = portfolio_ids.index(int(portfolio_id))
+    except ValueError:
+        index = -1
+    if 0 <= index < len(BETA_AGENT_PORTFOLIOS):
+        agent = BETA_AGENT_PORTFOLIOS[index]
+        return {"key": str(agent.get("key") or f"portfolio_{portfolio_id}"), "label": str(agent.get("label") or f"Portfolio {portfolio_id}")}
+    portfolio = get_paper_portfolio(int(portfolio_id)) or {}
+    return {
+        "key": f"portfolio_{portfolio_id}",
+        "label": str(portfolio.get("name") or f"Portfolio {portfolio_id}"),
+    }
+
+
+def _details_dict(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if value in (None, ""):
+        return {}
+    try:
+        parsed = json.loads(str(value))
+        return parsed if isinstance(parsed, dict) else {}
+    except Exception:
+        return {}
+
+
+def _short_reason(text: Any) -> str:
+    reason = " ".join(str(text or "").strip().split())
+    if not reason:
+        return "No reason recorded."
+    return reason[:180] + ("..." if len(reason) > 180 else "")
+
+
+def _blocker_label(decision: str, reason: Any) -> str:
+    if decision == "blocked_signal_quality":
+        text = str(reason or "").lower()
+        if "stale" in text:
+            return "signal stale"
+        if "entry premise" in text or "above" in text or "below" in text:
+            return "price away from entry"
+        return "signal quality"
+    labels = {
+        "blocked_universe": "universe screen",
+        "blocked_agent_mandate": "agent mandate",
+        "blocked_no_theme_budget": "theme budget",
+        "blocked_budget_or_price": "budget or price",
+        "blocked_anti_churn": "anti-churn",
+        "blocked_hurdle": "hurdle rate",
+        "blocked_duration": "duration gate",
+        "blocked_zero_quantity": "zero quantity",
+    }
+    return labels.get(decision, decision.replace("blocked_", "").replace("_", " "))
+
+
 def _agent_trace_mentions(plan: dict[str, Any], agent_name: str) -> bool:
     trace = str(plan.get("agent_trace") or "").lower()
     if agent_name == "portfolio_tax":
         return "portfolio:" in trace or "portfolio_tax" in trace
     return f"{agent_name}:" in trace or agent_name in trace
+
+
+def compute_agent_model_health(portfolio_ids: list[int] | None = None) -> dict[str, Any]:
+    """Summarize model and system status for the read-only agent monitor."""
+
+    configured_ids = _configured_or_supplied_portfolio_ids(portfolio_ids)
+    latest_training: dict[str, Any] | None = None
+    try:
+        history = get_training_history(limit=1)
+        latest_training = dict(history[0]) if history else None
+    except Exception as exc:
+        latest_training = {"error": str(exc)}
+
+    config_payload = _details_dict(latest_training.get("config_json") if latest_training else None)
+    metrics = {
+        "accuracy": latest_training.get("accuracy") if latest_training else None,
+        "precision": latest_training.get("precision_score") if latest_training else None,
+        "recall": latest_training.get("recall") if latest_training else None,
+        "f1": latest_training.get("f1") if latest_training else None,
+        "positive_rate_train": latest_training.get("positive_rate_train") if latest_training else None,
+        "positive_rate_test": latest_training.get("positive_rate_test") if latest_training else None,
+        "avg_probability_test": latest_training.get("avg_probability_test") if latest_training else None,
+        "train_samples": latest_training.get("train_samples") if latest_training else None,
+        "test_samples": latest_training.get("test_samples") if latest_training else None,
+    }
+    active_version = get_setting("meta_labeler_active_version")
+    active_version_text = str(active_version or "")
+    active_version_value = int(active_version_text) if active_version_text.isdigit() else active_version
+    minimum_auc = _as_float(get_setting("meta_labeler_min_oof_auc"), 0.55)
+    oof_auc_raw = _as_float(config_payload.get("oof_roc_auc") or config_payload.get("roc_auc"), default=float("nan"))
+    oof_auc: float | None = None if oof_auc_raw != oof_auc_raw else oof_auc_raw
+    skill_enabled = _setting_bool("meta_labeler_skill_gate_enabled", True)
+    if not skill_enabled:
+        skill_state = "disabled"
+    elif oof_auc is None:
+        skill_state = "unknown"
+    elif oof_auc >= minimum_auc:
+        skill_state = "passed"
+    else:
+        skill_state = "blocked"
+
+    fallback_count = 0
+    policy_events = 0
+    for portfolio_id in configured_ids:
+        try:
+            fallback_count += len(get_audit_trail(portfolio_id=portfolio_id, event_type="data_fallback", days=1, limit=1000))
+        except Exception:
+            pass
+        try:
+            policy_events += int(recent_policy_event_count(portfolio_id))
+        except Exception:
+            pass
+
+    llm_rows = get_llm_attribution_summary(days=30)
+    llm_trade_count = sum(int(row.get("trade_count") or row.get("plans") or 0) for row in llm_rows if isinstance(row, dict))
+    llm_wins = sum(int(row.get("wins") or 0) for row in llm_rows if isinstance(row, dict))
+    llm_win_rate = (llm_wins / llm_trade_count * 100.0) if llm_trade_count else None
+    seed_agreement_raw = _as_float(get_setting("hmm_seed_agreement_latest"), default=float("nan"))
+    seed_agreement: float | None = None if seed_agreement_raw != seed_agreement_raw else seed_agreement_raw
+    return {
+        "meta_labeler": {
+            "active_version": active_version_value,
+            "status": latest_training.get("status") if latest_training else None,
+            "trained_at": latest_training.get("trained_at") if latest_training else None,
+            "ticker": latest_training.get("ticker") if latest_training else None,
+            "label_mode": config_payload.get("label_mode"),
+            "oof_roc_auc": oof_auc,
+            "min_oof_auc": minimum_auc,
+            "skill_gate_enabled": skill_enabled,
+            "skill_gate_state": skill_state,
+            "metrics": metrics,
+        },
+        "hmm": {
+            "seed_agreement": seed_agreement,
+            "seed_agreement_display": get_setting("hmm_seed_agreement_latest") or None,
+        },
+        "data": {
+            "fallbacks_today": int(fallback_count),
+            "last_paper_plans_at": get_setting("last_paper_plans_at"),
+        },
+        "policy": {
+            "events_today": int(policy_events),
+        },
+        "llm": {
+            "attribution_rows": len(llm_rows),
+            "trade_count": int(llm_trade_count),
+            "wins": int(llm_wins),
+            "win_rate": llm_win_rate,
+        },
+    }
+
+
+def compute_agent_monitor_funnel(
+    portfolio_ids: list[int] | None = None,
+    *,
+    date: str | None = None,
+) -> dict[str, Any]:
+    """Aggregate today's candidate-to-execution funnel for the agent monitor."""
+
+    target_date = _requested_date(date)
+    configured_ids = _configured_or_supplied_portfolio_ids(portfolio_ids)
+    candidate_counts: Counter[str] = Counter()
+    blocker_counts: Counter[str] = Counter()
+    blocker_examples: dict[str, str] = {}
+    total_candidates = 0
+    created_plans = 0
+    executed = 0
+
+    try:
+        from .agent_candidate_intake import compute_agent_candidate_intake
+    except Exception:
+        compute_agent_candidate_intake = None  # type: ignore[assignment]
+
+    for portfolio_id in configured_ids:
+        if compute_agent_candidate_intake is not None:
+            try:
+                intake = compute_agent_candidate_intake(int(portfolio_id), limit=500)
+                total_candidates += int(intake.get("total_candidates") or 0)
+                candidate_counts.update({str(key): int(value) for key, value in dict(intake.get("counts") or {}).items()})
+                for row in list(intake.get("candidates") or []):
+                    decision = str(row.get("decision") or "")
+                    if not decision.startswith("blocked"):
+                        continue
+                    label = _blocker_label(decision, row.get("reason"))
+                    blocker_counts[label] += 1
+                    blocker_examples.setdefault(label, _short_reason(row.get("reason")))
+            except Exception as exc:
+                blocker_counts["intake unavailable"] += 1
+                blocker_examples.setdefault("intake unavailable", str(exc))
+
+        for plan in get_trade_plans(int(portfolio_id), status="all"):
+            if _row_matches_date(plan, target_date, "created_at"):
+                created_plans += 1
+        for event in get_audit_trail(portfolio_id=int(portfolio_id), days=7, limit=500):
+            if not _row_matches_date(event, target_date, "created_at"):
+                continue
+            event_type = str(event.get("event_type") or "")
+            if event_type in {"filled", "partially_filled", "executed"}:
+                executed += 1
+            if event_type in {"guardrail_blocked", "rejected", "error"}:
+                label = event_type.replace("_", " ")
+                blocker_counts[label] += 1
+                blocker_examples.setdefault(label, _short_reason(event.get("details")))
+
+    blocked_universe = int(candidate_counts.get("blocked_universe") or 0)
+    blocked_mandate = int(candidate_counts.get("blocked_agent_mandate") or 0)
+    passed_universe = max(0, total_candidates - blocked_universe)
+    passed_mandate = max(0, passed_universe - blocked_mandate)
+    entry_gate_ready = int(
+        candidate_counts.get("would_create_buy_plan", 0)
+        + candidate_counts.get("pending_buy_exists", 0)
+        + candidate_counts.get("already_held", 0)
+    )
+    stages = [
+        {"key": "candidates", "label": "Candidates", "count": int(total_candidates)},
+        {"key": "universe_screen", "label": "Universe screen", "count": int(passed_universe)},
+        {"key": "agent_mandates", "label": "Agent mandates", "count": int(passed_mandate)},
+        {"key": "entry_gates", "label": "Entry gates", "count": int(entry_gate_ready)},
+        {"key": "plans_created", "label": "Plans created", "count": int(created_plans)},
+        {"key": "executed", "label": "Executed", "count": int(executed)},
+    ]
+    blockers = [
+        {"reason": label, "count": int(count), "example": blocker_examples.get(label)}
+        for label, count in blocker_counts.most_common(8)
+    ]
+    return {
+        "date": target_date,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "portfolio_ids": configured_ids,
+        "stages": stages,
+        "blockers": blockers,
+        "candidate_counts": dict(candidate_counts),
+    }
+
+
+def _format_feed_price(value: Any) -> str:
+    price = _as_float(value)
+    return f"${price:,.2f}" if price > 0 else "market"
+
+
+def _format_feed_quantity(value: Any) -> str:
+    quantity = _as_float(value)
+    if quantity <= 0:
+        return ""
+    return f"{quantity:g}"
+
+
+def _feed_sentence_from_audit(row: dict[str, Any], agent: dict[str, str]) -> str:
+    event_type = str(row.get("event_type") or "event").replace("_", " ")
+    ticker = str(row.get("ticker") or "").upper() or "order"
+    action = str(row.get("action") or "").strip().lower()
+    quantity = _format_feed_quantity(row.get("quantity"))
+    price = _format_feed_price(row.get("price"))
+    actor = str(row.get("actor") or "system")
+    details = _short_reason(row.get("details"))
+    verb = "updated"
+    if str(row.get("event_type") or "") in {"filled", "partially_filled", "executed"}:
+        verb = "bought" if action == "buy" else "sold" if action == "sell" else "filled"
+        trade_part = f"{verb} {quantity + ' ' if quantity else ''}{ticker} @ {price}"
+        return f"{agent['label']} {trade_part} - {details}"
+    if str(row.get("event_type") or "") in {"guardrail_blocked", "rejected", "error"}:
+        return f"{agent['label']} blocked {ticker} - {details}"
+    if str(row.get("event_type") or "") in {"submitted", "auto_approved", "approved"}:
+        verb = "submitted" if event_type == "submitted" else "approved"
+        return f"{agent['label']} {verb} {action or 'order'} {quantity + ' ' if quantity else ''}{ticker} - {details}"
+    if ticker == "*" or not ticker:
+        return f"{actor.title()} {event_type} - {details}"
+    return f"{agent['label']} {event_type} {ticker} - {details}"
+
+
+def _feed_sentence_from_plan(row: dict[str, Any], agent: dict[str, str]) -> str:
+    ticker = str(row.get("ticker") or "").upper()
+    action = str(row.get("action") or "plan").lower()
+    quantity = _format_feed_quantity(row.get("quantity"))
+    price = _format_feed_price(row.get("proposed_price") or row.get("execution_price"))
+    status = str(row.get("status") or "Pending").lower()
+    rationale = _short_reason(row.get("notes") or row.get("rationale"))
+    if status in {"rejected", "cancelled", "expired"}:
+        return f"{agent['label']} {status} {ticker} - {rationale}"
+    if status in {"submitted", "partially filled", "executed"}:
+        return f"{agent['label']} {status} {action} {quantity + ' ' if quantity else ''}{ticker} @ {price} - {rationale}"
+    return f"{agent['label']} planned {action} {quantity + ' ' if quantity else ''}{ticker} @ {price} - {rationale}"
+
+
+def compute_agent_monitor_feed(
+    portfolio_ids: list[int] | None = None,
+    *,
+    limit: int = 50,
+    before: str | None = None,
+) -> dict[str, Any]:
+    """Merge plans and audit events into server-composed activity sentences."""
+
+    configured_ids = _configured_or_supplied_portfolio_ids(portfolio_ids)
+    before_ts = _parse_iso_timestamp(before)
+    items: list[dict[str, Any]] = []
+    for portfolio_id in configured_ids:
+        agent = _agent_for_portfolio(int(portfolio_id))
+        for event in get_audit_trail(portfolio_id=int(portfolio_id), days=30, limit=500):
+            ts = _parse_iso_timestamp(event.get("created_at"))
+            if ts is None or (before_ts is not None and ts >= before_ts):
+                continue
+            items.append(
+                {
+                    "ts": ts.isoformat(),
+                    "agent_key": agent["key"],
+                    "agent_label": agent["label"],
+                    "kind": "trade" if str(event.get("event_type") or "") in {"filled", "partially_filled", "executed"} else "block" if str(event.get("event_type") or "") in {"guardrail_blocked", "rejected", "error"} else "system",
+                    "ticker": event.get("ticker"),
+                    "text": _feed_sentence_from_audit(event, agent),
+                    "detail": event,
+                }
+            )
+        for plan in get_trade_plans(int(portfolio_id), status="all"):
+            ts = _parse_iso_timestamp(plan.get("updated_at") or plan.get("created_at"))
+            if ts is None or (before_ts is not None and ts >= before_ts):
+                continue
+            status = str(plan.get("status") or "")
+            items.append(
+                {
+                    "ts": ts.isoformat(),
+                    "agent_key": agent["key"],
+                    "agent_label": agent["label"],
+                    "kind": "plan" if status in {"Pending", "Approved"} else "trade" if status in {"Submitted", "Partially Filled", "Executed"} else "block",
+                    "ticker": plan.get("ticker"),
+                    "text": _feed_sentence_from_plan(plan, agent),
+                    "detail": {
+                        "id": plan.get("id"),
+                        "portfolio_id": plan.get("portfolio_id"),
+                        "ticker": plan.get("ticker"),
+                        "action": plan.get("action"),
+                        "quantity": plan.get("quantity"),
+                        "status": plan.get("status"),
+                        "proposed_price": plan.get("proposed_price"),
+                        "rationale": plan.get("rationale"),
+                    },
+                }
+            )
+    items.sort(key=lambda item: str(item.get("ts") or ""), reverse=True)
+    bounded_limit = max(1, min(200, int(limit)))
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "portfolio_ids": configured_ids,
+        "items": items[:bounded_limit],
+        "has_more": len(items) > bounded_limit,
+    }
 
 
 def compute_agent_portfolio_dashboard(
@@ -415,6 +790,7 @@ def compute_agent_portfolio_dashboard(
     audit = get_audit_trail(portfolio_id=portfolio_id, days=7, limit=200)
     daily_audit = get_daily_audit_summary(portfolio_id)
     agent_map = _agent_enabled_map(agents_status)
+    portfolio_pause = buy_pause_status(int(portfolio_id))
 
     cash = _as_float(summary.get("current_cash"))
     market_value = _as_float(summary.get("total_market_value"))
@@ -538,6 +914,10 @@ def compute_agent_portfolio_dashboard(
             ]
 
         status, status_label = _status(enabled, activity_count, attention_count)
+        if not bool(portfolio_pause.get("allowed", True)) and enabled:
+            status = "attention"
+            status_label = "Paused"
+            attention_count = max(1, int(attention_count or 0))
         agent_rows.append(
             {
                 **agent,
@@ -551,6 +931,7 @@ def compute_agent_portfolio_dashboard(
                 "portfolio_scope": portfolio_scope,
                 "activity_count": activity_count,
                 "attention_count": attention_count,
+                "pause_status": portfolio_pause,
                 "latest_activity_at": latest_activity,
                 "metrics": metrics,
             }
@@ -636,6 +1017,7 @@ def compute_agent_portfolio_dashboard(
             "market_data_provider_config": _parse_market_data_config(),
             "last_paper_plans_at": get_setting("last_paper_plans_at"),
         },
+        "model_health": compute_agent_model_health([int(portfolio_id)]),
     }
 
 
@@ -682,6 +1064,10 @@ def _agent_portfolio_row(agent: dict[str, str], dashboard: dict[str, Any]) -> di
         latest_activity = _latest_timestamp(get_trade_plans(int(summary.get("portfolio_id") or 0), status="all"), "updated_at", "created_at")
     activity_count = pending + int(plan_counts.get("Executed", 0)) + int(plan_counts.get("Cancelled", 0)) + int(plan_counts.get("Rejected", 0))
     status, status_label = _status(True, activity_count)
+    pause = buy_pause_status(int(summary.get("portfolio_id") or 0))
+    if not bool(pause.get("allowed", True)):
+        status = "attention"
+        status_label = "Paused"
     return {
         "name": str(agent["key"]),
         "label": str(agent["label"]),
@@ -696,6 +1082,7 @@ def _agent_portfolio_row(agent: dict[str, str], dashboard: dict[str, Any]) -> di
         "portfolio_scope": summary.get("portfolio_scope"),
         "activity_count": activity_count,
         "attention_count": int(plan_counts.get("Rejected", 0)),
+        "pause_status": pause,
         "latest_activity_at": latest_activity,
         "metrics": [
             _metric("Equity", equity, display=_format_currency(equity, 0)),
@@ -949,4 +1336,5 @@ def compute_beta_agent_dashboard(
     first["recent_activity"] = recent_activity
     first["agent_portfolio_count"] = len(agent_portfolios)
     first["per_agent_budget"] = total_starting / len(agent_portfolios) if agent_portfolios else 0.0
+    first["model_health"] = compute_agent_model_health(portfolio_ids)
     return first

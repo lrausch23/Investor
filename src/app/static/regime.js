@@ -61,6 +61,8 @@
     systemHealth: null,
     agentConsensus: null,
     agentDashboard: null,
+    agentFunnel: null,
+    agentFeed: null,
     ibkrAccountSnapshot: null,
     dataValidation: null,
     alertHistory: [],
@@ -1982,7 +1984,8 @@
     });
     const prefs = loadPrefs();
     const hash = window.location.hash.replace("#", "");
-    const target = hash || prefs.activeTab || "analysis";
+    const baseHash = hash.split("/")[0];
+    const target = baseHash || prefs.activeTab || "analysis";
     if (document.querySelector(`[data-regime-tab="${CSS.escape(target)}"]`)) {
       switchTab(target);
     }
@@ -4261,6 +4264,427 @@
     });
   }
 
+  function agentHelpButton(sectionKey) {
+    return `<button class="agent-help-button" type="button" data-agent-help="${escapeHtml(sectionKey)}" aria-label="About this section" aria-expanded="false">?</button>`;
+  }
+
+  function agentSectionHead(title, sectionKey, subtitle = "") {
+    return `
+      <div class="agent-monitor-panel__head">
+        <div>
+          <div class="agent-monitor-panel__title">${escapeHtml(title)}</div>
+          ${subtitle ? `<div class="ui-muted" style="margin-top:2px">${escapeHtml(subtitle)}</div>` : ""}
+        </div>
+        ${agentHelpButton(sectionKey)}
+      </div>
+    `;
+  }
+
+  function agentHelpMap() {
+    return window.REGIME_AGENT_HELP || { HELP_CONTENT: {}, GLOSSARY: {} };
+  }
+
+  function closeAgentHelpPopover() {
+    const popover = byId("agentHelpPopover");
+    const activeButton = document.querySelector("[data-agent-help][aria-expanded='true']");
+    if (popover) popover.remove();
+    if (activeButton) {
+      activeButton.setAttribute("aria-expanded", "false");
+      activeButton.focus();
+    }
+  }
+
+  function openAgentHelpPopover(button) {
+    closeAgentHelpPopover();
+    const sectionKey = String(button.getAttribute("data-agent-help") || "");
+    const help = agentHelpMap();
+    const entry = help.HELP_CONTENT?.[sectionKey];
+    if (!entry) return;
+    button.setAttribute("aria-expanded", "true");
+    const terms = Array.isArray(entry.terms) ? entry.terms : [];
+    const glossary = help.GLOSSARY || {};
+    const bodyRows = (Array.isArray(entry.body) ? entry.body : [entry.body]).filter(Boolean);
+    const termRows = terms
+      .filter((term) => glossary[term])
+      .map((term) => `<div><strong>${escapeHtml(term)}:</strong> ${escapeHtml(glossary[term])}</div>`);
+    const popover = document.createElement("div");
+    popover.id = "agentHelpPopover";
+    popover.className = "agent-help-popover";
+    popover.setAttribute("role", "dialog");
+    popover.setAttribute("aria-label", entry.title || "Help");
+    popover.innerHTML = `
+      <div class="agent-help-popover__head">
+        <div class="agent-help-popover__title">${escapeHtml(entry.title || "Help")}</div>
+        <button class="agent-help-popover__close" type="button" aria-label="Close help">×</button>
+      </div>
+      <div class="agent-help-popover__body">
+        ${bodyRows.map((row) => `<div>${escapeHtml(row)}</div>`).join("")}
+        ${termRows.length ? `<div>${termRows.join("")}</div>` : ""}
+      </div>
+    `;
+    document.body.appendChild(popover);
+    const rect = button.getBoundingClientRect();
+    const width = 360;
+    popover.style.left = `${Math.max(12, Math.min(window.innerWidth - width - 12, rect.right - width))}px`;
+    popover.style.top = `${Math.min(window.innerHeight - 120, rect.bottom + 8)}px`;
+    const closeButton = popover.querySelector(".agent-help-popover__close");
+    if (closeButton) closeButton.addEventListener("click", closeAgentHelpPopover);
+    if (closeButton) closeButton.focus();
+  }
+
+  function bindAgentHelpButtons() {
+    document.querySelectorAll("[data-agent-help]").forEach((button) => {
+      button.addEventListener("click", () => openAgentHelpPopover(button));
+      button.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          openAgentHelpPopover(button);
+        }
+      });
+    });
+  }
+
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && byId("agentHelpPopover")) closeAgentHelpPopover();
+  });
+
+  function pctStyle(value) {
+    const bounded = Math.max(0, Math.min(100, Number(value || 0)));
+    return `${bounded.toFixed(1)}%`;
+  }
+
+  function agentByPortfolioId(rows, portfolioId) {
+    return (Array.isArray(rows) ? rows : []).find((row) => Number(row.portfolio_id || 0) === Number(portfolioId || 0)) || null;
+  }
+
+  function renderAgentHealthRibbon(payload, brokerSnapshot) {
+    const guardrails = payload.guardrails || {};
+    const schedule = payload.schedule || {};
+    const planCounts = payload.plan_counts || {};
+    const broker = payload.broker || {};
+    const pending = Number(planCounts.Pending || 0) + Number(planCounts.Approved || 0) + Number(planCounts.Submitted || 0) + Number(planCounts["Partially Filled"] || 0);
+    const connected = broker.type === "ibkr" ? brokerSnapshot?.connected : true;
+    const statusClass = connected === false ? "ui-badge ui-badge--warn" : "ui-badge ui-badge--safe";
+    const marketWindow = schedule.preferred_window || "US market hours";
+    const autonomous = String(guardrails.operating_mode || "").toLowerCase() === "autonomous";
+    const alerts = Array.isArray(state.unacknowledgedAlerts) ? state.unacknowledgedAlerts.length : 0;
+    const paused = String(payload.status || "").toLowerCase() === "paused";
+    return `
+      <div class="agent-monitor__ribbon" data-section="agent-health-ribbon">
+        <span class="${statusClass}">${connected === false ? "IBKR unavailable" : broker.type === "ibkr" ? "IBKR connected" : "Paper simulator"}</span>
+        <span class="ui-badge ui-badge--neutral">${escapeHtml(marketWindow)}</span>
+        <span class="${autonomous ? "ui-badge ui-badge--safe" : "ui-badge ui-badge--neutral"}">${autonomous ? "Autonomous mode" : "Manual review mode"}</span>
+        <span class="${pending ? "ui-badge ui-badge--warn" : "ui-badge ui-badge--safe"}">${escapeHtml(pending)} pending orders</span>
+        <span class="${paused ? "ui-badge ui-badge--bad" : "ui-badge ui-badge--safe"}">${paused ? "Kill switch on" : "Kill switch off"}</span>
+        <span class="${alerts ? "ui-badge ui-badge--warn" : "ui-badge ui-badge--neutral"}">${escapeHtml(alerts)} alerts</span>
+        ${agentHelpButton("agent-health-ribbon")}
+      </div>
+    `;
+  }
+
+  function renderAgentLeaderboard(payload) {
+    const rows = Array.isArray(payload.agents) ? payload.agents : [];
+    const competition = payload.competition || {};
+    const leaderboard = Array.isArray(competition.leaderboard) && competition.leaderboard.length
+      ? competition.leaderboard
+      : rows.map((row, index) => ({
+        rank: row.rank || index + 1,
+        label: row.label,
+        portfolio_id: row.portfolio_id,
+        after_tax_equity: row.after_tax_equity,
+        after_tax_return_pct: row.after_tax_return_pct,
+        after_tax_profit: row.after_tax_profit,
+        positions_open: row.summary?.positions_open,
+        submitted_count: row.plan_counts?.Submitted || 0,
+      }));
+    return `
+      <div data-section="agent-leaderboard">
+        <div class="agent-monitor__cards">
+          ${leaderboard.slice(0, 4).map((item) => {
+            const agentRow = agentByPortfolioId(rows, item.portfolio_id);
+            const pause = agentRow?.pause_status || {};
+            const isPaused = pause.allowed === false || String(agentRow?.status || "").toLowerCase() === "attention";
+            const returnPct = Number((item.after_tax_return_pct ?? agentRow?.after_tax_return_pct) || 0);
+            const cardClass = isPaused ? "agent-monitor-card--paused" : returnPct < 0 ? "agent-monitor-card--bad" : "agent-monitor-card--ok";
+            const exposure = Number(agentRow?.summary?.exposure_pct ?? item.exposure_pct ?? 0);
+            return `
+              <section class="agent-monitor-card ${cardClass}">
+                <div class="agent-monitor-card__top">
+                  <div class="agent-monitor-card__name">${escapeHtml(item.label || item.agent || agentRow?.label || "Agent")}</div>
+                  <span class="ui-badge ui-badge--neutral">#${escapeHtml(item.rank || "")}</span>
+                </div>
+                <div class="agent-monitor-card__equity">${escapeHtml(formatCurrency(item.after_tax_equity ?? agentRow?.after_tax_equity ?? agentRow?.summary?.after_tax_equity, 0))}</div>
+                <div class="${returnPct >= 0 ? "cell-ok" : "cell-bad"}" style="display:inline-block; padding:2px 6px; border-radius:4px; margin-top:8px">
+                  today ${escapeHtml(formatCurrency(agentRow?.summary?.daily_pnl, 0))} · after-tax ${escapeHtml(formatSignedPct(returnPct / 100, 2))}
+                </div>
+                <div class="agent-monitor-card__bar" style="--agent-card-bar:${pctStyle(Math.min(100, Math.abs(returnPct) * 10 + 12))}"><span></span></div>
+                <div class="agent-monitor-card__meta">
+                  <span>${escapeHtml(agentRow?.summary?.positions_open ?? item.positions_open ?? 0)} positions</span>
+                  <span>${escapeHtml(formatExposurePct(exposure, 1))} exposed</span>
+                  <span>${escapeHtml(item.submitted_count ?? 0)} pending</span>
+                  ${isPaused ? "<span>paused</span>" : ""}
+                </div>
+              </section>
+            `;
+          }).join("") || '<section class="agent-monitor-card"><div class="ui-muted">No agent portfolios available.</div></section>'}
+        </div>
+      </div>
+    `;
+  }
+
+  function renderAgentDecisionFunnel(funnel) {
+    const stages = Array.isArray(funnel?.stages) ? funnel.stages : [];
+    const blockers = Array.isArray(funnel?.blockers) ? funnel.blockers : [];
+    const maxCount = Math.max(1, ...stages.map((row) => Number(row.count || 0)));
+    return `
+      <section class="agent-monitor-panel" data-section="agent-decision-funnel">
+        ${agentSectionHead("Today's Decision Funnel", "agent-decision-funnel", funnel?.date ? `For ${funnel.date}` : "")}
+        <div class="agent-monitor-funnel">
+          ${stages.length ? stages.map((row) => {
+            const width = Number(row.count || 0) / maxCount * 100;
+            return `
+              <div class="agent-monitor-funnel__row">
+                <div>${escapeHtml(row.label || row.key || "")}</div>
+                <div class="agent-monitor-funnel__bar" style="--agent-funnel-bar:${pctStyle(width)}"><span></span></div>
+                <div class="num ui-tabular-nums">${escapeHtml(row.count || 0)}</div>
+              </div>
+            `;
+          }).join("") : '<div class="ui-muted">No funnel data available.</div>'}
+        </div>
+        <div class="ui-muted" style="margin-top:10px">
+          Top blockers: ${blockers.length ? blockers.map((row) => `${row.reason} (${row.count})`).join(" · ") : "none recorded"}
+        </div>
+      </section>
+    `;
+  }
+
+  function renderAgentLiveFeed(feed) {
+    const items = Array.isArray(feed?.items) ? feed.items : [];
+    return `
+      <section class="agent-monitor-panel" data-section="agent-live-activity">
+        ${agentSectionHead("Live Activity", "agent-live-activity", "Trades, blocks, plans, and system events")}
+        <div class="agent-monitor-feed">
+          ${items.length ? items.slice(0, 8).map((item) => {
+            const kind = String(item.kind || "system");
+            return `
+              <div class="agent-monitor-feed__item">
+                <div class="ui-muted">${escapeHtml(relativeTime(item.ts))}</div>
+                <span class="agent-monitor-feed__dot agent-monitor-feed__dot--${escapeHtml(kind)}"></span>
+                <div>${escapeHtml(item.text || "")}</div>
+              </div>
+            `;
+          }).join("") : '<div class="ui-muted">No recent agent activity.</div>'}
+        </div>
+      </section>
+    `;
+  }
+
+  function riskPoint(value, min, max) {
+    if (!Number.isFinite(value) || !Number.isFinite(min) || !Number.isFinite(max) || max <= min) return 50;
+    return (value - min) / (max - min) * 100;
+  }
+
+  function heldDays(entryDate) {
+    const parsed = new Date(entryDate);
+    if (Number.isNaN(parsed.getTime())) return null;
+    return Math.max(0, Math.floor((Date.now() - parsed.getTime()) / 86400000));
+  }
+
+  function renderAgentPositionRiskBoard(payload) {
+    const summary = payload.portfolio_summary || {};
+    const positions = Array.isArray(summary.positions) ? summary.positions : [];
+    const rows = positions.slice(0, 8);
+    return `
+      <section class="agent-monitor-panel" data-section="agent-position-risk">
+        ${agentSectionHead("Open Positions - Distance To Stop And Target", "agent-position-risk")}
+        <div class="agent-monitor-risk">
+          ${rows.length ? rows.map((row) => {
+            const stop = Number(row.stop_price || 0);
+            const target = Number(row.target_price || 0);
+            const current = Number(row.current_price || row.entry_price || 0);
+            const entry = Number(row.entry_price || current || 0);
+            const values = [stop, target, current, entry].filter((value) => Number.isFinite(value) && value > 0);
+            const min = Math.min(...values);
+            const max = Math.max(...values);
+            const pnl = Number(row.unrealized_pnl || 0);
+            const days = heldDays(row.entry_date);
+            const timeframe = Number(row.timeframe_days || 21);
+            return `
+              <div class="agent-monitor-risk__row">
+                <strong>${escapeHtml(row.ticker || "")}</strong>
+                <div>${escapeHtml(row.agent_label || row.role || "Agent")}</div>
+                <div class="${pnl >= 0 ? "cell-ok" : "cell-bad"}" style="padding:2px 6px; border-radius:4px">${escapeHtml(formatCurrency(pnl, 0))}</div>
+                <div>
+                  <div class="agent-monitor-risk__track" style="--agent-risk-stop:${pctStyle(riskPoint(stop, min, max))}; --agent-risk-current:${pctStyle(riskPoint(current, min, max))}; --agent-risk-target:${pctStyle(riskPoint(target, min, max))}">
+                    <span class="agent-monitor-risk__target"></span>
+                  </div>
+                  <div class="ui-muted" style="display:flex; justify-content:space-between; gap:8px; margin-top:6px">
+                    <span>${stop > 0 ? escapeHtml(formatCurrency(stop, 2)) : "stop -"}</span>
+                    <span>${escapeHtml(formatCurrency(current, 2))}</span>
+                    <span>${target > 0 ? escapeHtml(formatCurrency(target, 2)) : "target -"}</span>
+                  </div>
+                </div>
+                <div class="ui-tabular-nums">${days == null ? "-" : `${days} / ${timeframe}d`}</div>
+                <div>${escapeHtml(row.regime_label || row.regime || "")}</div>
+              </div>
+            `;
+          }).join("") : '<div class="ui-muted">No open positions.</div>'}
+        </div>
+      </section>
+    `;
+  }
+
+  function renderAgentModelHealthStrip(payload) {
+    const health = payload.model_health || {};
+    const meta = health.meta_labeler || {};
+    const hmm = health.hmm || {};
+    const data = health.data || {};
+    const llm = health.llm || {};
+    const skill = String(meta.skill_gate_state || "unknown");
+    const skillClass = skill === "passed" ? "ui-badge ui-badge--safe" : skill === "blocked" ? "ui-badge ui-badge--warn" : "ui-badge ui-badge--neutral";
+    const auc = meta.oof_roc_auc == null ? "AUC n/a" : `AUC ${Number(meta.oof_roc_auc).toFixed(2)}`;
+    const seed = hmm.seed_agreement_display || (Number.isFinite(Number(hmm.seed_agreement)) ? Number(hmm.seed_agreement).toFixed(2) : "n/a");
+    const winRate = llm.win_rate == null ? "n/a" : `${Number(llm.win_rate).toFixed(0)}%`;
+    return `
+      <div class="agent-monitor__strip" data-section="agent-model-health">
+        <span class="${skillClass}">Meta-labeler ${escapeHtml(meta.active_version ? `v${meta.active_version}` : "not pinned")} · ${escapeHtml(auc)} · skill gate ${escapeHtml(skill)}</span>
+        <span class="ui-badge ui-badge--neutral">HMM seed agreement ${escapeHtml(seed)}</span>
+        <span class="${Number(data.fallbacks_today || 0) ? "ui-badge ui-badge--warn" : "ui-badge ui-badge--safe"}">Data fallbacks today ${escapeHtml(data.fallbacks_today || 0)}</span>
+        <span class="ui-badge ui-badge--neutral">LLM verdicts ${escapeHtml(llm.trade_count || 0)} · ${escapeHtml(winRate)} win</span>
+        ${agentHelpButton("agent-model-health")}
+      </div>
+    `;
+  }
+
+  function renderCompactReconciliation(broker, brokerSnapshot) {
+    const brokerAccount = brokerSnapshot?.account || null;
+    const reconciliation = brokerSnapshot?.reconciliation || null;
+    const rows = Array.isArray(reconciliation?.rows) ? reconciliation.rows : [];
+    if (broker.type !== "ibkr") return "";
+    return `
+      <section class="ui-card" style="padding:12px; margin-top:14px" id="agent-detail-reconciliation">
+        <div class="ui-section-title">IBKR Paper Reconciliation</div>
+        <div class="ui-muted" style="margin-top:2px">${brokerSnapshot?.connected ? `Account ${escapeHtml(brokerAccount?.account_id || broker.account_id || "")}` : "Snapshot unavailable"}</div>
+        <div class="table-wrap" style="margin-top:10px">
+          <table>
+            <thead><tr><th>Ticker</th><th>Status</th><th>IBKR Qty</th><th>App Qty</th><th>Delta</th></tr></thead>
+            <tbody>
+              ${rows.length ? rows.slice(0, 12).map((row) => `<tr><td>${escapeHtml(row.ticker || "")}</td><td><span class="${row.status === "matched" ? "ui-badge ui-badge--safe" : "ui-badge ui-badge--warn"}">${escapeHtml(row.status || "")}</span></td><td class="ui-tabular-nums">${escapeHtml(row.ibkr_quantity || 0)}</td><td class="ui-tabular-nums">${escapeHtml(row.app_quantity || 0)}</td><td class="ui-tabular-nums">${escapeHtml(row.quantity_delta || 0)}</td></tr>`).join("") : '<tr><td colspan="5" class="ui-muted">No reconciliation rows.</td></tr>'}
+            </tbody>
+          </table>
+        </div>
+      </section>
+    `;
+  }
+
+  function renderAgentDetailDrawer(context) {
+    const { payload, summary, broker, brokerSnapshot, rows, positions, recentActivity, schedule, scheduleStatus, competition, leaderboard, overlap, overlapRiskRows } = context;
+    const detailHash = window.location.hash.replace("#", "").split("/")[1] || "";
+    const drawerOpen = detailHash ? "open" : "";
+    return `
+      <section class="agent-monitor-panel" data-section="agent-details">
+        ${agentSectionHead("Detail Tables", "agent-details", "Forensics, reconciliation, settings, and attribution")}
+        <div class="agent-monitor__ribbon" style="margin-bottom:10px">
+          <a class="ui-badge ui-badge--neutral" href="#agents/activity" data-agent-detail-link="activity">activity</a>
+          <a class="ui-badge ui-badge--neutral" href="#agents/intake" data-agent-detail-link="intake">intake</a>
+          <a class="ui-badge ui-badge--neutral" href="#agents/models" data-agent-detail-link="models">models</a>
+          <a class="ui-badge ui-badge--neutral" href="#agents/reconciliation" data-agent-detail-link="reconciliation">reconciliation</a>
+          <a class="ui-badge ui-badge--neutral" href="#agents/positions" data-agent-detail-link="positions">positions</a>
+        </div>
+        <details class="agent-monitor-detail" id="agent-detail-drawer" ${drawerOpen}>
+          <summary>Show detail tables</summary>
+          <div id="agent-detail-activity">${renderAgentCurrentActivity(schedule, payload.pending_action_count, payload.plan_counts, payload.open_plan_readiness)}</div>
+          <div id="agent-detail-intake">${renderAgentCandidateIntake(payload.candidate_intake, payload.candidate_intake_by_agent)}</div>
+          <div id="agent-detail-models">${renderAgentModelSettings(payload.agent_model_settings)}</div>
+          <div id="agent-detail-llm">${renderLlmAttribution(payload.llm_attribution)}${renderLlmOutcomeAttribution(payload.llm_outcome_attribution)}</div>
+          ${renderCompactReconciliation(broker, brokerSnapshot)}
+          <section class="ui-card" style="padding:12px; margin-top:14px" id="agent-detail-competition">
+            <div class="ui-section-title">Agent Competition</div>
+            <div class="ui-muted" style="margin-top:2px">${competition.winner ? `Leader ${escapeHtml(competition.winner.label || competition.winner.agent || "")}` : "No leader yet"}</div>
+            <div class="table-wrap" style="margin-top:10px">
+              <table>
+                <thead><tr><th>Rank</th><th>Agent</th><th class="num">After-tax P&L</th><th class="num">Pretax P&L</th><th class="num">Executed</th><th>Risk</th></tr></thead>
+                <tbody>
+                  ${leaderboard.length ? leaderboard.map((row) => `<tr><td>#${escapeHtml(row.rank || "")}</td><td>${escapeHtml(row.label || row.agent || "")}</td><td class="num ${Number((row.after_tax_profit ?? row.profit) || 0) >= 0 ? "cell-ok" : "cell-bad"}">${escapeHtml(row.after_tax_profit_display || row.profit_display || formatCurrency(row.after_tax_profit ?? row.profit, 0))}</td><td class="num">${escapeHtml(row.profit_display || formatCurrency(row.profit, 0))}</td><td class="num">${escapeHtml(row.executed_count || 0)}</td><td>${escapeHtml(row.risk_warnings?.slice(0, 3).join(", ") || row.risk_status || "ok")}</td></tr>`).join("") : '<tr><td colspan="6" class="ui-muted">No competition rows available.</td></tr>'}
+                </tbody>
+              </table>
+            </div>
+            ${overlapRiskRows.length ? `<div class="ui-muted">Overlap: ${escapeHtml(overlapRiskRows.map((row) => row.ticker).join(", "))}</div>` : ""}
+          </section>
+          <section class="ui-card" style="padding:12px; margin-top:14px" id="agent-detail-status">
+            <div class="ui-section-title">Agent Portfolio Status</div>
+            <div class="ui-muted" style="margin-top:2px">Schedule ${escapeHtml(scheduleStatus)}</div>
+            <div class="table-wrap" style="margin-top:10px">
+              <table>
+                <thead><tr><th>Agent</th><th>Status</th><th>Portfolio</th><th>Metrics</th><th>Latest</th></tr></thead>
+                <tbody>
+                  ${rows.length ? rows.map((row) => `<tr><td><strong>${escapeHtml(row.label || row.name || "")}</strong><div class="ui-muted">${escapeHtml(row.role || "")}</div></td><td>${agentStatusBadge(row)}</td><td>${escapeHtml(row.portfolio_name || summary.portfolio_name || "")}</td><td>${(Array.isArray(row.metrics) ? row.metrics : []).map(agentMetricBadge).join(" ")}</td><td>${row.latest_activity_at ? escapeHtml(relativeTime(row.latest_activity_at)) : "-"}</td></tr>`).join("") : '<tr><td colspan="5" class="ui-muted">No agent status rows.</td></tr>'}
+                </tbody>
+              </table>
+            </div>
+          </section>
+          <section class="ui-card" style="padding:12px; margin-top:14px" id="agent-detail-positions">
+            <div class="ui-section-title">Open Positions</div>
+            <div class="table-wrap" style="margin-top:10px">
+              <table>
+                <thead><tr><th>Ticker</th><th class="num">Qty</th><th class="num">Entry</th><th class="num">Current</th><th class="num">Market Value</th><th class="num">Unrealized</th><th>Role</th></tr></thead>
+                <tbody>
+                  ${positions.length ? positions.map((row) => `<tr><td>${escapeHtml(row.ticker || "")}</td><td class="num">${escapeHtml(row.quantity || 0)}</td><td class="num">${escapeHtml(formatCurrency(row.entry_price, 2))}</td><td class="num">${escapeHtml(formatCurrency(row.current_price || row.entry_price, 2))}</td><td class="num">${escapeHtml(formatCurrency(row.market_value || row.current_value, 0))}</td><td class="num ${Number(row.unrealized_pnl || 0) >= 0 ? "cell-ok" : "cell-bad"}">${escapeHtml(formatCurrency(row.unrealized_pnl, 0))}</td><td>${escapeHtml(row.role || "")}</td></tr>`).join("") : '<tr><td colspan="7" class="ui-muted">No open positions.</td></tr>'}
+                </tbody>
+              </table>
+            </div>
+          </section>
+          <section class="ui-card" style="padding:12px; margin-top:14px" id="agent-detail-events">
+            <div class="ui-section-title">Recent Execution Events</div>
+            <div class="table-wrap" style="margin-top:10px">
+              <table>
+                <thead><tr><th>Time</th><th>Event</th><th>Ticker</th><th>Action</th><th class="num">Qty</th><th class="num">Price</th><th>Actor</th></tr></thead>
+                <tbody>
+                  ${recentActivity.length ? recentActivity.map((row) => `<tr><td>${escapeHtml(relativeTime(row.created_at))}</td><td>${escapeHtml(row.event_type || "")}</td><td>${escapeHtml(row.ticker || "")}</td><td>${escapeHtml(row.action || "")}</td><td class="num">${row.quantity == null ? "-" : escapeHtml(row.quantity)}</td><td class="num">${row.price == null ? "-" : escapeHtml(formatCurrency(row.price, 2))}</td><td>${escapeHtml(row.actor || "")}</td></tr>`).join("") : '<tr><td colspan="7" class="ui-muted">No execution events in the last seven days.</td></tr>'}
+                </tbody>
+              </table>
+            </div>
+          </section>
+        </details>
+      </section>
+    `;
+  }
+
+  function bindAgentMonitorUi() {
+    const refreshBtn = byId("regimeAgentDashboardRefresh");
+    if (refreshBtn) refreshBtn.addEventListener("click", () => loadAgentDashboard());
+    const modelBtn = byId("regimeAgentModelSettingsJump");
+    if (modelBtn) {
+      modelBtn.addEventListener("click", () => {
+        const drawer = byId("agent-detail-drawer");
+        if (drawer) drawer.open = true;
+        const target = byId("agent-detail-models");
+        if (target) target.scrollIntoView({ behavior: "smooth", block: "start" });
+      });
+    }
+    const tradingBtn = byId("regimeAgentDashboardTrading");
+    if (tradingBtn) tradingBtn.addEventListener("click", () => switchTab("trading"));
+    document.querySelectorAll("[data-agent-detail-link]").forEach((link) => {
+      link.addEventListener("click", () => {
+        const drawer = byId("agent-detail-drawer");
+        if (drawer) drawer.open = true;
+        const target = byId(`agent-detail-${String(link.getAttribute("data-agent-detail-link") || "")}`);
+        window.setTimeout(() => {
+          if (target) target.scrollIntoView({ behavior: "smooth", block: "start" });
+        }, 0);
+      });
+    });
+    const detailHash = window.location.hash.replace("#", "").split("/")[1] || "";
+    if (detailHash) {
+      const drawer = byId("agent-detail-drawer");
+      if (drawer) drawer.open = true;
+      const target = byId(`agent-detail-${detailHash}`);
+      if (target) window.setTimeout(() => target.scrollIntoView({ behavior: "smooth", block: "start" }), 0);
+    }
+    bindAgentHelpButtons();
+    bindAgentModelSettings();
+  }
+
   function renderAgentDashboard() {
     const mount = byId("regimeAgentDashboardMount");
     if (!mount) return;
@@ -4296,6 +4720,87 @@
       `;
       const refreshBtn = byId("regimeAgentDashboardRefresh");
       if (refreshBtn) refreshBtn.addEventListener("click", () => loadAgentDashboard());
+      return;
+    }
+    {
+      const summary = payload.portfolio_summary || {};
+      const target = payload.target || {};
+      const guardrails = payload.guardrails || {};
+      const schedule = payload.schedule || {};
+      const data = payload.data || {};
+      const broker = payload.broker || {};
+      const rows = Array.isArray(payload.agents) ? payload.agents : [];
+      const positions = Array.isArray(summary.positions) ? summary.positions : [];
+      const recentActivity = Array.isArray(payload.recent_activity) ? payload.recent_activity : [];
+      const marketConfig = data.market_data_provider_config || {};
+      const regimeProviders = Array.isArray(marketConfig.regime_provider_order) ? marketConfig.regime_provider_order.join(" -> ") : "configured sources";
+      const brokerSnapshot = state.ibkrAccountSnapshot || null;
+      const competition = payload.competition || {};
+      const leaderboard = Array.isArray(competition.leaderboard) ? competition.leaderboard : [];
+      const overlap = competition.overlap || {};
+      const overlapRiskRows = Array.isArray(overlap.risk_tickers)
+        ? overlap.risk_tickers
+        : (Array.isArray(overlap.tickers) ? overlap.tickers.filter((row) => row.status === "risk") : []);
+      const scheduleStatus = schedule.last_status && typeof schedule.last_status === "object"
+        ? `${schedule.last_status.status || "checked"}${schedule.last_status.skip_reason ? ` · ${schedule.last_status.skip_reason}` : ""}`
+        : (schedule.last_status || "No run yet");
+      const afterTaxEquity = summary.after_tax_equity ?? summary.equity;
+      const afterTaxReturnPct = Number((summary.after_tax_return_pct ?? summary.total_return_pct) || 0);
+      const targetGap = target.gap_to_target == null ? "" : ` · Gap ${formatCurrency(target.gap_to_target, 0)}`;
+      const context = {
+        payload,
+        summary,
+        broker,
+        brokerSnapshot,
+        rows,
+        positions,
+        recentActivity,
+        schedule,
+        scheduleStatus,
+        competition,
+        leaderboard,
+        overlap,
+        overlapRiskRows,
+      };
+      mount.innerHTML = `
+        <div class="agent-monitor">
+          <div class="agent-monitor__header">
+            <div>
+              <div class="agent-monitor__title">Agent Portfolio Monitor</div>
+              <div class="agent-monitor__subtitle">${escapeHtml(summary.portfolio_name || "Regime Agent Beta")} · ${escapeHtml(summary.portfolio_scope || "paper trading agents")}</div>
+            </div>
+            <div class="agent-monitor__ribbon">
+              <button class="btn btn--secondary" type="button" data-agent-help="agent-overview" aria-label="What am I looking at?" aria-expanded="false">What am I looking at?</button>
+              <button class="btn btn--secondary" type="button" id="regimeAgentDashboardRefresh">Refresh</button>
+              <button class="btn btn--secondary" type="button" id="regimeAgentModelSettingsJump">Model Settings</button>
+              <button class="btn btn--secondary" type="button" id="regimeAgentDashboardTrading">Trading</button>
+            </div>
+          </div>
+          ${renderAgentHealthRibbon(payload, brokerSnapshot)}
+          ${renderAgentLeaderboard(payload)}
+          <section class="agent-monitor-panel">
+            <div class="agent-monitor__ribbon">
+              <span class="ui-badge ui-badge--neutral">Equity ${escapeHtml(formatCurrency(summary.equity, 0))}</span>
+              <span class="${afterTaxReturnPct >= 0 ? "ui-badge ui-badge--safe" : "ui-badge ui-badge--warn"}">After-tax ${escapeHtml(formatSignedPct(afterTaxReturnPct / 100, 2))}</span>
+              <span class="ui-badge ui-badge--neutral">Target ${escapeHtml(formatSignedPct(Number(target.target_monthly_return || 0), 2))} / month${escapeHtml(targetGap)}</span>
+              <span class="ui-badge ui-badge--neutral">Exposure ${escapeHtml(formatExposurePct(summary.exposure_pct, 1))}</span>
+              <span class="ui-badge ui-badge--neutral">Broker ${escapeHtml(broker.type || "paper")}</span>
+              <span class="ui-badge ui-badge--neutral">Data ${escapeHtml(regimeProviders)}</span>
+              <span class="ui-badge ui-badge--neutral">After-tax basis</span>
+              <span class="${guardrails.live_trading_unlocked ? "ui-badge ui-badge--bad" : "ui-badge ui-badge--safe"}">${guardrails.live_trading_unlocked ? "Live unlocked" : "Live locked"}</span>
+            </div>
+            <div class="ui-muted" style="margin-top:8px">After-tax equity ${escapeHtml(formatCurrency(afterTaxEquity, 0))} · ${escapeHtml(summary.positions_open || 0)} open positions · daily cap ${escapeHtml(formatCurrency(guardrails.daily_capital_ceiling_value, 0))} · loss stop ${escapeHtml(formatCurrency(guardrails.daily_loss_limit, 0))}</div>
+          </section>
+          <div class="agent-monitor__grid">
+            ${renderAgentDecisionFunnel(state.agentFunnel)}
+            ${renderAgentLiveFeed(state.agentFeed)}
+          </div>
+          ${renderAgentPositionRiskBoard(payload)}
+          ${renderAgentModelHealthStrip(payload)}
+          ${renderAgentDetailDrawer(context)}
+        </div>
+      `;
+      bindAgentMonitorUi();
       return;
     }
     const summary = payload.portfolio_summary || {};
@@ -4639,6 +5144,30 @@
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.detail || payload.error || `Agent dashboard failed (${response.status})`);
       state.agentDashboard = payload;
+      state.agentFunnel = null;
+      state.agentFeed = null;
+      await Promise.all([
+        (async () => {
+          const endpoint = state.config?.endpoints?.agent_funnel || "/regime/agents/funnel";
+          try {
+            const funnelResponse = await fetch(`${endpoint}?date=today`, { headers: { Accept: "application/json" } });
+            const funnelPayload = await funnelResponse.json();
+            state.agentFunnel = funnelResponse.ok ? funnelPayload : { error: funnelPayload.detail || funnelPayload.error || `Funnel failed (${funnelResponse.status})` };
+          } catch (error) {
+            state.agentFunnel = { error: error.message || String(error), stages: [], blockers: [] };
+          }
+        })(),
+        (async () => {
+          const endpoint = state.config?.endpoints?.agent_feed || "/regime/agents/feed";
+          try {
+            const feedResponse = await fetch(`${endpoint}?limit=50`, { headers: { Accept: "application/json" } });
+            const feedPayload = await feedResponse.json();
+            state.agentFeed = feedResponse.ok ? feedPayload : { error: feedPayload.detail || feedPayload.error || `Feed failed (${feedResponse.status})` };
+          } catch (error) {
+            state.agentFeed = { error: error.message || String(error), items: [] };
+          }
+        })(),
+      ]);
       state.ibkrAccountSnapshot = null;
       const portfolioId = payload?.portfolio_summary?.portfolio_id;
       if (payload?.broker?.type === "ibkr" && portfolioId != null && state.config?.endpoints?.ibkr_account_snapshot) {

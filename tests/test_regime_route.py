@@ -177,6 +177,23 @@ def _fake_runtime() -> dict:
         "expire_stale_trade_plans": lambda portfolio_id, max_age_days=2: 1,
         "compute_paper_performance": lambda portfolio_id: {"portfolio_id": int(portfolio_id), "total_return_pct": 1.2, "win_rate": 0.5, "realized_pnl": 50.0, "unrealized_pnl": 100.0, "total_market_value": 1100.0},
         "compute_benchmark_comparison": lambda portfolio_id, benchmark="SPY": {"benchmark": benchmark, "benchmark_return_pct": 0.8, "paper_return_pct": 1.2, "alpha_pct": 0.4},
+        "compute_agent_monitor_funnel": lambda date="today": {
+            "date": "2026-03-26" if date == "today" else date,
+            "stages": [{"key": "candidates", "label": "Candidates", "count": 2}],
+            "blockers": [{"reason": "signal stale", "count": 1}],
+        },
+        "compute_agent_monitor_feed": lambda limit=50, before=None: {
+            "items": [
+                {
+                    "ts": "2026-03-26T12:00:00+00:00",
+                    "agent_key": "quant",
+                    "kind": "trade",
+                    "text": f"Quant bought NVDA - limit {limit}",
+                    "detail": {"before": before},
+                }
+            ],
+            "has_more": False,
+        },
         "portfolio_risk_summary_dict": lambda positions, results: {
             "regime_exposure": {"bull_pct": 0.75, "neutral_pct": 0.0, "bear_pct": 0.25},
             "sector_concentration": [{"sector": "Semiconductors", "value": 100000.0, "bull_pct": 0.75, "neutral_pct": 0.0, "bear_pct": 0.25, "flag": ""}],
@@ -350,6 +367,25 @@ def test_paper_plan_and_performance_routes(monkeypatch) -> None:
     assert audit.json()["audit"][0]["ticker"] == "NVDA"
     pending = client.get("/regime/paper-portfolio/1/orders/pending")
     assert pending.status_code == 200
+
+
+def test_agent_monitor_funnel_route(monkeypatch) -> None:
+    client = _client(monkeypatch)
+    response = client.get("/regime/agents/funnel?date=2026-03-26")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["date"] == "2026-03-26"
+    assert payload["stages"][0]["key"] == "candidates"
+    assert payload["blockers"][0]["reason"] == "signal stale"
+
+
+def test_agent_monitor_feed_route(monkeypatch) -> None:
+    client = _client(monkeypatch)
+    response = client.get("/regime/agents/feed?limit=7&before=2026-03-26T13:00:00%2B00:00")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["items"][0]["text"] == "Quant bought NVDA - limit 7"
+    assert payload["items"][0]["detail"]["before"] == "2026-03-26T13:00:00+00:00"
 
 
 def test_holdings_endpoint_filters_by_account(monkeypatch) -> None:

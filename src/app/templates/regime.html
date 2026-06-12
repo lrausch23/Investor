@@ -386,5 +386,6 @@
   </aside>
 
   <script type="application/json" id="regimeConfig">{{ regime_config_json|safe }}</script>
+  <script src="/static/regime_help.js?v={{ static_version or '0' }}"></script>
   <script src="/static/regime.js?v={{ static_version or '0' }}"></script>
 {% endblock %}

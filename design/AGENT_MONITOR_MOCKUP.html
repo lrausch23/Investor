@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Agent monitor — layout reference mockup</title>
+<style>
+  :root { --bg2:#f4f2ec; --b:#dedbd2; --txt:#1a1a1a; --mut:#5f5e5a; --hint:#8a8880; --ok:#0F6E56; --okbg:#E1F5EE; --bad:#993C1D; --badbg:#FAECE7; --warn:#854F0B; --warnbg:#FAEEDA; }
+  body { font-family:-apple-system,"Segoe UI",Helvetica,Arial,sans-serif; max-width:1180px; margin:1.5rem auto; padding:0 1rem; color:var(--txt); }
+  h1 { font-size:20px; font-weight:500; } h2 { font-size:14px; font-weight:500; margin:0 0 10px; }
+  .pill { border-radius:999px; padding:4px 12px; font-size:12.5px; display:inline-block; }
+  .ribbon { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:14px; }
+  .cards { display:grid; grid-template-columns:repeat(4,1fr); gap:10px; margin-bottom:16px; }
+  .card, .panel { border:1px solid var(--b); border-radius:12px; padding:13px 14px; }
+  .cols { display:grid; grid-template-columns:1.1fr 1fr; gap:14px; margin-bottom:16px; }
+  .muted { color:var(--mut); } .hint { color:var(--hint); font-size:11.5px; }
+  table { width:100%; border-collapse:collapse; font-size:12.5px; }
+  th { text-align:left; font-weight:500; color:var(--hint); padding:4px 8px; }
+  td { padding:6px 8px; }
+  .bar { position:relative; height:8px; background:var(--bg2); border-radius:4px; }
+  .help { float:right; color:var(--hint); font-size:12px; border:1px solid var(--b); border-radius:999px; width:18px; height:18px; text-align:center; line-height:16px; cursor:help; }
+</style>
+</head>
+<body>
+<h1>Agent monitor — redesigned #agents pane (reference mockup)</h1>
+<p class="muted" style="font-size:13.5px;">Layout reference for the Codex implementation task. Every section carries a help affordance (the ? circle) opening a quick-reference popover. Sample data is illustrative.</p>
+
+<div class="ribbon">
+  <span class="pill" style="background:var(--okbg); color:var(--ok);">IBKR connected</span>
+  <span class="pill" style="background:var(--bg2); color:var(--mut);">Market closed · next cycle 09:35 ET</span>
+  <span class="pill" style="background:var(--okbg); color:var(--ok);">Autonomous mode</span>
+  <span class="pill" style="background:var(--bg2); color:var(--mut);">VIX 17.2 · no freeze</span>
+  <span class="pill" style="background:var(--bg2); color:var(--mut);">Kill switch off</span>
+  <span class="pill" style="background:var(--warnbg); color:var(--warn);">1 alert: AVGO sell unapproved 2h</span>
+  <span class="help" title="System health at a glance">?</span>
+</div>
+
+<div class="cards">
+  <div class="card"><span class="help">?</span><strong style="font-size:14px;">Portfolio / tax</strong> <span class="pill" style="background:var(--okbg); color:var(--ok); font-size:11.5px;">#1</span>
+    <div style="font-size:20px; font-weight:500; margin-top:6px;">$24,535</div>
+    <div style="font-size:12.5px; color:var(--bad);">today −$48 · after-tax −2.06%</div>
+    <div class="bar" style="margin-top:8px;"><div style="width:34%; height:8px; background:var(--ok); border-radius:4px;"></div></div>
+    <div class="hint" style="margin-top:4px;">2 positions · 13% exposed · 0 pending</div></div>
+  <div class="card"><strong style="font-size:14px;">Quant</strong> <span class="pill" style="background:var(--bg2); color:var(--mut); font-size:11.5px;">#2</span>
+    <div style="font-size:20px; font-weight:500; margin-top:6px;">$24,528</div>
+    <div style="font-size:12.5px; color:var(--bad);">today −$55 · after-tax −2.08%</div>
+    <div class="bar" style="margin-top:8px;"><div style="width:31%; height:8px; background:var(--ok); border-radius:4px;"></div></div>
+    <div class="hint" style="margin-top:4px;">3 positions · 18% exposed · 1 pending</div></div>
+  <div class="card"><strong style="font-size:14px;">Execution</strong> <span class="pill" style="background:var(--bg2); color:var(--mut); font-size:11.5px;">#3</span>
+    <div style="font-size:20px; font-weight:500; margin-top:6px;">$24,508</div>
+    <div style="font-size:12.5px; color:var(--bad);">today −$60 · after-tax −2.09%</div>
+    <div class="bar" style="margin-top:8px;"><div style="width:30%; height:8px; background:var(--ok); border-radius:4px;"></div></div>
+    <div class="hint" style="margin-top:4px;">2 positions · 12% exposed · 0 pending</div></div>
+  <div class="card"><strong style="font-size:14px;">Fundamental</strong> <span class="pill" style="background:var(--badbg); color:var(--bad); font-size:11.5px;">#4 · paused</span>
+    <div style="font-size:20px; font-weight:500; margin-top:6px;">$24,467</div>
+    <div style="font-size:12.5px; color:var(--bad);">today −$92 · drawdown pause −5.1%</div>
+    <div class="bar" style="margin-top:8px;"><div style="width:22%; height:8px; background:var(--bad); border-radius:4px;"></div></div>
+    <div class="hint" style="margin-top:4px;">1 position · 6% exposed · buys halted</div></div>
+</div>
+
+<div class="cols">
+  <div class="panel"><span class="help">?</span><h2>Today's decision funnel</h2>
+    <div style="font-size:12.5px; color:var(--mut); display:flex; flex-direction:column; gap:7px;">
+      <div style="display:flex; align-items:center; gap:8px;"><span style="width:118px;">Candidates</span><div style="flex:1; height:14px; background:#EEEDFE; border-radius:3px;"></div><span style="width:30px; text-align:right;">48</span></div>
+      <div style="display:flex; align-items:center; gap:8px;"><span style="width:118px;">Universe screen</span><div style="flex:1;"><div style="width:65%; height:14px; background:#CECBF6; border-radius:3px;"></div></div><span style="width:30px; text-align:right;">31</span></div>
+      <div style="display:flex; align-items:center; gap:8px;"><span style="width:118px;">Agent mandates</span><div style="flex:1;"><div style="width:46%; height:14px; background:#AFA9EC; border-radius:3px;"></div></div><span style="width:30px; text-align:right;">22</span></div>
+      <div style="display:flex; align-items:center; gap:8px;"><span style="width:118px;">Entry gates</span><div style="flex:1;"><div style="width:19%; height:14px; background:#7F77DD; border-radius:3px;"></div></div><span style="width:30px; text-align:right;">9</span></div>
+      <div style="display:flex; align-items:center; gap:8px;"><span style="width:118px;">Plans created</span><div style="flex:1;"><div style="width:6%; height:14px; background:#534AB7; border-radius:3px;"></div></div><span style="width:30px; text-align:right;">3</span></div>
+      <div style="display:flex; align-items:center; gap:8px;"><span style="width:118px;">Executed</span><div style="flex:1;"><div style="width:4%; height:14px; background:#3C3489; border-radius:3px;"></div></div><span style="width:30px; text-align:right;">2</span></div>
+    </div>
+    <div class="hint" style="margin-top:10px;">Top blockers: price above entry premise (6) · hurdle rate (4) · signal stale (2) · anti-churn (1)</div>
+  </div>
+  <div class="panel"><span class="help">?</span><h2>Live activity</h2>
+    <div style="font-size:12.5px; display:flex; flex-direction:column; gap:9px;">
+      <div style="display:flex; gap:8px;"><span class="hint" style="width:42px;">12:04</span><span style="color:var(--ok);">▲</span><span><strong>Quant</strong> bought 11 NVDA @ $213.40 — ML 0.58, hurdle +1.9% net</span></div>
+      <div style="display:flex; gap:8px;"><span class="hint" style="width:42px;">12:04</span><span style="color:var(--bad);">■</span><span><strong>Execution</strong> blocked SLAB — price 8.6% above entry premise</span></div>
+      <div style="display:flex; gap:8px;"><span class="hint" style="width:42px;">11:42</span><span style="color:var(--bad);">▼</span><span><strong>Portfolio/tax</strong> sold 9 AVGO @ $187 — trailing stop, +$74 net</span></div>
+      <div style="display:flex; gap:8px;"><span class="hint" style="width:42px;">11:40</span><span style="color:var(--warn);">◆</span><span><strong>Quant</strong> reduced NVDA by half — bull faded to neutral (p-bull 41%)</span></div>
+      <div style="display:flex; gap:8px;"><span class="hint" style="width:42px;">10:15</span><span style="color:#534AB7;">●</span><span>Meta-labeler v5 retrained — OOF AUC 0.57, skill gate passed</span></div>
+      <div style="display:flex; gap:8px;"><span class="hint" style="width:42px;">09:35</span><span style="color:var(--bad);">‖</span><span><strong>Fundamental</strong> buys paused — portfolio drawdown 5.1%</span></div>
+    </div>
+    <div class="hint" style="margin-top:10px;">Filter: all agents · trades · blocks · system</div>
+  </div>
+</div>
+
+<div class="panel" style="margin-bottom:16px;"><span class="help">?</span><h2>Open positions — distance to stop and target</h2>
+  <table>
+    <tr><th>Ticker</th><th>Agent</th><th>P&amp;L</th><th style="width:42%;">stop ◂ price ▸ target</th><th>Held</th><th>Regime</th></tr>
+    <tr><td><strong>NVDA</strong></td><td>Quant</td><td style="color:var(--ok);">+$121</td>
+      <td><div class="bar"><div style="position:absolute; left:0; width:62%; height:8px; background:#9FE1CB; border-radius:4px;"></div><div style="position:absolute; left:62%; top:-2px; width:3px; height:12px; background:#085041;"></div></div><div style="display:flex; justify-content:space-between;" class="hint"><span>$198.7</span><span>$213.4</span><span>$236.0</span></div></td>
+      <td>4 / 21d</td><td><span class="pill" style="background:var(--okbg); color:var(--ok); font-size:11px;">Bull 87%</span></td></tr>
+    <tr><td><strong>AVGO</strong></td><td>Portfolio/tax</td><td style="color:var(--bad);">−$38</td>
+      <td><div class="bar"><div style="position:absolute; left:0; width:14%; height:8px; background:#F5C4B3; border-radius:4px;"></div><div style="position:absolute; left:14%; top:-2px; width:3px; height:12px; background:#712B13;"></div></div><div style="display:flex; justify-content:space-between;" class="hint"><span>$181.2</span><span>$184.1</span><span>$208.5</span></div></td>
+      <td>17 / 21d</td><td><span class="pill" style="background:var(--bg2); color:var(--mut); font-size:11px;">Neutral 64%</span></td></tr>
+    <tr><td><strong>MU</strong></td><td>Execution</td><td style="color:var(--ok);">+$12</td>
+      <td><div class="bar"><div style="position:absolute; left:0; width:38%; height:8px; background:#9FE1CB; border-radius:4px;"></div><div style="position:absolute; left:38%; top:-2px; width:3px; height:12px; background:#085041;"></div></div><div style="display:flex; justify-content:space-between;" class="hint"><span>$96.0</span><span>$102.3</span><span>$118.4</span></div></td>
+      <td>9 / 21d</td><td><span class="pill" style="background:var(--okbg); color:var(--ok); font-size:11px;">Bull 71%</span></td></tr>
+  </table>
+  <div style="margin-top:8px; font-size:12px; color:var(--warn);">AVGO is 1.6% above its stop with 4 days to time-stop — most likely next exit.</div>
+</div>
+
+<div class="ribbon">
+  <span class="pill" style="border:1px solid var(--b); color:var(--mut);">Meta-labeler v5 · AUC 0.57 · gate passed</span>
+  <span class="pill" style="border:1px solid var(--b); color:var(--mut);">HMM seed agreement 0.92</span>
+  <span class="pill" style="border:1px solid var(--b); color:var(--mut);">Calibration Brier −0.057</span>
+  <span class="pill" style="border:1px solid var(--b); color:var(--mut);">Data fallbacks today: 2</span>
+  <span class="pill" style="border:1px solid var(--b); color:var(--mut);">LLM verdicts: 9 resolved · 56% win</span>
+  <span class="pill" style="border:1px solid var(--b); color:var(--mut);">Detail tables → intake · reconciliation · models</span>
+  <span class="help" title="Model trust indicators">?</span>
+</div>
+</body>
+</html>

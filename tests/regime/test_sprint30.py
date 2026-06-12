@@ -42,7 +42,8 @@ def test_template_has_three_tab_panels(monkeypatch) -> None:
 
 def test_hash_navigation_prefers_hash_over_saved_tab() -> None:
     js = JS_PATH.read_text()
-    assert 'const target = hash || prefs.activeTab || "analysis";' in js
+    assert 'const baseHash = hash.split("/")[0];' in js
+    assert 'const target = baseHash || prefs.activeTab || "analysis";' in js
 
 
 def test_hero_strip_exists(monkeypatch) -> None:
@@ -124,4 +125,3 @@ def test_status_bar_and_tabs_css_exist() -> None:
     assert ".regime-status-bar" in css
     assert ".regime-tabs" in css
     assert ".regime-tab-panel--active" in css
-

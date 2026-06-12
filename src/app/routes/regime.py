@@ -105,7 +105,8 @@ def _static_version() -> str:
         p = Path(__file__).resolve().parents[1] / "static"
         css_m = int((p / "app.css").stat().st_mtime) if (p / "app.css").exists() else 0
         js_m = int((p / "regime.js").stat().st_mtime) if (p / "regime.js").exists() else 0
-        return str(max(css_m, js_m, 0))
+        help_m = int((p / "regime_help.js").stat().st_mtime) if (p / "regime_help.js").exists() else 0
+        return str(max(css_m, js_m, help_m, 0))
     except Exception as exc:
         logger.debug("Unable to compute regime static asset version.", exc_info=exc)
         return "0"
@@ -301,7 +302,12 @@ def _load_hmm_runtime() -> tuple[dict[str, Any] | None, str | None]:
             compute_theme_attribution,
         )
         from src.regime.alerts import format_alert_summary
-        from src.regime.agent_dashboard import compute_agent_portfolio_dashboard, compute_beta_agent_dashboard
+        from src.regime.agent_dashboard import (
+            compute_agent_monitor_feed,
+            compute_agent_monitor_funnel,
+            compute_agent_portfolio_dashboard,
+            compute_beta_agent_dashboard,
+        )
         from src.regime.notifications import dispatch_notification, notification_preferences_payload
         from src.regime.monitoring import sweep_monitoring_alerts
         from src.regime.paper_trading import (
@@ -559,6 +565,8 @@ def _load_hmm_runtime() -> tuple[dict[str, Any] | None, str | None]:
         "compute_beta_target_progress": compute_beta_target_progress,
         "compute_agent_portfolio_dashboard": compute_agent_portfolio_dashboard,
         "compute_beta_agent_dashboard": compute_beta_agent_dashboard,
+        "compute_agent_monitor_funnel": compute_agent_monitor_funnel,
+        "compute_agent_monitor_feed": compute_agent_monitor_feed,
         "compute_theme_attribution": compute_theme_attribution,
         "compute_source_attribution": compute_source_attribution,
         "compute_regime_attribution": compute_regime_attribution,
@@ -3452,6 +3460,8 @@ def _build_shell_context(
             "agents_status": "/regime/agents/status",
             "agents_consensus": "/regime/agents/consensus",
             "agent_dashboard": "/regime/beta/agent-dashboard",
+            "agent_funnel": "/regime/agents/funnel",
+            "agent_feed": "/regime/agents/feed",
             "orchestrator_settings": "/regime/orchestrator/settings",
             "autonomy_settings": "/regime/autonomy/settings",
             "tax_settings": "/regime/tax-settings",
@@ -6961,6 +6971,43 @@ def regime_beta_agent_dashboard(
         payload["candidate_intake"] = {"error": str(exc), "candidates": [], "counts": {}}
         payload["candidate_intake_by_agent"] = []
     return JSONResponse(content=_json_ready(payload))
+
+
+@router.get("/agents/funnel")
+def regime_agents_funnel(
+    date: str = "today",
+    session: Session = Depends(db_session),
+    actor: str = Depends(require_actor),
+):
+    del session, actor
+    runtime, runtime_error = _load_hmm_runtime()
+    if runtime is None:
+        raise HTTPException(status_code=503, detail=runtime_error or "Regime analytics are unavailable.")
+    helper = runtime.get("compute_agent_monitor_funnel")
+    if helper is None:
+        from src.regime.agent_dashboard import compute_agent_monitor_funnel
+
+        helper = compute_agent_monitor_funnel
+    return JSONResponse(content=_json_ready(helper(date=date)))
+
+
+@router.get("/agents/feed")
+def regime_agents_feed(
+    limit: int = 50,
+    before: str | None = None,
+    session: Session = Depends(db_session),
+    actor: str = Depends(require_actor),
+):
+    del session, actor
+    runtime, runtime_error = _load_hmm_runtime()
+    if runtime is None:
+        raise HTTPException(status_code=503, detail=runtime_error or "Regime analytics are unavailable.")
+    helper = runtime.get("compute_agent_monitor_feed")
+    if helper is None:
+        from src.regime.agent_dashboard import compute_agent_monitor_feed
+
+        helper = compute_agent_monitor_feed
+    return JSONResponse(content=_json_ready(helper(limit=max(1, min(200, int(limit))), before=before)))
 
 
 def _require_paper_portfolio(runtime: dict[str, Any], portfolio_id: int) -> dict[str, Any]:

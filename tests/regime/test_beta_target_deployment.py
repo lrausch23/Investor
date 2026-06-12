@@ -919,6 +919,80 @@ def test_beta_agent_dashboard_reports_current_open_plan_readiness(temp_modules) 
     assert readiness["rows"][0]["ready"] is True
 
 
+def test_agent_monitor_funnel_counts_candidates_plans_and_executions(temp_modules, monkeypatch) -> None:
+    store, _config, _broker, _ibkr_market_data, _data, _paper = temp_modules
+    from src.regime import agent_candidate_intake as intake_module
+    from src.regime import agent_dashboard as agent_dashboard_module
+
+    agent_dashboard = importlib.reload(agent_dashboard_module)
+    portfolio = store.create_paper_portfolio("Regime Agent Beta - Agent 1 Quant", 25_000.0, broker_type="ibkr")
+    portfolio_id = int(portfolio["id"])
+    store.set_setting("regime_beta_portfolio_ids", str(portfolio_id))
+    store.create_trade_plan(portfolio_id, "NVDA", "Buy", 3, "entry candidate", proposed_price=100.0)
+    store.log_audit_event(
+        order_id="fill-1",
+        portfolio_id=portfolio_id,
+        event_type="filled",
+        ticker="NVDA",
+        action="Buy",
+        quantity=3,
+        price=100.0,
+        actor="scheduler",
+        details="paper fill",
+    )
+
+    monkeypatch.setattr(
+        intake_module,
+        "compute_agent_candidate_intake",
+        lambda portfolio_id, limit=500: {
+            "total_candidates": 3,
+            "counts": {"would_create_buy_plan": 1, "blocked_signal_quality": 2},
+            "candidates": [
+                {"ticker": "NVDA", "decision": "would_create_buy_plan", "reason": "passes"},
+                {"ticker": "ARW", "decision": "blocked_signal_quality", "reason": "Signal is stale."},
+                {"ticker": "SLAB", "decision": "blocked_signal_quality", "reason": "Current price is above the entry premise."},
+            ],
+        },
+    )
+
+    funnel = agent_dashboard.compute_agent_monitor_funnel([portfolio_id], date="today")
+    stages = {row["key"]: row["count"] for row in funnel["stages"]}
+
+    assert stages["candidates"] == 3
+    assert stages["entry_gates"] == 1
+    assert stages["plans_created"] == 1
+    assert stages["executed"] == 1
+    assert funnel["blockers"][0]["reason"] in {"signal stale", "price away from entry"}
+
+
+def test_agent_monitor_feed_composes_server_side_sentences(temp_modules) -> None:
+    store, _config, _broker, _ibkr_market_data, _data, _paper = temp_modules
+    from src.regime import agent_dashboard as agent_dashboard_module
+
+    agent_dashboard = importlib.reload(agent_dashboard_module)
+    portfolio = store.create_paper_portfolio("Regime Agent Beta - Agent 1 Quant", 25_000.0, broker_type="ibkr")
+    portfolio_id = int(portfolio["id"])
+    store.set_setting("regime_beta_portfolio_ids", str(portfolio_id))
+    store.create_trade_plan(portfolio_id, "AVGO", "Buy", 2, "hurdle +1.9% net", proposed_price=187.0)
+    store.log_audit_event(
+        order_id="fill-2",
+        portfolio_id=portfolio_id,
+        event_type="filled",
+        ticker="AVGO",
+        action="Buy",
+        quantity=2,
+        price=187.0,
+        actor="scheduler",
+        details="ML 0.58, hurdle +1.9% net",
+    )
+
+    feed = agent_dashboard.compute_agent_monitor_feed([portfolio_id], limit=10)
+    texts = [row["text"] for row in feed["items"]]
+
+    assert any("Quant bought 2 AVGO @ $187.00 - ML 0.58" in text for text in texts)
+    assert any("Quant planned buy 2 AVGO @ $187.00 - hurdle +1.9% net" in text for text in texts)
+
+
 def test_beta_agent_dashboard_ranks_profit_and_flags_overlap(temp_modules, monkeypatch) -> None:
     store, _config, _broker, _ibkr_market_data, _data, paper = temp_modules
     from src.regime import agent_competition as agent_competition_module
