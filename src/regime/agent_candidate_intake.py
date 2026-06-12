@@ -19,6 +19,7 @@ from .paper_trading import (
 from .persistence import get_latest_signal_snapshot, get_trade_plans, get_watchlist
 from .signal_quality import evaluate_signal_quality
 from .slippage import estimate_execution_cost
+from .universe import agent_theme_budgets_enabled, check_universe_eligibility, universe_screen_enabled
 
 
 def _latest_plan_by_ticker(portfolio_id: int) -> dict[str, dict[str, Any]]:
@@ -98,6 +99,8 @@ def compute_agent_candidate_intake(portfolio_id: int, *, limit: int = 20) -> dic
     ]
     prices = _batch_current_prices([str(item.get("ticker") or "") for item in candidates])
     allocation = allocate_budget(portfolio_id)
+    use_theme_budgets = agent_theme_budgets_enabled()
+    portfolio_budget = float(allocation.get("allocatable") or allocation.get("total_budget") or 0.0)
     theme_budgets = {int(item["theme_id"]): item for item in allocation.get("themes", [])}
     pending_buys = _pending_plan_index(portfolio_id, "Buy")
     open_positions = _open_position_index(portfolio_id)
@@ -147,14 +150,15 @@ def compute_agent_candidate_intake(portfolio_id: int, *, limit: int = 20) -> dic
             rows.append(row)
             continue
 
-        theme_budget = theme_budgets.get(theme_id)
+        theme_budget = theme_budgets.get(theme_id) if use_theme_budgets else None
         row["theme_budget_exists"] = bool(theme_budget)
-        if not theme_budget:
+        row["theme_budget_required"] = bool(use_theme_budgets)
+        if use_theme_budgets and not theme_budget:
             row["decision"] = "blocked_no_theme_budget"
             row["reason"] = "No allocatable theme budget is available."
             rows.append(row)
             continue
-        role_budget = float((theme_budget.get("by_role") or {}).get(role) or 0.0)
+        role_budget = float((theme_budget.get("by_role") or {}).get(role) or 0.0) if theme_budget else portfolio_budget
         row["role_budget"] = role_budget
 
         snapshot = get_latest_signal_snapshot(ticker, max_age_days=7) or {}
@@ -182,6 +186,15 @@ def compute_agent_candidate_intake(portfolio_id: int, *, limit: int = 20) -> dic
             row["reason"] = quality.summary()
             rows.append(row)
             continue
+
+        if universe_screen_enabled():
+            eligibility = check_universe_eligibility(ticker)
+            row["universe"] = eligibility.to_dict()
+            if not eligibility.eligible:
+                row["decision"] = "blocked_universe"
+                row["reason"] = "Universe screen blocked candidate: " + ", ".join(eligibility.reasons)
+                rows.append(row)
+                continue
 
         if bool(anti_churn_settings.get("anti_churn_enabled", True)):
             anti_churn = check_anti_churn(portfolio_id, ticker)
@@ -283,6 +296,8 @@ def compute_agent_candidate_intake(portfolio_id: int, *, limit: int = 20) -> dic
             "hurdle_enabled": hurdle_settings.get("hurdle_enabled"),
             "duration_gate_enabled": hurdle_settings.get("duration_gate_enabled"),
             "anti_churn_enabled": anti_churn_settings.get("anti_churn_enabled"),
+            "universe_screen_enabled": universe_screen_enabled(),
+            "agent_theme_budgets_enabled": use_theme_budgets,
         },
         "candidates": limited,
     }

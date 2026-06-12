@@ -23,6 +23,7 @@ def temp_modules(tmp_path, monkeypatch):
     monkeypatch.setattr(store, "DB_PATH", db_path)
     config = importlib.reload(config_module)
     paper = importlib.reload(paper_trading_module)
+    monkeypatch.setattr(paper, "universe_screen_enabled", lambda: False)
     llm = importlib.reload(llm_layer_module)
     return store, paper, llm, config, db_path
 

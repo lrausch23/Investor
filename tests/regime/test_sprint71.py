@@ -25,6 +25,7 @@ def temp_modules(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     store.DB_PATH = tmp_path / "regime_watch.db"
     hurdle_rate = importlib.reload(hurdle_rate)
     paper_trading = importlib.reload(paper_trading)
+    monkeypatch.setattr(paper_trading, "universe_screen_enabled", lambda: False)
     slippage = importlib.reload(slippage)
     return store, hurdle_rate, paper_trading, slippage
 

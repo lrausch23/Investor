@@ -110,6 +110,7 @@ def _config(**overrides) -> PipelineBacktestConfig:
         "enable_duration_gate": False,
         "enable_anti_churn_gate": False,
         "enable_signal_quality_gate": False,
+        "enforce_universe_screen": False,
         "entry_cost_bps": 0.0,
         "exit_cost_bps": 0.0,
     }

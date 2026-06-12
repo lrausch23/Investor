@@ -307,6 +307,10 @@ def temp_modules(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     store = importlib.reload(persistence)
     store.DB_PATH = tmp_path / "regime_watch.db"
     paper = importlib.reload(paper_trading)
+    monkeypatch.setattr(paper, "universe_screen_enabled", lambda: False)
+    import src.regime.paper_trading.planning as planning
+
+    monkeypatch.setattr(planning, "universe_screen_enabled", lambda: False)
     return store, paper
 
 

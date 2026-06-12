@@ -26,11 +26,14 @@ def temp_modules(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
     store = importlib.reload(store)
     store.DB_PATH = tmp_path / "regime_watch.db"
+    store.set_setting("agent_theme_budgets_enabled", "true")
     cross_sectional = importlib.reload(cross_sectional)
     discovery = importlib.reload(discovery)
+    monkeypatch.setattr(discovery, "universe_screen_enabled", lambda: False)
     fundamental_data = importlib.reload(fundamental_data)
     gating = importlib.reload(gating)
     paper_trading = importlib.reload(paper_trading)
+    monkeypatch.setattr(paper_trading, "universe_screen_enabled", lambda: False)
     fundamental_data.clear_cache()
     return store, cross_sectional, discovery, paper_trading, fundamental_data, gating
 

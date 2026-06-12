@@ -3,11 +3,17 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pandas as pd
+import pytest
 
 from src.app.routes import regime as regime_route
 from src.regime import discovery as discovery_module
 from src.regime import llm_layer as llm_layer_module
 from src.regime import signals as signals_module
+
+
+@pytest.fixture(autouse=True)
+def _disable_universe_screen(monkeypatch):
+    monkeypatch.setattr(discovery_module, "universe_screen_enabled", lambda: False)
 
 
 def test_position_size_meta_labeler_scales_risk_budget_anchor() -> None:

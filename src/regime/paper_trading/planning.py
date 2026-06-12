@@ -75,6 +75,7 @@ from ..persistence import (
 )
 from ..ib_types import ET
 from ..signal_quality import ACTIONABLE_SIGNAL_SCORE, SignalQuality, evaluate_signal_quality
+from ..universe import agent_theme_budgets_enabled, check_universe_eligibility, universe_screen_enabled
 from . import core
 
 logger = core.logger
@@ -262,6 +263,8 @@ def generate_buy_plans(
     sizing_method = str(sizing_settings.get("sizing_method") or DEFAULT_SIZING_METHOD)
     base_risk_fraction = float(sizing_settings.get("sizing_base_risk_fraction") or DEFAULT_SIZING_BASE_RISK_FRACTION)
     atr_multiplier = float(sizing_settings.get("sizing_atr_multiplier") or DEFAULT_SIZING_ATR_MULTIPLIER)
+    use_theme_budgets = agent_theme_budgets_enabled()
+    portfolio_budget = float(allocation.get("allocatable") or allocation.get("total_budget") or portfolio.get("starting_budget") or config.default_budget)
     theme_budgets = {int(item["theme_id"]): item for item in allocation.get("themes", [])}
     pending_buys = _pending_plan_index(portfolio_id, "Buy")
     open_positions = _open_position_index(portfolio_id)
@@ -278,11 +281,11 @@ def generate_buy_plans(
         mandate = agent_candidate_policy(portfolio_id, ticker, source="discovery", candidate=item)
         if not mandate.get("allowed", True):
             continue
-        theme_budget = theme_budgets.get(theme_id)
-        if not theme_budget:
+        theme_budget = theme_budgets.get(theme_id) if use_theme_budgets else None
+        if use_theme_budgets and not theme_budget:
             continue
         role = str(item.get("suggested_role") or "Critical-Path")
-        role_budget = float((theme_budget.get("by_role") or {}).get(role) or 0.0)
+        role_budget = float((theme_budget.get("by_role") or {}).get(role) or 0.0) if theme_budget else portfolio_budget
         entry_price = float(item.get("suggested_entry_price") or 0.0)
         snapshot = get_latest_signal_snapshot(ticker, max_age_days=_entry_signal_max_age_days()) or {}
         if not snapshot:
@@ -313,6 +316,27 @@ def generate_buy_plans(
         if not quality.actionable:
             logger.info("Signal quality gate skipped discovery buy %s: %s", ticker, quality.summary())
             continue
+        if universe_screen_enabled():
+            eligibility = check_universe_eligibility(ticker)
+            if not eligibility.eligible:
+                log_audit_event(
+                    order_id=f"universe-{uuid.uuid4().hex[:12]}",
+                    portfolio_id=portfolio_id,
+                    event_type="guardrail_blocked",
+                    ticker=ticker,
+                    action="Buy",
+                    actor="system",
+                    details=json.dumps({
+                        "guardrail": "universe_screen",
+                        "reasons": list(eligibility.reasons),
+                        "measured_price": eligibility.measured_price,
+                        "measured_history_days": eligibility.measured_history_days,
+                        "measured_dollar_adv": eligibility.measured_dollar_adv,
+                        "asset_class": eligibility.asset_class,
+                    }),
+                )
+                logger.info("Universe screen blocked %s: %s", ticker, ", ".join(eligibility.reasons))
+                continue
         exit_price = item.get("suggested_exit_price")
         if exit_price in (None, ""):
             exit_price = snapshot.get("exit_price")

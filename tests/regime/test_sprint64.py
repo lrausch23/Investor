@@ -29,6 +29,7 @@ def temp_modules(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     fundamental_data = importlib.reload(fundamental_data)
     gating = importlib.reload(gating)
     discovery = importlib.reload(discovery)
+    monkeypatch.setattr(discovery, "universe_screen_enabled", lambda: False)
     fundamental_agent_module = importlib.reload(fundamental_agent_module)
     llm = importlib.reload(llm)
     fundamental_data.clear_cache()

@@ -17,6 +17,7 @@ def temp_modules(tmp_path, monkeypatch):
     monkeypatch.setattr(store, "DB_PATH", tmp_path / "regime_watch.db")
     config = importlib.reload(regime_config)
     paper = importlib.reload(paper_trading_module)
+    monkeypatch.setattr(paper, "universe_screen_enabled", lambda: False)
     return store, paper, config
 
 

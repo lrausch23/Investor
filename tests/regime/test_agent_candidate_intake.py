@@ -17,6 +17,7 @@ def temp_modules(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     store.DB_PATH = tmp_path / "regime_watch.db"
     paper = importlib.reload(paper)
     intake = importlib.reload(intake)
+    monkeypatch.setattr(intake, "universe_screen_enabled", lambda: False)
     return store, paper, intake
 
 

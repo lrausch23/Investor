@@ -61,6 +61,7 @@ def run_threshold_sweep(
     grid: dict[str, list[Any]] | None = None,
     base_config: PipelineBacktestConfig | None = None,
     signal_provider_factory: Callable[[str, dict[str, Any]], Any] | None = None,
+    include_stress_windows: bool = False,
 ) -> list[dict[str, Any]]:
     config = base_config or PipelineBacktestConfig()
     rows: list[dict[str, Any]] = []
@@ -87,6 +88,8 @@ def run_threshold_sweep(
                 signal_provider=signal_provider_factory(normalized, combo) if signal_provider_factory is not None else None,
             )
             row = _result_row(normalized, combo, result.metrics, result.in_sample, result.out_of_sample)
+            if include_stress_windows:
+                row.update(_stress_metric_prefix(result.stress_windows))
             combo_rows.append(row)
             rows.append(row)
         if combo_rows:
@@ -143,6 +146,16 @@ def _aggregate_row(combo: dict[str, Any], rows: list[dict[str, Any]]) -> dict[st
             values = [_to_float(row.get(f"{prefix}_{metric}")) for row in rows]
             finite = [value for value in values if value is not None]
             aggregate[f"{prefix}_{metric}_sum"] = sum(finite) if finite else None
+    stress_keys = sorted({key for row in rows for key in row if key.startswith("stress_")})
+    for key in stress_keys:
+        values = [_to_float(row.get(key)) for row in rows]
+        finite = [value for value in values if value is not None]
+        if not finite:
+            aggregate[key] = None
+        elif key.endswith("_trade_count"):
+            aggregate[f"{key}_sum"] = sum(finite)
+        else:
+            aggregate[f"{key}_avg"] = sum(finite) / len(finite)
     return aggregate
 
 
@@ -155,6 +168,25 @@ def _metric_prefix(prefix: str, metrics: dict[str, Any]) -> dict[str, Any]:
         f"{prefix}_neutral_tilt_trade_count": _to_float(metrics.get("neutral_tilt_trade_count")),
         f"{prefix}_neutral_tilt_net_pnl": _to_float(metrics.get("neutral_tilt_net_pnl")),
     }
+
+
+def _stress_metric_prefix(windows: list[dict[str, Any]]) -> dict[str, Any]:
+    payload: dict[str, Any] = {}
+    for row in windows or []:
+        if not isinstance(row, dict):
+            continue
+        key = str(row.get("key") or "").strip()
+        if not key:
+            continue
+        prefix = f"stress_{key}"
+        payload[f"{prefix}_strategy_total_return"] = _to_float(row.get("strategy_total_return"))
+        payload[f"{prefix}_benchmark_total_return"] = _to_float(row.get("benchmark_total_return"))
+        payload[f"{prefix}_strategy_max_drawdown"] = _to_float(row.get("strategy_max_drawdown"))
+        payload[f"{prefix}_benchmark_max_drawdown"] = _to_float(row.get("benchmark_max_drawdown"))
+        payload[f"{prefix}_exposure_pct"] = _to_float(row.get("exposure_pct"))
+        payload[f"{prefix}_trade_count"] = _to_float(row.get("trade_count"))
+        payload[f"{prefix}_days_to_bear_flag"] = _to_float(row.get("days_to_bear_flag"))
+    return payload
 
 
 def _combo_id(combo: dict[str, Any]) -> str:

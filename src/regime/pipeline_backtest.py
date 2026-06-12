@@ -49,6 +49,8 @@ from .signals import (
     intra_regime_signal,
     signal_from_forward_curve,
 )
+from .stress_windows import StressWindow, get_stress_windows
+from .universe import check_universe_eligibility
 
 logger = logging.getLogger(__name__)
 
@@ -91,6 +93,7 @@ class PipelineBacktestConfig:
     risk_free_rate: float = 0.0
     signal_thresholds: SignalThresholds = field(default_factory=lambda: DEFAULT_SIGNAL_THRESHOLDS)
     composite_adjustments_enabled: bool = True
+    enforce_universe_screen: bool = True
 
 
 @dataclass(frozen=True)
@@ -194,6 +197,7 @@ class PipelineBacktestResult:
     equity_curve: list[dict[str, Any]]
     exit_type_counts: dict[str, int]
     gate_counts: dict[str, int]
+    stress_windows: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -206,6 +210,7 @@ class PipelineBacktestResult:
             "equity_curve": self.equity_curve,
             "exit_type_counts": self.exit_type_counts,
             "gate_counts": self.gate_counts,
+            "stress_windows": self.stress_windows,
         }
 
     def to_json(self, path: str | Path | None = None) -> str:
@@ -400,9 +405,11 @@ class _ProductionSignalProvider:
             or (current_idx - self._last_refit_idx) >= int(config.refit_step)
         )
         if should_refit:
+            max_rows = int(config.training_window) + int(config.lookback_window) + max(1, int(config.refit_step))
+            fit_history = history.tail(max_rows).copy() if len(history) > max_rows else history
             result = fit_regime_model(
                 ticker=ticker,
-                market_frame=history,
+                market_frame=fit_history,
                 lookback_window=config.lookback_window,
                 training_window=config.training_window,
                 refit_step=config.refit_step,
@@ -943,6 +950,64 @@ def _segment_metrics(
     return compute_equity_metrics(segment_curve, segment_trades, benchmark_curve=bench_segment, risk_free_rate=risk_free_rate)
 
 
+def _stress_window_results(
+    equity_df: pd.DataFrame,
+    trades: list[dict[str, Any]],
+    benchmark_df: pd.DataFrame | None,
+    windows: list[StressWindow],
+    risk_free_rate: float,
+) -> list[dict[str, Any]]:
+    if equity_df.empty:
+        return []
+    results: list[dict[str, Any]] = []
+    curve = equity_df.copy()
+    dates = pd.to_datetime(curve["date"])
+    for window in windows:
+        start = pd.Timestamp(window.start)
+        end_inclusive = pd.Timestamp(window.end)
+        end_exclusive = end_inclusive + pd.Timedelta(days=1)
+        mask = (dates >= start) & (dates < end_exclusive)
+        segment_curve = curve.loc[mask].copy()
+        if segment_curve.empty:
+            continue
+        metrics = _segment_metrics(equity_df, trades, benchmark_df, start, end_exclusive, risk_free_rate)
+        benchmark_metrics = {}
+        if benchmark_df is not None and not benchmark_df.empty:
+            benchmark_metrics = _segment_metrics(benchmark_df, [], benchmark_df, start, end_exclusive, risk_free_rate)
+        segment_trades = [
+            row for row in trades
+            if pd.Timestamp(row["exit_date"]) >= start and pd.Timestamp(row["exit_date"]) < end_exclusive
+        ]
+        exit_type_counts: dict[str, int] = {}
+        for row in segment_trades:
+            exit_type = str(row.get("exit_type") or "unknown")
+            exit_type_counts[exit_type] = exit_type_counts.get(exit_type, 0) + 1
+        days_to_bear_flag = None
+        if "signal_regime" in segment_curve.columns:
+            bear_rows = segment_curve.loc[segment_curve["signal_regime"].astype(str) == "Bear"]
+            if not bear_rows.empty:
+                days_to_bear_flag = int((pd.Timestamp(bear_rows["date"].iloc[0]) - start).days)
+        results.append(
+            {
+                "key": window.key,
+                "label": window.label,
+                "start": window.start,
+                "end": window.end,
+                "metrics": metrics,
+                "benchmark": benchmark_metrics,
+                "days_to_bear_flag": days_to_bear_flag,
+                "strategy_max_drawdown": metrics.get("max_drawdown"),
+                "benchmark_max_drawdown": benchmark_metrics.get("max_drawdown"),
+                "strategy_total_return": metrics.get("total_return"),
+                "benchmark_total_return": benchmark_metrics.get("total_return"),
+                "exposure_pct": metrics.get("exposure_pct"),
+                "exit_type_counts": exit_type_counts,
+                "trade_count": len(segment_trades),
+            }
+        )
+    return results
+
+
 def run_pipeline_backtest(
     ticker: str,
     market_frame: pd.DataFrame,
@@ -957,6 +1022,11 @@ def run_pipeline_backtest(
     if frame.empty:
         raise ValueError("market_frame is empty after normalization.")
     benchmark = _normalize_market_frame(benchmark_frame) if benchmark_frame is not None else frame
+    universe_eligibility = (
+        check_universe_eligibility(ticker, market_frame=frame, use_cache=False)
+        if bool(cfg.enforce_universe_screen)
+        else None
+    )
     provider = signal_provider or _ProductionSignalProvider()
     cash = float(cfg.starting_cash)
     position: PipelinePosition | None = None
@@ -1031,6 +1101,9 @@ def run_pipeline_backtest(
             targets: dict[str, Any] = dict(raw_targets) if isinstance(raw_targets, dict) else {}
             proposed_entry = _positive_float(targets.get("entry_price")) or current_price
             allowed, reason = _entry_allowed(ticker, signal, signal_row, current_price, proposed_entry, round_trip_dates, date, cfg)
+            if allowed and universe_eligibility is not None and not universe_eligibility.eligible:
+                allowed = False
+                reason = "universe:" + ",".join(universe_eligibility.reasons)
             if not allowed:
                 gate = reason.split(":", 1)[0]
                 gate_counts[gate] = gate_counts.get(gate, 0) + 1
@@ -1051,6 +1124,8 @@ def run_pipeline_backtest(
                 "equity": round(cash + market_value, 4),
                 "exposure": 1.0 if position is not None else 0.0,
                 "position_quantity": round(position.quantity, 6) if position is not None else 0.0,
+                "signal_regime": signal.regime if signal is not None else None,
+                "signal_action": signal.composite_action if signal is not None else None,
             }
         )
 
@@ -1080,6 +1155,7 @@ def run_pipeline_backtest(
     oos_start = pd.Timestamp(cfg.oos_start) if cfg.oos_start else None
     in_sample = _segment_metrics(equity_df, trades, benchmark_df, None, oos_start, cfg.risk_free_rate)
     out_of_sample = _segment_metrics(equity_df, trades, benchmark_df, oos_start, None, cfg.risk_free_rate) if oos_start is not None else None
+    stress_results = _stress_window_results(equity_df, trades, benchmark_df, get_stress_windows(), cfg.risk_free_rate)
     return PipelineBacktestResult(
         ticker=str(ticker or "").upper(),
         config=asdict(cfg),
@@ -1090,13 +1166,17 @@ def run_pipeline_backtest(
         equity_curve=equity_rows,
         exit_type_counts=exit_counts,
         gate_counts=gate_counts,
+        stress_windows=stress_results,
     )
 
 
 def run_pipeline_backtest_for_ticker(
     ticker: str,
     *,
-    period: str = "5y",
+    period: str = "10y",
+    start: str | dt.date | None = None,
+    end: str | dt.date | None = None,
+    cache: bool = False,
     oos_start: str | None = None,
     config: PipelineBacktestConfig | None = None,
     benchmark_ticker: str = "SPY",
@@ -1104,6 +1184,6 @@ def run_pipeline_backtest_for_ticker(
     cfg = config or PipelineBacktestConfig(oos_start=oos_start)
     if oos_start is not None and cfg.oos_start != oos_start:
         cfg = replace(cfg, oos_start=oos_start)
-    market = download_market_frame(ticker=ticker, period=period, interval="1d").frame
-    benchmark = download_market_frame(ticker=benchmark_ticker, period=period, interval="1d").frame if benchmark_ticker else None
+    market = download_market_frame(ticker=ticker, period=period, interval="1d", start=start, end=end, cache=cache).frame
+    benchmark = download_market_frame(ticker=benchmark_ticker, period=period, interval="1d", start=start, end=end, cache=cache).frame if benchmark_ticker else None
     return run_pipeline_backtest(ticker, market, config=cfg, benchmark_frame=benchmark)

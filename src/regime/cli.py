@@ -55,7 +55,11 @@ def parse_args() -> argparse.Namespace:
     pipeline_parser = subparsers.add_parser("pipeline-backtest", help="Run the event-driven production-pipeline backtest.")
     pipeline_parser.add_argument("ticker", nargs="?", help="Ticker to backtest.")
     pipeline_parser.add_argument("--tickers", nargs="+", help="Tickers to backtest in a basket A/B run.")
-    pipeline_parser.add_argument("--period", default="5y", help="Market data period. Default: 5y")
+    pipeline_parser.add_argument("--period", default="10y", help="Market data period. Default: 10y")
+    pipeline_parser.add_argument("--start", default=None, help="Explicit market data start date, e.g. 2019-01-01.")
+    pipeline_parser.add_argument("--end", default=None, help="Explicit market data end date, e.g. 2025-12-31.")
+    pipeline_parser.add_argument("--cache", action="store_true", help="Use the HMM_DATA_DIR price cache.")
+    pipeline_parser.add_argument("--stress-report", action="store_true", help="Print the stress-window summary table.")
     pipeline_parser.add_argument("--oos-start", default=None, help="Out-of-sample start date, e.g. 2025-01-01.")
     pipeline_parser.add_argument("--benchmark", default="SPY", help="Benchmark ticker. Default: SPY")
     pipeline_parser.add_argument("--json", dest="json_path", default=None, help="Write JSON report to this path.")
@@ -63,7 +67,11 @@ def parse_args() -> argparse.Namespace:
     pipeline_parser.add_argument("--veto-mode", choices=["gate", "size_only"], default="gate", help="Meta-labeler A/B mode. Default: gate")
     sweep_parser = subparsers.add_parser("threshold-sweep", help="Run a grid sweep through the production-pipeline backtest.")
     sweep_parser.add_argument("--tickers", nargs="+", required=True, help="Tickers to sweep.")
-    sweep_parser.add_argument("--period", default="5y", help="Market data period. Default: 5y")
+    sweep_parser.add_argument("--period", default="10y", help="Market data period. Default: 10y")
+    sweep_parser.add_argument("--start", default=None, help="Explicit market data start date, e.g. 2019-01-01.")
+    sweep_parser.add_argument("--end", default=None, help="Explicit market data end date, e.g. 2025-12-31.")
+    sweep_parser.add_argument("--cache", action="store_true", help="Use the HMM_DATA_DIR price cache.")
+    sweep_parser.add_argument("--stress-report", action="store_true", help="Include stress-window aggregate columns.")
     sweep_parser.add_argument("--oos-start", default=None, help="Out-of-sample start date, e.g. 2025-01-01.")
     sweep_parser.add_argument("--benchmark", default="SPY", help="Benchmark ticker. Default: SPY")
     sweep_parser.add_argument("--grid-json", default=None, help="Optional JSON parameter grid.")
@@ -93,7 +101,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--weekly-digest", action="store_true")
     parser.add_argument("--digest-format", choices=["json", "text"], default="json")
     parser.add_argument("--backtest", action="store_true")
-    parser.add_argument("--backtest-period", default="5y")
+    parser.add_argument("--backtest-period", default="10y")
     return parser.parse_args()
 
 
@@ -362,6 +370,49 @@ def _format_meta_labeler_ab_basket(payload: dict[str, object]) -> str:
     return "\n".join(lines)
 
 
+def _format_stress_report(windows: list[dict[str, object]]) -> str:
+    lines = [
+        "key,label,start,end,strategy_total_return,benchmark_total_return,"
+        "strategy_max_drawdown,benchmark_max_drawdown,exposure_pct,trade_count,days_to_bear_flag,exit_type_counts"
+    ]
+    for row in windows:
+        if not isinstance(row, dict):
+            continue
+        lines.append(
+            ",".join(
+                [
+                    str(row.get("key") or ""),
+                    str(row.get("label") or ""),
+                    str(row.get("start") or ""),
+                    str(row.get("end") or ""),
+                    _csv_float(row.get("strategy_total_return")),
+                    _csv_float(row.get("benchmark_total_return")),
+                    _csv_float(row.get("strategy_max_drawdown")),
+                    _csv_float(row.get("benchmark_max_drawdown")),
+                    _csv_float(row.get("exposure_pct")),
+                    str(_csv_int(row.get("trade_count"))),
+                    "" if row.get("days_to_bear_flag") is None else str(_csv_int(row.get("days_to_bear_flag"))),
+                    json.dumps(row.get("exit_type_counts") or {}, sort_keys=True),
+                ]
+            )
+        )
+    return "\n".join(lines)
+
+
+def _csv_float(value: object) -> str:
+    try:
+        return "" if value is None else f"{float(value):.6f}"
+    except Exception:
+        return ""
+
+
+def _csv_int(value: object) -> int:
+    try:
+        return int(float(value)) if value is not None else 0
+    except Exception:
+        return 0
+
+
 def _resolve_pipeline_tickers(args: Any) -> list[str]:
     raw_tickers = getattr(args, "tickers", None)
     tokens: list[str] = []
@@ -429,9 +480,23 @@ def main() -> None:
         if not tickers:
             raise SystemExit("threshold-sweep requires --tickers.")
         benchmark_ticker = getattr(args, "benchmark", "SPY")
-        benchmark = download_market_frame(ticker=benchmark_ticker, period=getattr(args, "period", "5y"), interval="1d").frame if benchmark_ticker else None
+        benchmark = download_market_frame(
+            ticker=benchmark_ticker,
+            period=getattr(args, "period", "10y"),
+            interval="1d",
+            start=getattr(args, "start", None),
+            end=getattr(args, "end", None),
+            cache=bool(getattr(args, "cache", False)),
+        ).frame if benchmark_ticker else None
         frames = {
-            ticker: download_market_frame(ticker=ticker, period=getattr(args, "period", "5y"), interval="1d").frame
+            ticker: download_market_frame(
+                ticker=ticker,
+                period=getattr(args, "period", "10y"),
+                interval="1d",
+                start=getattr(args, "start", None),
+                end=getattr(args, "end", None),
+                cache=bool(getattr(args, "cache", False)),
+            ).frame
             for ticker in tickers
         }
         config = PipelineBacktestConfig(
@@ -451,6 +516,7 @@ def main() -> None:
             benchmark_frame=benchmark,
             grid=load_threshold_grid(getattr(args, "grid_json", None)),
             base_config=config,
+            include_stress_windows=bool(getattr(args, "stress_report", False)),
         )
         write_sweep_rows(rows, json_path=getattr(args, "output_json", None), csv_path=getattr(args, "output_csv", None))
         if not getattr(args, "output_json", None) and not getattr(args, "output_csv", None):
@@ -467,11 +533,25 @@ def main() -> None:
             veto_mode = normalize_meta_labeler_veto_mode(getattr(args, "veto_mode", "gate"))
             mode_label = "meta_veto" if veto_mode == "gate" else "meta_size_only"
             benchmark_ticker = getattr(args, "benchmark", "SPY")
-            benchmark = download_market_frame(ticker=benchmark_ticker, period=getattr(args, "period", "5y"), interval="1d").frame if benchmark_ticker else None
+            benchmark = download_market_frame(
+                ticker=benchmark_ticker,
+                period=getattr(args, "period", "10y"),
+                interval="1d",
+                start=getattr(args, "start", None),
+                end=getattr(args, "end", None),
+                cache=bool(getattr(args, "cache", False)),
+            ).frame if benchmark_ticker else None
             engine = _load_meta_labeler_for_ab()
             results = []
             for ticker in tickers:
-                market = download_market_frame(ticker=ticker, period=getattr(args, "period", "5y"), interval="1d").frame
+                market = download_market_frame(
+                    ticker=ticker,
+                    period=getattr(args, "period", "10y"),
+                    interval="1d",
+                    start=getattr(args, "start", None),
+                    end=getattr(args, "end", None),
+                    cache=bool(getattr(args, "cache", False)),
+                ).frame
                 baseline = run_pipeline_backtest(ticker, market, config=config, benchmark_frame=benchmark)
                 provider = _MetaLabelerVetoProvider(engine, veto_mode=veto_mode)
                 meta_veto = run_pipeline_backtest(
@@ -507,7 +587,7 @@ def main() -> None:
             payload = {
                 "tickers": tickers,
                 "ticker": tickers[0] if len(tickers) == 1 else None,
-                "period": getattr(args, "period", "5y"),
+                "period": getattr(args, "period", "10y"),
                 "oos_start": getattr(args, "oos_start", None),
                 "benchmark": benchmark_ticker,
                 "veto_mode": veto_mode,
@@ -532,9 +612,12 @@ def main() -> None:
             return
         result = run_pipeline_backtest_for_ticker(
             ticker=tickers[0],
-            period=getattr(args, "period", "5y"),
+            period=getattr(args, "period", "10y"),
             oos_start=getattr(args, "oos_start", None),
             benchmark_ticker=getattr(args, "benchmark", "SPY"),
+            start=getattr(args, "start", None),
+            end=getattr(args, "end", None),
+            cache=bool(getattr(args, "cache", False)),
             config=config,
         )
         json_path = getattr(args, "json_path", None)
@@ -543,7 +626,10 @@ def main() -> None:
             print(json_path)
         else:
             payload = result.to_dict()
-            print(json.dumps(payload, indent=2))
+            if bool(getattr(args, "stress_report", False)):
+                print(_format_stress_report(payload.get("stress_windows") or []))
+            else:
+                print(json.dumps(payload, indent=2))
         return
     investor_db_path = get_investor_db_path()
     tickers_arg = getattr(args, "tickers", None)

@@ -27,6 +27,7 @@ def temp_modules(tmp_path, monkeypatch):
     translator = importlib.reload(translator_module)
     routing = importlib.reload(order_routing_module)
     paper = importlib.reload(paper_trading_module)
+    monkeypatch.setattr(paper, "universe_screen_enabled", lambda: False)
     exec_mod = importlib.reload(execution_agent_module)
     events = events_module
     event_bus = event_bus_module

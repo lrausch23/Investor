@@ -130,6 +130,7 @@ def test_threshold_sweep_grid_and_round_trip_outputs(tmp_path: Path) -> None:
         enable_duration_gate=False,
         enable_anti_churn_gate=False,
         enable_signal_quality_gate=False,
+        enforce_universe_screen=False,
         entry_cost_bps=0.0,
         exit_cost_bps=0.0,
         oos_start="2025-01-06",

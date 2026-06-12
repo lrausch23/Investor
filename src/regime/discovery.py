@@ -21,6 +21,7 @@ from .data import download_market_frame
 from .hmm_engine import fit_regime_model
 from .llm_layer import request_frontier_decision
 from .market_data_client import get_ticker_info
+from .universe import check_universe_eligibility, universe_screen_enabled
 from .persistence import (
     add_ticker_to_theme,
     get_supply_chain,
@@ -484,6 +485,11 @@ def check_entry_signals(
             crowd = int(crowd_raw) if crowd_raw is not None else int(item.get("crowd_score") or 50)
             if label == "Bull" and probability >= thresholds.entry_signal_min_probability and crowd <= thresholds.entry_signal_max_crowd_score:
                 ticker = str(item.get("ticker") or "").upper()
+                if universe_screen_enabled():
+                    eligibility = check_universe_eligibility(ticker)
+                    if not eligibility.eligible:
+                        logger.info("Universe screen BLOCKED discovery candidate %s: %s", ticker, ", ".join(eligibility.reasons))
+                        continue
                 if gate_enabled:
                     try:
                         from .fundamental_gating import get_fundamental_gate_settings, run_fundamental_gate

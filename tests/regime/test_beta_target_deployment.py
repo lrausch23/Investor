@@ -28,6 +28,7 @@ def temp_modules(tmp_path, monkeypatch):
     ibkr_market_data = importlib.reload(ibkr_market_data_module)
     data = importlib.reload(data_module)
     paper = importlib.reload(paper_trading_module)
+    monkeypatch.setattr(paper, "universe_screen_enabled", lambda: False)
     return store, config, broker, ibkr_market_data, data, paper
 
 

@@ -18,6 +18,7 @@ def temp_modules(tmp_path, monkeypatch):
     persistence_module = importlib.reload(persistence)
     monkeypatch.setattr(persistence_module, "DB_PATH", tmp_path / "regime_watch.db")
     discovery_module = importlib.reload(discovery)
+    monkeypatch.setattr(discovery_module, "universe_screen_enabled", lambda: False)
     return persistence_module, discovery_module
 
 

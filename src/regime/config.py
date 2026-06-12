@@ -30,6 +30,19 @@ EXCLUDED_TICKER_PATTERNS: set[str] = {
     "QQQ",
     "IVV",
     "VTI",
+    "TQQQ",
+    "SQQQ",
+    "UPRO",
+    "SPXU",
+    "SOXL",
+    "SOXS",
+    "TECL",
+    "TECS",
+    "LABU",
+    "LABD",
+    "FNGU",
+    "FNGD",
+    "RE:.*(2X|3X|ULTRA|BEAR|BULL|INVERSE).*",
 }
 
 HMM_ELIGIBLE_ASSET_CLASSES: set[str] = {

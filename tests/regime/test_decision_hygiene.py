@@ -22,6 +22,7 @@ def temp_modules(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     decision_constants = importlib.reload(decision_constants)
     decision_health = importlib.reload(decision_health)
     paper_trading = importlib.reload(paper_trading)
+    monkeypatch.setattr(paper_trading, "universe_screen_enabled", lambda: False)
     agent_dashboard = importlib.reload(agent_dashboard)
     return store, paper_trading, decision_constants, decision_health, agent_dashboard
 
