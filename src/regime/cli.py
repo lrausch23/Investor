@@ -47,6 +47,15 @@ from .signals import (
 )
 from .visualization import save_regime_chart
 from .threshold_sweep import load_threshold_grid, run_threshold_sweep, write_sweep_rows
+from .alpha_campaign import (
+    DEFAULT_BASKET_PATH,
+    DEFAULT_CAMPAIGN_DIR,
+    DEFAULT_REPORT_PATH,
+    campaign_status,
+    render_report,
+    run_campaign_phase,
+    select_basket,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -85,6 +94,23 @@ def parse_args() -> argparse.Namespace:
     sweep_parser.add_argument("--hmm-covariance", choices=["diag", "full", "spherical", "tied"], default="diag")
     sweep_parser.add_argument("--hmm-n-seeds", type=int, default=1)
     sweep_parser.add_argument("--seed-agreement-min", type=float, default=0.8)
+    campaign_parser = subparsers.add_parser("alpha-campaign", help="Run the pre-registered regime alpha campaign.")
+    campaign_subparsers = campaign_parser.add_subparsers(dest="campaign_command")
+    select_parser = campaign_subparsers.add_parser("select-basket", help="Select and pin the campaign basket.")
+    select_parser.add_argument("--output", default=str(DEFAULT_BASKET_PATH), help="Basket JSON output path.")
+    select_parser.add_argument("--names-per-sector", type=int, default=3)
+    select_parser.add_argument("--candidates", nargs="+", default=None, help="Optional candidate tickers for the screen.")
+    run_parser = campaign_subparsers.add_parser("run", help="Run one campaign phase.")
+    run_parser.add_argument("--phase", type=int, choices=[0, 1, 2, 3], required=True)
+    run_parser.add_argument("--resume", action="store_true")
+    run_parser.add_argument("--basket", default=str(DEFAULT_BASKET_PATH))
+    run_parser.add_argument("--campaign-dir", default=str(DEFAULT_CAMPAIGN_DIR))
+    report_parser = campaign_subparsers.add_parser("report", help="Render ALPHA_CAMPAIGN_REPORT.md from campaign artifacts.")
+    report_parser.add_argument("--basket", default=str(DEFAULT_BASKET_PATH))
+    report_parser.add_argument("--campaign-dir", default=str(DEFAULT_CAMPAIGN_DIR))
+    report_parser.add_argument("--output", default=str(DEFAULT_REPORT_PATH))
+    status_parser = campaign_subparsers.add_parser("status", help="Show campaign artifact status.")
+    status_parser.add_argument("--campaign-dir", default=str(DEFAULT_CAMPAIGN_DIR))
     parser.add_argument("--tickers", nargs="+", help="Tickers to analyze.")
     parser.add_argument("--benchmark", default="SOXX", help="Benchmark ticker. Default: SOXX")
     parser.add_argument("--period", default="3y", help="yfinance period string. Default: 3y")
@@ -475,6 +501,39 @@ def _build_report(
 
 def main() -> None:
     args = parse_args()
+    if getattr(args, "command", None) == "alpha-campaign":
+        campaign_command = getattr(args, "campaign_command", None)
+        if campaign_command == "select-basket":
+            payload = select_basket(
+                output_path=getattr(args, "output", str(DEFAULT_BASKET_PATH)),
+                candidates=getattr(args, "candidates", None),
+                names_per_sector=int(getattr(args, "names_per_sector", 3)),
+            )
+            print(json.dumps(payload, indent=2))
+            return
+        if campaign_command == "run":
+            payload = run_campaign_phase(
+                int(getattr(args, "phase")),
+                basket_path=getattr(args, "basket", str(DEFAULT_BASKET_PATH)),
+                campaign_dir=getattr(args, "campaign_dir", str(DEFAULT_CAMPAIGN_DIR)),
+                resume=bool(getattr(args, "resume", False)),
+            )
+            print(json.dumps(payload, indent=2))
+            return
+        if campaign_command == "report":
+            campaign_report = render_report(
+                basket_path=getattr(args, "basket", str(DEFAULT_BASKET_PATH)),
+                campaign_dir=getattr(args, "campaign_dir", str(DEFAULT_CAMPAIGN_DIR)),
+                output_path=getattr(args, "output", str(DEFAULT_REPORT_PATH)),
+            )
+            print(getattr(args, "output", str(DEFAULT_REPORT_PATH)))
+            if not campaign_report.strip():
+                raise SystemExit("empty campaign report")
+            return
+        if campaign_command == "status":
+            print(json.dumps(campaign_status(getattr(args, "campaign_dir", str(DEFAULT_CAMPAIGN_DIR))), indent=2))
+            return
+        raise SystemExit("alpha-campaign requires one of: select-basket, run, report, status")
     if getattr(args, "command", None) == "threshold-sweep":
         tickers = [str(ticker).strip().upper() for ticker in getattr(args, "tickers", []) if str(ticker).strip()]
         if not tickers:

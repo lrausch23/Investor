@@ -11,7 +11,12 @@ scripts/com.investor.regime-beta.plist
 .ruff_cache/
 .DS_Store
 *.swp
-data/
+data/*
 !data/.gitkeep
+!data/campaign/
+data/campaign/*
+!data/campaign/basket.json
+src/data/
+tests/regime/data/
 .env
 IBGW/
