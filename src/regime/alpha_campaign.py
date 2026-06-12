@@ -17,7 +17,7 @@ from .investor_adapter import get_investor_db_path, get_sector_map
 from .meta_labeler import DEFAULT_META_LABELER_MIN_OOF_AUC, MetaLabelerConfig, MetaLabelerEngine
 from .pipeline_backtest import PipelineBacktestConfig, PipelineBacktestResult, run_pipeline_backtest
 from .stress_windows import stress_windows_payload
-from .threshold_sweep import run_threshold_sweep
+from .threshold_sweep import expand_threshold_grid, run_threshold_sweep
 from .triple_barrier import DEFAULT_MANAGED_EXIT_CONFIG, build_multi_ticker_managed_frame
 from .universe import check_universe_eligibility
 
@@ -548,6 +548,48 @@ def _threshold_rows_for_exact_combos(
     return rows
 
 
+def _combo_artifact_name(combo_id: str) -> str:
+    allowed = []
+    for char in str(combo_id or "combo"):
+        allowed.append(char if char.isalnum() else "_")
+    return ("".join(allowed).strip("_") or "combo") + ".json"
+
+
+def _threshold_rows_for_checkpointed_combos(
+    tickers: list[str],
+    *,
+    frame_loader: MarketFrameLoader | None,
+    benchmark_frame: pd.DataFrame | None,
+    combos: list[dict[str, Any]],
+    base_config: PipelineBacktestConfig,
+    output_dir: Path,
+    resume: bool,
+) -> list[dict[str, Any]]:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    rows: list[dict[str, Any]] = []
+    for combo in combos:
+        combo_id = str(combo.get("combo_id") or "")
+        output_path = output_dir / _combo_artifact_name(combo_id)
+        if resume and output_path.exists():
+            combo_rows = list(_read_json(output_path))
+        else:
+            grid = {
+                key: [value]
+                for key, value in combo.items()
+                if key != "combo_id"
+            }
+            combo_rows = _threshold_rows_for_tickers(
+                tickers,
+                frame_loader=frame_loader,
+                benchmark_frame=benchmark_frame,
+                grid=grid,
+                base_config=base_config,
+            )
+            _write_json(output_path, combo_rows)
+        rows.extend(combo_rows)
+    return rows
+
+
 def run_phase1(
     *,
     basket_path: str | Path = DEFAULT_BASKET_PATH,
@@ -555,18 +597,35 @@ def run_phase1(
     resume: bool = False,
     frame_loader: MarketFrameLoader | None = None,
 ) -> dict[str, Any]:
-    del resume
     basket = load_basket(basket_path)
     phase_dir = _phase_dir(campaign_dir, 1)
     subset = subset_tickers_from_basket(basket)
     full = [str(ticker).upper() for ticker in basket.get("tickers") or []]
     benchmark = _load_benchmark(frame_loader)
     base_config = _baseline_config()
-    subset_rows = _threshold_rows_for_tickers(subset, frame_loader=frame_loader, benchmark_frame=benchmark, grid=phase1_grid(), base_config=base_config)
+    subset_combos = expand_threshold_grid(phase1_grid())
+    subset_rows = _threshold_rows_for_checkpointed_combos(
+        subset,
+        frame_loader=frame_loader,
+        benchmark_frame=benchmark,
+        combos=subset_combos,
+        base_config=base_config,
+        output_dir=phase_dir / "subset",
+        resume=resume,
+    )
     promoted = _top_configs_from_rows(subset_rows, limit=3)
-    full_combos = _params_for_combo_ids(subset_rows, promoted)
+    promoted_set = set(promoted)
+    full_combos = [combo for combo in subset_combos if combo.get("combo_id") in promoted_set]
     full_rows = (
-        _threshold_rows_for_exact_combos(full, frame_loader=frame_loader, benchmark_frame=benchmark, combos=full_combos, base_config=base_config)
+        _threshold_rows_for_checkpointed_combos(
+            full,
+            frame_loader=frame_loader,
+            benchmark_frame=benchmark,
+            combos=full_combos,
+            base_config=base_config,
+            output_dir=phase_dir / "full",
+            resume=resume,
+        )
         if full_combos
         else []
     )
@@ -576,7 +635,7 @@ def run_phase1(
         "promoted_combo_ids": promoted,
         "subset_rows": subset_rows,
         "full_rows": full_rows,
-        "config_count": len({row.get("combo_id") for row in subset_rows if row.get("combo_id")}),
+        "config_count": len(subset_combos),
     }
     _write_json(phase_dir / "summary.json", summary)
     return summary

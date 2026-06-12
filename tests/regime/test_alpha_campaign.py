@@ -11,6 +11,7 @@ from src.regime.alpha_campaign import (
     render_report,
     robustness_verdict,
     run_phase0,
+    run_phase1,
     select_basket,
 )
 from src.regime.pipeline_backtest import PipelineBacktestResult
@@ -157,6 +158,46 @@ def test_phase0_resume_skips_completed_backtest_units(tmp_path: Path) -> None:
     assert calls["runner"] == 1
     summary = tmp_path / "campaign" / "phase0" / "summary.json"
     assert summary.exists()
+
+
+def test_phase1_resume_skips_completed_sweep_combos(tmp_path: Path, monkeypatch) -> None:
+    basket = select_basket(
+        output_path=tmp_path / "basket.json",
+        candidates=["AAA", "BBB"],
+        sector_lookup=lambda tickers: {
+            "AAA": "Information Technology",
+            "BBB": "Health Care",
+        },
+        market_frame_loader=lambda ticker: _frame(),
+        names_per_sector=1,
+    )
+    assert basket["tickers"] == ["BBB", "AAA"]
+
+    calls = {"runner": 0}
+
+    def runner(ticker, market_frame, config, benchmark_frame=None, signal_provider=None):
+        del market_frame, config, benchmark_frame, signal_provider
+        calls["runner"] += 1
+        return _result(ticker)
+
+    monkeypatch.setattr("src.regime.threshold_sweep.run_pipeline_backtest", runner)
+
+    run_phase1(
+        basket_path=tmp_path / "basket.json",
+        campaign_dir=tmp_path / "campaign",
+        frame_loader=lambda ticker: _frame(),
+    )
+    first_calls = calls["runner"]
+    run_phase1(
+        basket_path=tmp_path / "basket.json",
+        campaign_dir=tmp_path / "campaign",
+        resume=True,
+        frame_loader=lambda ticker: _frame(),
+    )
+
+    assert calls["runner"] == first_calls
+    assert len(list((tmp_path / "campaign" / "phase1" / "subset").glob("*.json"))) == 96
+    assert len(list((tmp_path / "campaign" / "phase1" / "full").glob("*.json"))) == 3
 
 
 def test_evidence_floor_and_robustness_verdict() -> None:
