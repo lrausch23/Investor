@@ -120,6 +120,46 @@ def _today_utc() -> str:
     return dt.datetime.now(dt.timezone.utc).date().isoformat()
 
 
+_DUAL_CLASS_ISSUER_GROUPS: dict[str, str] = {
+    "GOOG": "ALPHABET",
+    "GOOGL": "ALPHABET",
+    "BRK-A": "BERKSHIRE",
+    "BRK-B": "BERKSHIRE",
+    "BRK.A": "BERKSHIRE",
+    "BRK.B": "BERKSHIRE",
+    "FOX": "FOX_CORP",
+    "FOXA": "FOX_CORP",
+    "NWS": "NEWS_CORP",
+    "NWSA": "NEWS_CORP",
+    "UA": "UNDER_ARMOUR",
+    "UAA": "UNDER_ARMOUR",
+    "LEN": "LENNAR",
+    "LEN-B": "LENNAR",
+    "HEI": "HEICO",
+    "HEI-A": "HEICO",
+    "LBTYA": "LIBERTY_GLOBAL",
+    "LBTYB": "LIBERTY_GLOBAL",
+    "LBTYK": "LIBERTY_GLOBAL",
+    "PARA": "PARAMOUNT",
+    "PARAA": "PARAMOUNT",
+    "ZG": "ZILLOW",
+    "Z": "ZILLOW",
+    "CWEN": "CLEARWAY",
+    "CWEN-A": "CLEARWAY",
+}
+
+
+def _issuer_key(ticker: str) -> str:
+    """Collapse dual-class share listings to one issuer key.
+
+    A basket holding GOOG and GOOGL holds Alphabet twice — the mechanical
+    top-ADV-per-sector rule must not double-count an issuer. Unknown tickers
+    map to themselves.
+    """
+    symbol = str(ticker or "").strip().upper()
+    return _DUAL_CLASS_ISSUER_GROUPS.get(symbol, symbol)
+
+
 def _normalize_sector(value: Any) -> str:
     text = str(value or "").strip()
     if not text:
@@ -240,25 +280,39 @@ def select_basket(
 
     selected: list[BasketCandidate] = []
     sector_status: dict[str, Any] = {}
+    seen_issuers: set[str] = set()
     for sector in GICS_SECTORS_10:
         pool = [
             item for item in screened
             if item.eligible and _normalize_sector(item.sector) == sector
         ]
         pool.sort(key=lambda item: (-float(item.dollar_adv or 0.0), item.ticker))
-        chosen = pool[: int(names_per_sector)]
+        chosen: list[BasketCandidate] = []
+        duplicate_issuers: list[str] = []
+        for item in pool:
+            issuer = _issuer_key(item.ticker)
+            if issuer in seen_issuers:
+                # Dual-class listings (e.g. GOOG/GOOGL) are the same company;
+                # selecting both double-weights one issuer's idiosyncratic risk.
+                duplicate_issuers.append(item.ticker)
+                continue
+            seen_issuers.add(issuer)
+            chosen.append(item)
+            if len(chosen) >= int(names_per_sector):
+                break
         selected.extend(chosen)
         sector_status[sector] = {
             "eligible_count": len(pool),
             "selected_count": len(chosen),
             "selected": [item.ticker for item in chosen],
+            "skipped_duplicate_issuers": duplicate_issuers,
         }
 
     payload = {
         "schema": "regime_alpha_campaign_basket.v1",
         "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
         "git_sha": _git_sha(),
-        "selection_rule": f"top {int(names_per_sector)} dollar-ADV screen-passers per 10 GICS-style sectors",
+        "selection_rule": f"top {int(names_per_sector)} dollar-ADV screen-passers per 10 GICS-style sectors, one listing per issuer (dual-class dedupe)",
         "oos_start": CAMPAIGN_OOS_START,
         "period": CAMPAIGN_PERIOD,
         "min_history_days": CAMPAIGN_MIN_HISTORY_DAYS,

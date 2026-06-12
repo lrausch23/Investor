@@ -97,6 +97,33 @@ def test_select_basket_is_mechanical_by_sector_and_dollar_adv(tmp_path: Path) ->
     assert (tmp_path / "basket.json").exists()
 
 
+def test_select_basket_dedupes_dual_class_listings_by_issuer(tmp_path: Path) -> None:
+    sectors = {
+        "GOOGL": "Communication Services",
+        "GOOG": "Communication Services",
+        "META": "Communication Services",
+        "NFLX": "Communication Services",
+    }
+    prices = {"GOOGL": 180, "GOOG": 181, "META": 500, "NFLX": 700}
+    volumes = {"GOOGL": 30_000_000, "GOOG": 25_000_000, "META": 15_000_000, "NFLX": 4_000_000}
+
+    payload = select_basket(
+        output_path=tmp_path / "basket.json",
+        candidates=list(sectors),
+        sector_lookup=lambda tickers: {ticker: sectors[ticker] for ticker in tickers},
+        market_frame_loader=lambda ticker: _frame(price=prices[ticker], volume=volumes[ticker]),
+        names_per_sector=3,
+    )
+
+    status = payload["screen_stats"]["sector_status"]["Communication Services"]
+    # By dollar ADV: META (7.5B) > GOOGL (5.4B) > GOOG (4.5B, duplicate Alphabet
+    # issuer -> skipped) > NFLX (2.8B, promoted into the third slot).
+    assert status["selected"] == ["META", "GOOGL", "NFLX"]
+    assert status["skipped_duplicate_issuers"] == ["GOOG"]
+    assert "GOOG" not in payload["tickers"]
+    assert "one listing per issuer" in payload["selection_rule"]
+
+
 def test_phase0_resume_skips_completed_backtest_units(tmp_path: Path) -> None:
     basket = select_basket(
         output_path=tmp_path / "basket.json",
