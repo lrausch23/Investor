@@ -6,7 +6,7 @@ import inspect
 from dataclasses import asdict, dataclass
 from typing import Any, cast
 
-from . import AgentBase, get_agent_registry
+from . import AgentBase, RuntimeLoader, get_agent_registry
 from ..agent_frontier import agent_key_for_portfolio_id
 from ..events import BaseEvent, EnrichedSignalEvent, FundamentalAssessmentEvent, TradeDecisionEvent
 
@@ -26,8 +26,16 @@ class OrchestratorConfig:
 class AgentOrchestrator(AgentBase):
     """Own the enriched-signal -> fundamental -> portfolio decision sequence."""
 
-    def __init__(self, bus, *, config: OrchestratorConfig | None = None, enabled: bool = True) -> None:
-        super().__init__(bus, enabled=enabled)
+    def __init__(
+        self,
+        bus,
+        *,
+        config: OrchestratorConfig | None = None,
+        enabled: bool = True,
+        runtime: dict[str, Any] | None = None,
+        runtime_loader: RuntimeLoader | None = None,
+    ) -> None:
+        super().__init__(bus, enabled=enabled, runtime=runtime, runtime_loader=runtime_loader)
         self.config = config or OrchestratorConfig()
 
     @property

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime as dt
 import importlib
 import sqlite3
 
@@ -56,6 +57,25 @@ def _holding_row(
         "regime": regime,
         "probability": probability,
     }
+
+
+def _save_buy_signal_snapshot(store, ticker: str, price: float) -> None:
+    store.save_signal_snapshot(
+        ticker=ticker,
+        snapshot_date=dt.date.today().isoformat(),
+        action="Buy",
+        regime_label="Bull",
+        regime_probability=0.8,
+        composite_strength=0.7,
+        benchmark="SPY",
+        current_price=price,
+        entry_price=price,
+        exit_price=price * 1.10,
+        stop_price=price * 0.95,
+        risk_reward_ratio=2.0,
+        timeframe_days=10,
+        expected_regime_duration=12.0,
+    )
 
 
 def _route_client(monkeypatch, runtime: dict):
@@ -208,6 +228,7 @@ def test_generate_daily_plans_discovery_priority_over_holdings(temp_modules, mon
         status="Entry Signal",
     )
     payload = {"rows": [_holding_row("NVDA", ai_verdict="Entry", theme_id=theme["id"])]}
+    _save_buy_signal_snapshot(store, "NVDA", 100.0)
     monkeypatch.setattr(paper, "_batch_current_prices", lambda tickers: {"NVDA": 100.0})
     result = paper.generate_daily_plans(portfolio["id"], cached_regime={}, cached_payload=payload)
     assert len(result["buy_plans"]) == 1

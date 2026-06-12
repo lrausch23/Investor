@@ -7,7 +7,7 @@ import time
 from dataclasses import dataclass
 from typing import Callable, Protocol
 
-from .config import DEFAULT_IBKR_CONFIG, IBKRConfig
+from .config import DEFAULT_IBKR_CONFIG, IBKRConfig, ibkr_backend_account_id
 from .ib_types import (
     IBAccountSummary,
     IBOrder,
@@ -438,7 +438,7 @@ def warm_shared_ib_backend(*, config: IBKRConfig = DEFAULT_IBKR_CONFIG) -> bool:
     """
     try:
         backend = get_shared_ib_backend(
-            account_id=str(config.account_id),
+            account_id=ibkr_backend_account_id(config),
             config=config,
             connect_if_needed=True,
         )

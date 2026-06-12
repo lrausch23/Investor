@@ -10,35 +10,41 @@ from src.regime import llm_layer as llm_layer_module
 from src.regime import signals as signals_module
 
 
-def test_position_size_meta_labeler_increases_base_size() -> None:
+def test_position_size_meta_labeler_scales_risk_budget_anchor() -> None:
     base = signals_module.compute_position_size(
         regime_probability=0.60,
         composite_action="Buy",
         risk_reward_ratio=None,
-        atr_value=None,
+        atr_value=2.0,
         current_price=100.0,
+        portfolio_value=100000.0,
     )
     boosted = signals_module.compute_position_size(
         regime_probability=0.60,
         composite_action="Buy",
         risk_reward_ratio=None,
-        atr_value=None,
+        atr_value=2.0,
         current_price=100.0,
+        portfolio_value=100000.0,
         meta_labeler_probability=0.90,
     )
-    assert boosted.suggested_pct > base.suggested_pct
+    assert base.suggested_pct == 50.0
+    assert boosted.ml_sizing_multiplier == 0.95
+    assert boosted.suggested_pct == 47.5
 
 
-def test_position_size_meta_labeler_decreases_base_size_with_floor() -> None:
+def test_position_size_meta_labeler_low_probability_uses_half_anchor_floor() -> None:
     sized = signals_module.compute_position_size(
         regime_probability=0.60,
         composite_action="Buy",
         risk_reward_ratio=None,
-        atr_value=None,
+        atr_value=2.0,
         current_price=100.0,
+        portfolio_value=100000.0,
         meta_labeler_probability=0.01,
     )
-    assert sized.suggested_pct == 15.0
+    assert sized.ml_sizing_multiplier == 0.505
+    assert sized.suggested_pct == 25.2
 
 
 def test_position_size_kelly_uses_meta_labeler_probability() -> None:
@@ -59,11 +65,12 @@ def test_position_size_rationale_includes_ml_confidence() -> None:
         regime_probability=0.70,
         composite_action="Buy",
         risk_reward_ratio=None,
-        atr_value=None,
+        atr_value=2.0,
         current_price=100.0,
+        portfolio_value=100000.0,
         meta_labeler_probability=0.64,
     )
-    assert "ML confidence" in sized.sizing_rationale
+    assert "ML multiplier" in sized.sizing_rationale
     assert sized.meta_labeler_probability == 0.64
 
 

@@ -158,6 +158,7 @@ def test_integration_stooq_fetch_small_range(tmp_path: Path):
     from src.investor.marketdata.benchmarks import BenchmarkDataClient
     from src.investor.marketdata.config import BenchmarksConfig
     from src.core.net import allowed_outbound_hosts, outbound_host_allowlist_enabled
+    from src.importers.adapters import ProviderError
 
     if (os.environ.get("NETWORK_ENABLED") or "").strip().lower() not in {"1", "true", "yes", "on"}:
         pytest.skip("NETWORK_ENABLED not set")
@@ -170,5 +171,8 @@ def test_integration_stooq_fetch_small_range(tmp_path: Path):
     cfg.yahoo.enabled = False
 
     client = BenchmarkDataClient(config=cfg)
-    df, _meta = client.get(symbol="SPY", start=dt.date(2025, 1, 2), end=dt.date(2025, 1, 10), refresh=True)
+    try:
+        df, _meta = client.get(symbol="SPY", start=dt.date(2025, 1, 2), end=dt.date(2025, 1, 10), refresh=True)
+    except ProviderError as exc:
+        pytest.skip(f"stooq unavailable: {exc}")
     assert not df.empty

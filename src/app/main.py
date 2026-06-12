@@ -118,25 +118,33 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         logger.warning("Startup recovery failed: %s", exc)
     try:
-        from src.regime.config import IBKRConfig
+        from src.regime.config import (
+            IBKRConfig,
+            ibkr_backend_account_id,
+            ibkr_execution_mode,
+            should_use_real_ibkr_backend,
+        )
         from src.regime.ib_connection import get_ib_backend, warm_shared_ib_backend
         from src.regime.watchdog import start_watchdog
 
         ibkr_config = IBKRConfig()
-        if ibkr_config.live_backend:
+        if should_use_real_ibkr_backend(ibkr_config):
+            account_id = ibkr_backend_account_id(ibkr_config)
             backend = get_ib_backend(
                 0,
                 live=True,
-                account_id=str(ibkr_config.account_id),
+                account_id=account_id,
                 starting_cash=100000.0,
+                config=ibkr_config,
             )
+            watchdog_client_id = int(getattr(backend, "_client_id", int(ibkr_config.client_id)))
             start_watchdog(
                 lambda: {"connected": bool(backend.is_connected())},
-                lambda: bool(backend.connect(str(ibkr_config.host), int(ibkr_config.port), int(ibkr_config.client_id))),
+                lambda: bool(backend.connect(str(ibkr_config.host), int(ibkr_config.port), watchdog_client_id)),
             )
             shared_ok = warm_shared_ib_backend(config=ibkr_config)
             if shared_ok:
-                logger.info("Shared IBKR backend connected for market data")
+                logger.info("Shared IBKR %s backend connected for market data", ibkr_execution_mode(ibkr_config))
             else:
                 logger.warning("Shared IBKR backend warm-up failed - market data will use fallback providers")
     except Exception as exc:

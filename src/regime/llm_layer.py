@@ -83,6 +83,16 @@ def _get_override_threshold() -> float:
     return META_LABELER_OVERRIDE_THRESHOLD
 
 
+def _meta_labeler_override_enabled() -> bool:
+    try:
+        from .meta_labeler import meta_labeler_gate_enabled
+        from .persistence import get_setting
+
+        return meta_labeler_gate_enabled(get_setting)
+    except Exception:
+        return True
+
+
 def _deterministic_defensive_response(
     ticker: str,
     state_name: str,
@@ -763,7 +773,7 @@ def build_qualitative_assessment(
     provider_key = str(frontier_provider or "auto").strip().lower() or "auto"
     model_value = str(frontier_model or "").strip()
     model_name = configured_frontier_model(provider_key, model_value or None)
-    if meta_labeler_score is not None and meta_labeler_score < threshold:
+    if meta_labeler_score is not None and meta_labeler_score < threshold and _meta_labeler_override_enabled():
         logger.info(
             "Deterministic LLM override for %s: meta_labeler_score=%.3f < %.3f threshold",
             ticker,

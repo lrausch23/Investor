@@ -16,7 +16,6 @@ from src.regime import ensemble as ensemble_module
 from src.regime.analysts import lstm_analyst as lstm_module
 from src.regime.analysts import KalmanFilterAnalyst, LSTMConfig, LSTMSequenceAnalyst
 from src.regime.ensemble import get_registry
-from src.regime.meta_labeler import META_FEATURES
 
 
 def _labeled_frame(rows: int = 260) -> pd.DataFrame:
@@ -30,6 +29,17 @@ def _labeled_frame(rows: int = 260) -> pd.DataFrame:
     frame["vix_change"] = np.cos(np.arange(rows) / 9) / 10
     frame["yield_10y_level"] = 4.0 + (np.arange(rows) % 5) / 10
     frame["yield_10y_change"] = np.sin(np.arange(rows) / 10) / 20
+    frame["composite_strength"] = np.linspace(0.2, 0.9, rows)
+    frame["transition_risk"] = np.linspace(0.05, 0.35, rows)
+    frame["regime_days"] = np.arange(rows) % 30
+    frame["p_bull_day5"] = np.linspace(0.35, 0.75, rows)
+    frame["p_bear_day5"] = np.linspace(0.25, 0.05, rows)
+    frame["risk_reward_ratio"] = 1.5 + (np.arange(rows) % 6) / 10
+    frame["stop_distance_atr"] = 1.0 + (np.arange(rows) % 4) / 10
+    frame["target_distance_atr"] = 2.0 + (np.arange(rows) % 5) / 10
+    frame["rsi_bucket"] = np.arange(rows) % 3
+    frame["macd_hist_sign"] = np.where(np.arange(rows) % 2 == 0, 1, -1)
+    frame["signal_quality_score"] = np.linspace(0.4, 0.8, rows)
     frame["barrier_outcome"] = (np.arange(rows) % 2 == 0).astype(int)
     return frame
 
@@ -43,7 +53,7 @@ def test_lstm_train_save_load_and_analyze(tmp_path: Path) -> None:
     analyst.save_model(model_path)
     loaded = LSTMSequenceAnalyst()
     loaded.load_model(model_path)
-    regime_result = type("RegimeResult", (), {"price_frame": _labeled_frame(40)[META_FEATURES]})()
+    regime_result = type("RegimeResult", (), {"price_frame": _labeled_frame(40)[lstm_module.META_FEATURES]})()
     result = loaded.analyze("NVDA", {}, regime_result)
     assert result.signal in {"confirm", "neutral", "veto"}
     assert 0.0 <= result.confidence <= 1.0
@@ -98,10 +108,10 @@ def test_lstm_load_model_backwards_compatible_without_backend(tmp_path: Path) ->
             "epochs": 2,
             "random_state": 42,
         },
-        "feature_means": [0.0] * len(META_FEATURES),
-        "feature_stds": [1.0] * len(META_FEATURES),
+        "feature_means": [0.0] * len(lstm_module.META_FEATURES),
+        "feature_stds": [1.0] * len(lstm_module.META_FEATURES),
         "metrics": {"accuracy": 0.75},
-        "coef": [[0.1] * (5 * len(META_FEATURES))],
+        "coef": [[0.1] * (5 * len(lstm_module.META_FEATURES))],
         "intercept": [0.0],
         "classes": [0, 1],
     }
@@ -109,7 +119,7 @@ def test_lstm_load_model_backwards_compatible_without_backend(tmp_path: Path) ->
     analyst = LSTMSequenceAnalyst()
     analyst.load_model(path)
     assert analyst.is_ready() is True
-    regime_result = type("RegimeResult", (), {"price_frame": _labeled_frame(20)[META_FEATURES]})()
+    regime_result = type("RegimeResult", (), {"price_frame": _labeled_frame(20)[lstm_module.META_FEATURES]})()
     result = analyst.analyze("NVDA", {}, regime_result)
     assert result.details["backend"] == "sklearn_fallback"
 

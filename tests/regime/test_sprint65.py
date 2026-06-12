@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime as dt
 import importlib
 import json
 from pathlib import Path
@@ -32,6 +33,25 @@ def temp_modules(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     paper_trading = importlib.reload(paper_trading)
     fundamental_data.clear_cache()
     return store, cross_sectional, discovery, paper_trading, fundamental_data, gating
+
+
+def _save_buy_signal_snapshot(store, ticker: str, *, price: float) -> None:
+    store.save_signal_snapshot(
+        ticker=ticker,
+        snapshot_date=dt.datetime.now(dt.timezone.utc).date().isoformat(),
+        action="Buy",
+        regime_label="Bull",
+        regime_probability=0.90,
+        composite_strength=0.80,
+        benchmark="SPY",
+        current_price=price,
+        entry_price=price,
+        exit_price=price * 1.2,
+        stop_price=price * 0.9,
+        risk_reward_ratio=2.0,
+        timeframe_days=21,
+        expected_regime_duration=30.0,
+    )
 
 
 def _client() -> TestClient:
@@ -261,7 +281,7 @@ def test_risk_adjusted_quantity_low_beta(temp_modules) -> None:
 def test_risk_adjusted_quantity_no_atr(temp_modules) -> None:
     _store, _cross_sectional, _discovery, paper_trading, _fundamental_data, _gating = temp_modules
     qty = paper_trading._risk_adjusted_quantity(10000.0, 100.0, None, 1.0)
-    assert qty == 100
+    assert qty == 50
 
 
 def test_generate_buy_plans_uses_risk_sizing(temp_modules, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -272,6 +292,7 @@ def test_generate_buy_plans_uses_risk_sizing(temp_modules, monkeypatch: pytest.M
     portfolio = store.create_paper_portfolio("Sandbox", 100000.0)
     theme = store.create_theme("AI", conviction=5)
     store.upsert_watchlist_candidate(theme["id"], "NVDA", regime_label="Bull", regime_probability=0.9, crowd_score=20, status="Entry Signal", suggested_entry_price=100.0)
+    _save_buy_signal_snapshot(store, "NVDA", price=100.0)
     monkeypatch.setattr(paper_trading, "_lookup_atr", lambda ticker: 3.0)
     monkeypatch.setattr(paper_trading, "_lookup_beta", lambda ticker: 1.0)
     monkeypatch.setattr(paper_trading, "_batch_current_prices", lambda tickers: {"NVDA": 100.0})
@@ -328,6 +349,7 @@ def test_equal_dollar_sizing_still_works(temp_modules, monkeypatch: pytest.Monke
     portfolio = store.create_paper_portfolio("Sandbox", 100000.0)
     theme = store.create_theme("AI", conviction=5)
     store.upsert_watchlist_candidate(theme["id"], "NVDA", regime_label="Bull", regime_probability=0.9, crowd_score=20, status="Entry Signal", suggested_entry_price=100.0)
+    _save_buy_signal_snapshot(store, "NVDA", price=100.0)
     monkeypatch.setattr(paper_trading, "_lookup_atr", lambda ticker: 3.0)
     monkeypatch.setattr(paper_trading, "_lookup_beta", lambda ticker: 2.0)
     monkeypatch.setattr(paper_trading, "_batch_current_prices", lambda tickers: {"NVDA": 100.0})

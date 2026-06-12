@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import datetime as dt
 import importlib
+import math
 from types import SimpleNamespace
 
 import pandas as pd
@@ -72,6 +73,7 @@ def test_agent_candidate_policy_is_strategy_flexible_by_default(temp_modules) ->
 def test_daily_loss_guardrail_scales_down_for_beta_budget(temp_modules, monkeypatch) -> None:
     store, config, broker, _ibkr_market_data, _data, _paper = temp_modules
     portfolio = store.create_paper_portfolio("Regime Agent Beta - Paper", 25_000.0)
+    store.open_paper_position(int(portfolio["id"]), "NVDA", 1, 100.0, "2026-06-08T14:00:00+00:00")
     adapter = broker.PaperBrokerAdapter(int(portfolio["id"]))
     monkeypatch.setattr(
         adapter,
@@ -103,6 +105,23 @@ def test_daily_loss_guardrail_scales_down_for_beta_budget(temp_modules, monkeypa
     assert daily_loss.limit == pytest.approx(500.0)
     assert daily_loss.passed is False
     assert result.allowed is False
+
+    exit_result = broker.validate_guardrails(
+        broker.OrderRequest(
+            portfolio_id=int(portfolio["id"]),
+            ticker="NVDA",
+            action="Sell",
+            quantity=1,
+            order_type="limit",
+            limit_price=100.0,
+        ),
+        adapter,
+        config.RiskGuardrails(daily_loss_limit=5_000.0, daily_loss_limit_pct=0.02),
+    )
+    exit_daily_loss = next(check for check in exit_result.checks if check.name == "daily_loss_limit")
+    assert exit_daily_loss.limit == pytest.approx(500.0)
+    assert exit_daily_loss.passed is True
+    assert exit_result.allowed is True
 
 
 def test_ibkr_paper_backend_readiness_uses_paper_flag(monkeypatch) -> None:
@@ -546,6 +565,188 @@ def test_exit_plans_allow_stop_sell_even_when_cached_signal_is_stale(temp_module
     assert plans[0]["signal_quality_score"] == pytest.approx(100.0)
 
 
+def test_exit_plans_sell_at_profit_target_without_cached_signal(temp_modules, monkeypatch) -> None:
+    store, _config, _broker, _ibkr_market_data, _data, paper = temp_modules
+    portfolio = store.create_paper_portfolio("Regime Agent Beta - IBKR Paper", 25_000.0, broker_type="ibkr")
+    portfolio_id = int(portfolio["id"])
+    store.open_paper_position(
+        portfolio_id,
+        "NVDA",
+        5,
+        100.0,
+        dt.datetime.now(dt.timezone.utc).isoformat(),
+        stop_price=90.0,
+        target_price=120.0,
+    )
+    monkeypatch.setattr(paper, "_batch_current_prices", lambda tickers: {"NVDA": 121.0})
+
+    plans = paper.generate_exit_plans(portfolio_id)
+
+    assert len(plans) == 1
+    assert plans[0]["action"] == "Sell"
+    assert plans[0]["quantity"] == pytest.approx(5)
+    assert "Profit target hit" in plans[0]["rationale"]
+    assert plans[0]["target_price"] == pytest.approx(120.0)
+    assert plans[0]["signal_quality_score"] == pytest.approx(100.0)
+
+
+def test_exit_plans_ratchet_trailing_stop_without_forcing_exit(temp_modules, monkeypatch) -> None:
+    store, _config, _broker, _ibkr_market_data, _data, paper = temp_modules
+    portfolio = store.create_paper_portfolio("Regime Agent Beta - IBKR Paper", 25_000.0, broker_type="ibkr")
+    portfolio_id = int(portfolio["id"])
+    position = store.open_paper_position(
+        portfolio_id,
+        "NVDA",
+        5,
+        100.0,
+        dt.datetime.now(dt.timezone.utc).isoformat(),
+        stop_price=90.0,
+        target_price=200.0,
+    )
+    monkeypatch.setattr(paper, "_batch_current_prices", lambda tickers: {"NVDA": 130.0})
+    monkeypatch.setattr(paper, "_lookup_atr", lambda ticker: 5.0)
+    monkeypatch.setattr(paper, "_quick_regime_screen", lambda ticker: ("Neutral", 0.70, 120.0, 110.0))
+
+    plans = paper.generate_exit_plans(portfolio_id)
+    updated = store.get_paper_position(int(position["id"]))
+
+    assert plans == []
+    assert updated["stop_price"] == pytest.approx(120.0)
+
+
+def test_exit_plans_create_time_stop_at_vertical_barrier(temp_modules, monkeypatch) -> None:
+    store, _config, _broker, _ibkr_market_data, _data, paper = temp_modules
+    portfolio = store.create_paper_portfolio("Regime Agent Beta - IBKR Paper", 25_000.0, broker_type="ibkr")
+    portfolio_id = int(portfolio["id"])
+    entry_date = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=22)).isoformat()
+    store.open_paper_position(portfolio_id, "NVDA", 5, 100.0, entry_date, stop_price=90.0, target_price=200.0)
+    monkeypatch.setattr(paper, "_batch_current_prices", lambda tickers: {"NVDA": 101.0})
+    monkeypatch.setattr(paper, "_lookup_atr", lambda ticker: 5.0)
+
+    plans = paper.generate_exit_plans(portfolio_id)
+
+    assert len(plans) == 1
+    assert "Time stop reached" in plans[0]["rationale"]
+    assert plans[0]["timeframe_days"] == 21
+    assert plans[0]["signal_quality_score"] == pytest.approx(100.0)
+
+
+def test_exit_plans_neutral_deterioration_reduces_position(temp_modules, monkeypatch) -> None:
+    store, _config, _broker, _ibkr_market_data, _data, paper = temp_modules
+    portfolio = store.create_paper_portfolio("Regime Agent Beta - IBKR Paper", 25_000.0, broker_type="ibkr")
+    portfolio_id = int(portfolio["id"])
+    store.open_paper_position(
+        portfolio_id,
+        "NVDA",
+        10,
+        100.0,
+        dt.datetime.now(dt.timezone.utc).isoformat(),
+        stop_price=90.0,
+        target_price=200.0,
+    )
+    monkeypatch.setattr(paper, "_batch_current_prices", lambda tickers: {"NVDA": 105.0})
+    monkeypatch.setattr(paper, "_lookup_atr", lambda ticker: 5.0)
+
+    plans = paper.generate_exit_plans(
+        portfolio_id,
+        cached_regime={
+            "last_run_timestamp": dt.datetime.now(dt.timezone.utc).isoformat(),
+            "rows": [
+                {
+                    "ticker": "NVDA",
+                    "regime": "Neutral",
+                    "previous_regime": "Bull",
+                    "probability": 0.82,
+                    "composite_signal": "Hold",
+                    "p_bull_day5": 0.40,
+                }
+            ],
+        },
+    )
+
+    assert len(plans) == 1
+    assert plans[0]["quantity"] == pytest.approx(5)
+    assert "Regime deteriorated from Bull to Neutral" in plans[0]["rationale"]
+
+
+def test_buy_plan_geometry_is_recomputed_from_actual_fill(temp_modules, monkeypatch) -> None:
+    store, _config, _broker, _ibkr_market_data, _data, paper = temp_modules
+    portfolio = store.create_paper_portfolio("Regime Agent Beta - IBKR Paper", 25_000.0, broker_type="ibkr")
+    theme = store.create_theme("AI Enablers", conviction=5)
+    today = dt.datetime.now(dt.timezone.utc).date().isoformat()
+    store.upsert_watchlist_candidate(
+        int(theme["id"]),
+        "NVDA",
+        regime_label="Bull",
+        regime_probability=0.90,
+        crowd_score=20,
+        status="Entry Signal",
+        suggested_entry_price=119.0,
+        suggested_stop_price=90.0,
+    )
+    store.save_signal_snapshot(
+        ticker="NVDA",
+        snapshot_date=today,
+        action="Buy",
+        regime_label="Bull",
+        regime_probability=0.90,
+        composite_strength=0.80,
+        benchmark="SPY",
+        current_price=120.0,
+        entry_price=119.0,
+        exit_price=150.0,
+        stop_price=90.0,
+        risk_reward_ratio=1.0,
+        timeframe_days=21,
+        expected_regime_duration=30.0,
+    )
+    monkeypatch.setattr(paper, "_batch_current_prices", lambda tickers: {"NVDA": 120.0})
+    monkeypatch.setattr(paper, "_lookup_atr", lambda ticker: 5.0)
+    monkeypatch.setattr(paper, "_lookup_beta", lambda ticker: 1.0)
+
+    plans = paper.generate_buy_plans(int(portfolio["id"]))
+
+    assert len(plans) == 1
+    # Routing may improve the limit below the last price (patient buy), so derive
+    # expectations from the routed price the plan actually carries: the whole point
+    # of the fix is that geometry must be anchored to the actual proposed fill.
+    routed_price = float(plans[0]["proposed_price"])
+    assert routed_price == pytest.approx(120.0, rel=0.005)
+    assert routed_price != pytest.approx(119.0)  # not the stale discovery entry
+    assert plans[0]["stop_price"] == pytest.approx(routed_price - 2.0 * 5.0)
+    assert plans[0]["target_price"] == pytest.approx(150.0)
+    assert plans[0]["risk_reward_ratio"] == pytest.approx((150.0 - routed_price) / (2.0 * 5.0), rel=1e-3)
+    assert plans[0]["trade_geometry_source"] == "actual_fill_atr"
+
+
+def test_executed_buy_carries_plan_target_to_open_position(temp_modules, monkeypatch) -> None:
+    store, _config, broker, _ibkr_market_data, _data, paper = temp_modules
+    portfolio = store.create_paper_portfolio("Regime Agent Beta - IBKR Paper", 25_000.0, broker_type="ibkr")
+    portfolio_id = int(portfolio["id"])
+    plan = store.create_trade_plan(
+        portfolio_id,
+        "NVDA",
+        "Buy",
+        2,
+        "Entry with managed exits",
+        proposed_price=100.0,
+        stop_price=95.0,
+        target_price=112.0,
+        risk_reward_ratio=2.4,
+        timeframe_days=21,
+    )
+    store.update_trade_plan_status(int(plan["id"]), "Approved")
+    monkeypatch.setattr(paper, "_batch_current_prices", lambda tickers: {"NVDA": 100.0})
+
+    result = paper.execute_approved_plans_via_adapter(portfolio_id, broker.PaperBrokerAdapter(portfolio_id))
+    positions = store.get_paper_positions(portfolio_id, status="Open")
+
+    assert len(result["executed"]) == 1
+    assert len(positions) == 1
+    assert positions[0]["stop_price"] == pytest.approx(95.0)
+    assert positions[0]["target_price"] == pytest.approx(112.0)
+
+
 def test_regime_price_history_prefers_ibkr_when_available(temp_modules, monkeypatch) -> None:
     store, _config, _broker, ibkr_market_data, data, _paper = temp_modules
     store.set_setting(
@@ -692,6 +893,29 @@ def test_beta_agent_dashboard_aggregates_four_portfolio_target(temp_modules) -> 
     assert dashboard["target"]["starting_budget"] == pytest.approx(100_000.0)
     assert dashboard["target"]["target_return"] == pytest.approx(0.02, rel=1e-3)
     assert dashboard["target"]["target_equity"] == pytest.approx(102_000.0, rel=1e-3)
+
+
+def test_beta_agent_dashboard_reports_current_open_plan_readiness(temp_modules) -> None:
+    store, _config, _broker, _ibkr_market_data, _data, _paper = temp_modules
+    from src.regime import agent_dashboard as agent_dashboard_module
+    from src.regime.beta_agents import BETA_AGENT_PORTFOLIOS
+
+    agent_dashboard = importlib.reload(agent_dashboard_module)
+    portfolio_ids: list[int] = []
+    for agent in BETA_AGENT_PORTFOLIOS:
+        portfolio = store.create_paper_portfolio(str(agent["name"]), 25_000.0, broker_type="ibkr")
+        portfolio_ids.append(int(portfolio["id"]))
+    store.set_setting("regime_beta_portfolio_ids", ",".join(str(item) for item in portfolio_ids))
+    store.open_paper_position(portfolio_ids[0], "NVDA", 1, 100.0, "2026-06-08T14:00:00+00:00")
+    store.create_trade_plan(portfolio_ids[0], "NVDA", "Sell", 1, "exit", proposed_price=101.0)
+
+    dashboard = agent_dashboard.compute_beta_agent_dashboard(agents_status=[])
+    readiness = dashboard["open_plan_readiness"]
+
+    assert readiness["counts"]["ready"] == 1
+    assert readiness["counts"]["total"] == 1
+    assert readiness["rows"][0]["ticker"] == "NVDA"
+    assert readiness["rows"][0]["ready"] is True
 
 
 def test_beta_agent_dashboard_ranks_profit_and_flags_overlap(temp_modules, monkeypatch) -> None:
@@ -943,3 +1167,67 @@ def test_paper_performance_estimates_after_tax_open_gain(temp_modules, monkeypat
     assert performance["estimated_unrealized_tax"] == pytest.approx(6.4)
     assert performance["after_tax_equity"] == pytest.approx(25_013.6)
     assert performance["after_tax_profit"] == pytest.approx(13.6)
+
+
+def test_size_only_veto_mode_scales_buy_plan_quantity(temp_modules, monkeypatch) -> None:
+    """size_only must scale entry quantity by 0.5 + 0.5*ML probability; gate mode must not."""
+    store, _config, _broker, _ibkr_market_data, _data, paper = temp_modules
+    theme = store.create_theme("AI Enablers", conviction=5)
+    today = dt.datetime.now(dt.timezone.utc).date().isoformat()
+    store.save_signal_snapshot(
+        ticker="NVDA",
+        snapshot_date=today,
+        action="Buy",
+        regime_label="Bull",
+        regime_probability=0.90,
+        composite_strength=0.80,
+        benchmark="SPY",
+        current_price=120.0,
+        entry_price=119.0,
+        exit_price=150.0,
+        stop_price=90.0,
+        risk_reward_ratio=1.0,
+        timeframe_days=21,
+        expected_regime_duration=30.0,
+    )
+
+    def _watchlist(status=None):
+        del status
+        return [
+            {
+                "id": 1,
+                "ticker": "NVDA",
+                "theme_id": int(theme["id"]),
+                "suggested_role": "Critical-Path",
+                "suggested_entry_price": 119.0,
+                "suggested_exit_price": 150.0,
+                "suggested_stop_price": 90.0,
+                "regime_label": "Bull",
+                "regime_probability": 0.90,
+                "crowd_score": 20,
+                "status": "Entry Signal",
+                "meta_labeler_probability": 0.5,
+                "discovery_rationale": "test candidate",
+            }
+        ]
+
+    monkeypatch.setattr(paper, "get_watchlist", _watchlist)
+    monkeypatch.setattr(paper, "_batch_current_prices", lambda tickers: {"NVDA": 120.0})
+    monkeypatch.setattr(paper, "_lookup_atr", lambda ticker: 5.0)
+    monkeypatch.setattr(paper, "_lookup_beta", lambda ticker: 1.0)
+
+    portfolio_gate = store.create_paper_portfolio("Gate Mode", 25_000.0, broker_type="ibkr")
+    gate_plans = paper.generate_buy_plans(int(portfolio_gate["id"]))
+    assert len(gate_plans) == 1
+    gate_quantity = float(gate_plans[0]["quantity"])
+    assert gate_quantity > 0
+    assert "ML size scaling" not in str(gate_plans[0]["rationale"])
+
+    store.set_setting("meta_labeler_veto_mode", "size_only")
+    portfolio_size = store.create_paper_portfolio("Size Only Mode", 25_000.0, broker_type="ibkr")
+    size_plans = paper.generate_buy_plans(int(portfolio_size["id"]))
+    assert len(size_plans) == 1
+    size_quantity = float(size_plans[0]["quantity"])
+    # probability 0.5 -> multiplier 0.75
+    assert size_quantity == float(math.floor(gate_quantity * 0.75))
+    assert "ML size scaling" in str(size_plans[0]["rationale"])

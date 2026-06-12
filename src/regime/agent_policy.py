@@ -19,7 +19,10 @@ from .persistence import (
 def setting_float(key: str, default: float, *, minimum: float = 0.0, maximum: float | None = None) -> float:
     try:
         value = float(get_setting(key) or default)
-    except Exception:
+    except Exception as exc:
+        from .decision_health import record_fallback
+
+        record_fallback("agent_policy.setting_float", f"{key}: {exc}")
         value = float(default)
     value = max(float(minimum), value)
     if maximum is not None:
@@ -232,7 +235,10 @@ def earnings_blackout_status(ticker: str, *, now: dt.datetime | None = None) -> 
         from .data import get_next_earnings_date
 
         earnings = get_next_earnings_date(str(ticker or "").upper())
-    except Exception:
+    except Exception as exc:
+        from .decision_health import record_fallback
+
+        record_fallback("agent_policy.earnings_blackout", f"{ticker}: {exc}")
         earnings = None
     if earnings is None:
         return {"allowed": True, "reason": "earnings_unknown"}

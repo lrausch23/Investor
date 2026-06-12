@@ -60,6 +60,9 @@ class RegimeResult:
     model: GaussianHMM
     scaler: StandardScaler
     regime_days: int = 0
+    empirical_duration_quantiles: dict[str, dict[str, float]] | None = None
+    seed_agreement: float = 1.0
+    regime_ambiguous: bool = False
 
     @property
     def regime_signal(self) -> str:
@@ -155,6 +158,123 @@ def _rank_state_labels(
     return state_map, canonical_state_map, ordered_stats
 
 
+def _canonical_transition_matrix(model: GaussianHMM, canonical_state_map: dict[int, int]) -> np.ndarray:
+    transition_matrix = np.zeros((3, 3), dtype=float)
+    for from_hidden_state, from_canonical in canonical_state_map.items():
+        for to_hidden_state, to_canonical in canonical_state_map.items():
+            transition_matrix[int(from_canonical), int(to_canonical)] = float(model.transmat_[int(from_hidden_state), int(to_hidden_state)])
+    return transition_matrix
+
+
+def _canonical_state_vector(hidden_posterior: np.ndarray, canonical_state_map: dict[int, int]) -> np.ndarray:
+    vector = np.zeros(3, dtype=float)
+    for hidden_state, canonical_state in canonical_state_map.items():
+        vector[int(canonical_state)] = float(hidden_posterior[int(hidden_state)])
+    return vector
+
+
+def _technical_context(frame: pd.DataFrame) -> pd.DataFrame:
+    prices = frame["price"].astype(float)
+    delta = prices.diff()
+    gain = delta.clip(lower=0.0)
+    loss = -delta.clip(upper=0.0)
+    avg_gain = gain.ewm(alpha=1.0 / 14, adjust=False).mean()
+    avg_loss = loss.ewm(alpha=1.0 / 14, adjust=False).mean().replace(0.0, np.nan)
+    rs = avg_gain / avg_loss
+    rsi_14 = 100 - (100 / (1 + rs))
+    ema12 = prices.ewm(span=12, adjust=False).mean()
+    ema26 = prices.ewm(span=26, adjust=False).mean()
+    macd_line = ema12 - ema26
+    macd_signal = macd_line.ewm(span=9, adjust=False).mean()
+    return pd.DataFrame(
+        {
+            "rsi_14": rsi_14,
+            "macd_histogram": macd_line - macd_signal,
+        },
+        index=frame.index,
+    )
+
+
+def empirical_regime_duration_quantiles(regime_labels: pd.Series | list[str]) -> dict[str, dict[str, float]]:
+    """Quantiles of completed regime spells, excluding the trailing active spell."""
+    labels = [str(label) for label in list(regime_labels) if label not in (None, "")]
+    if not labels:
+        return {}
+    completed: dict[str, list[int]] = {}
+    active_label = labels[0]
+    active_length = 1
+    for label in labels[1:]:
+        if label == active_label:
+            active_length += 1
+            continue
+        completed.setdefault(active_label, []).append(active_length)
+        active_label = label
+        active_length = 1
+
+    quantiles: dict[str, dict[str, float]] = {}
+    for label, lengths in completed.items():
+        if not lengths:
+            continue
+        values = np.asarray(lengths, dtype=float)
+        quantiles[label] = {
+            "p25": float(np.quantile(values, 0.25)),
+            "p50": float(np.quantile(values, 0.50)),
+            "p75": float(np.quantile(values, 0.75)),
+        }
+    return quantiles
+
+
+def _fit_hmm_candidate(
+    *,
+    x_scaled: np.ndarray,
+    window: pd.DataFrame,
+    n_states: int,
+    iterations: int,
+    random_state: int,
+    covariance_type: str,
+) -> dict[str, object]:
+    model = GaussianHMM(
+        n_components=n_states,
+        covariance_type=str(covariance_type or "diag"),
+        n_iter=iterations,
+        random_state=random_state,
+    )
+    model.fit(x_scaled)
+    decoded_window = pd.Series(model.predict(x_scaled), index=window.index, name="hidden_state")
+    state_map, canonical_state_map, state_statistics = _rank_state_labels(decoded_window, window)
+    posteriors = model.predict_proba(x_scaled)
+    canonical_labels = decoded_window.map(lambda state: state_map[int(state)])
+    try:
+        score = float(model.score(x_scaled))
+    except AttributeError:
+        score = 0.0
+    return {
+        "model": model,
+        "decoded_window": decoded_window,
+        "state_map": state_map,
+        "canonical_state_map": canonical_state_map,
+        "state_statistics": state_statistics,
+        "posteriors": posteriors,
+        "canonical_labels": canonical_labels,
+        "score": score,
+    }
+
+
+def _seed_agreement(canonical_label_sets: list[pd.Series], window: pd.DataFrame, refit_step: int) -> float:
+    if len(canonical_label_sets) <= 1:
+        return 1.0
+    tail_index = window.index[-max(1, min(int(refit_step or 1), len(window))):]
+    total = len(tail_index)
+    if total <= 0:
+        return 1.0
+    agreed = 0
+    for index in tail_index:
+        labels = {str(series.loc[index]) for series in canonical_label_sets if index in series.index}
+        if len(labels) == 1:
+            agreed += 1
+    return agreed / total
+
+
 def fit_regime_model(
     ticker: str,
     market_frame: pd.DataFrame,
@@ -162,9 +282,14 @@ def fit_regime_model(
     training_window: int = 504,
     refit_step: int = 21,
     macro_weighting: bool = False,
+    macro_weight: float = 1.5,
     n_states: int = 3,
     random_state: int = 7,
     iterations: int = 500,
+    record_forward_probabilities: bool = False,
+    n_seeds: int = 1,
+    seed_agreement_min: float = 0.8,
+    covariance_type: str = "diag",
 ) -> RegimeResult:
     logger.info(
         "Fitting HMM for %s rows=%d lookback=%d training_window=%d refit_step=%d",
@@ -190,6 +315,10 @@ def fit_regime_model(
     canonical_states = pd.Series(index=features.index, dtype=float, name="canonical_state")
     regime_labels = pd.Series(index=features.index, dtype=object, name="regime")
     state_probabilities = pd.Series(index=features.index, dtype=float, name="state_probability")
+    p_bull_day5 = pd.Series(index=features.index, dtype=float, name="p_bull_day5")
+    p_neutral_day5 = pd.Series(index=features.index, dtype=float, name="p_neutral_day5")
+    p_bear_day5 = pd.Series(index=features.index, dtype=float, name="p_bear_day5")
+    transition_risks = pd.Series(index=features.index, dtype=float, name="transition_risk")
 
     latest_model: GaussianHMM | None = None
     latest_scaler: StandardScaler | None = None
@@ -197,6 +326,7 @@ def fit_regime_model(
     latest_canonical_state_map: dict[int, int] | None = None
     latest_state_statistics: pd.DataFrame | None = None
     latest_posteriors: np.ndarray | None = None
+    latest_seed_agreement = 1.0
     last_refit_end_pos: int | None = None
 
     for end_pos in range(training_window, len(features) + 1):
@@ -213,20 +343,48 @@ def fit_regime_model(
             scaler = StandardScaler()
             X_scaled = scaler.fit_transform(X_window)
             if macro_weighting:
-                X_scaled[:, 4:6] *= 1.5
+                X_scaled[:, 4:6] *= float(macro_weight)
 
-            model = GaussianHMM(
-                n_components=n_states,
-                covariance_type="diag",
-                n_iter=iterations,
-                random_state=random_state,
+            candidates = [
+                _fit_hmm_candidate(
+                    x_scaled=X_scaled,
+                    window=window,
+                    n_states=n_states,
+                    iterations=iterations,
+                    random_state=int(random_state) + seed_index,
+                    covariance_type=covariance_type,
+                )
+                for seed_index in range(max(1, int(n_seeds or 1)))
+            ]
+            agreement = _seed_agreement(
+                [candidate["canonical_labels"] for candidate in candidates if isinstance(candidate.get("canonical_labels"), pd.Series)],
+                window,
+                refit_step,
             )
-            model.fit(X_scaled)
-            logger.debug("Refit HMM for %s at end_pos=%d converged=%s", ticker, end_pos, getattr(model.monitor_, "converged", None))
+            def _candidate_score(item: dict[str, object]) -> float:
+                score = item.get("score")
+                return float(score) if isinstance(score, (int, float)) else 0.0
 
-            decoded_window = pd.Series(model.predict(X_scaled), index=window.index, name="hidden_state")
-            state_map, canonical_state_map, state_statistics = _rank_state_labels(decoded_window, window)
-            posteriors = model.predict_proba(X_scaled)
+            best = max(candidates, key=_candidate_score)
+            model = best["model"]
+            assert isinstance(model, GaussianHMM)
+            decoded_window = best["decoded_window"]
+            state_map = best["state_map"]
+            canonical_state_map = best["canonical_state_map"]
+            state_statistics = best["state_statistics"]
+            posteriors = best["posteriors"]
+            assert isinstance(decoded_window, pd.Series)
+            assert isinstance(state_map, dict)
+            assert isinstance(canonical_state_map, dict)
+            assert isinstance(state_statistics, pd.DataFrame)
+            assert isinstance(posteriors, np.ndarray)
+            logger.debug(
+                "Refit HMM for %s at end_pos=%d converged=%s seed_agreement=%.3f",
+                ticker,
+                end_pos,
+                getattr(model.monitor_, "converged", None),
+                agreement,
+            )
 
             latest_model = model
             latest_scaler = scaler
@@ -234,6 +392,7 @@ def fit_regime_model(
             latest_canonical_state_map = canonical_state_map
             latest_state_statistics = state_statistics
             latest_posteriors = posteriors
+            latest_seed_agreement = float(agreement)
             last_refit_end_pos = end_pos
         else:
             assert latest_model is not None
@@ -242,7 +401,7 @@ def fit_regime_model(
             assert latest_canonical_state_map is not None
             X_scaled = latest_scaler.transform(X_window)
             if macro_weighting:
-                X_scaled[:, 4:6] *= 1.5
+                X_scaled[:, 4:6] *= float(macro_weight)
             decoded_window = pd.Series(latest_model.predict(X_scaled), index=window.index, name="hidden_state")
             posteriors = latest_model.predict_proba(X_scaled)
             state_map = latest_state_map
@@ -255,6 +414,17 @@ def fit_regime_model(
         canonical_states.loc[current_index] = canonical_state_map[current_hidden_state]
         regime_labels.loc[current_index] = state_map[current_hidden_state]
         state_probabilities.loc[current_index] = float(posteriors[-1, current_hidden_state])
+        if record_forward_probabilities:
+            active_model = latest_model if latest_model is not None else model
+            transition = _canonical_transition_matrix(active_model, canonical_state_map)
+            vector = _canonical_state_vector(posteriors[-1], canonical_state_map)
+            day5 = vector @ np.linalg.matrix_power(transition, 5)
+            p_bull_day5.loc[current_index] = float(day5[0])
+            p_neutral_day5.loc[current_index] = float(day5[1])
+            p_bear_day5.loc[current_index] = float(day5[2])
+            current_state_id = int(canonical_state_map[current_hidden_state])
+            stay_probability = float(transition[current_state_id, current_state_id])
+            transition_risks.loc[current_index] = max(0.0, min(1.0, 1.0 - stay_probability))
 
     if (
         latest_model is None
@@ -271,6 +441,24 @@ def fit_regime_model(
     result_frame["canonical_state"] = canonical_states.loc[result_frame.index].astype(int)
     result_frame["regime"] = regime_labels.loc[result_frame.index]
     result_frame["state_probability"] = state_probabilities.loc[result_frame.index].astype(float)
+    if record_forward_probabilities:
+        result_frame["p_bull_day5"] = p_bull_day5.loc[result_frame.index].astype(float)
+        result_frame["p_neutral_day5"] = p_neutral_day5.loc[result_frame.index].astype(float)
+        result_frame["p_bear_day5"] = p_bear_day5.loc[result_frame.index].astype(float)
+        result_frame["transition_risk"] = transition_risks.loc[result_frame.index].astype(float)
+        regime_day_values: list[int] = []
+        active_label: str | None = None
+        active_count = 0
+        for label in result_frame["regime"].tolist():
+            if label == active_label:
+                active_count += 1
+            else:
+                active_label = str(label)
+                active_count = 1
+            regime_day_values.append(active_count)
+        result_frame["regime_days"] = regime_day_values
+        result_frame = result_frame.join(_technical_context(result_frame), how="left")
+    empirical_duration_quantiles = empirical_regime_duration_quantiles(result_frame["regime"])
 
     latest_hidden_state = int(result_frame["hidden_state"].iloc[-1])
     latest_label = latest_state_map[latest_hidden_state]
@@ -281,10 +469,7 @@ def fit_regime_model(
     last_hidden_posterior = latest_posteriors[-1]
     for hidden_state, canonical_state in latest_canonical_state_map.items():
         latest_state_vector[canonical_state] = float(last_hidden_posterior[hidden_state])
-    transition_matrix = np.zeros((3, 3), dtype=float)
-    for from_hidden_state, from_canonical in latest_canonical_state_map.items():
-        for to_hidden_state, to_canonical in latest_canonical_state_map.items():
-            transition_matrix[from_canonical, to_canonical] = float(latest_model.transmat_[from_hidden_state, to_hidden_state])
+    transition_matrix = _canonical_transition_matrix(latest_model, latest_canonical_state_map)
     stay_probability = float(transition_matrix[latest_state_id, latest_state_id])
     # Capped at 999 trading days (~4 years); effectively permanent regime.
     expected_regime_duration = 999.0 if stay_probability >= 0.999999 else min(999.0, 1.0 / max(1e-9, 1.0 - stay_probability))
@@ -323,6 +508,9 @@ def fit_regime_model(
         transition_risk=transition_risk,
         model=latest_model,
         scaler=latest_scaler,
+        empirical_duration_quantiles=empirical_duration_quantiles,
+        seed_agreement=float(latest_seed_agreement),
+        regime_ambiguous=bool(float(latest_seed_agreement) < float(seed_agreement_min)),
     )
     logger.info(
         "Completed HMM fit for %s label=%s probability=%.3f regime_days=%d",
@@ -341,9 +529,13 @@ def fit_regime_model_weekly(
     training_window: int = 104,
     refit_step: int = 4,
     macro_weighting: bool = False,
+    macro_weight: float = 1.5,
     n_states: int = 3,
     random_state: int = 7,
     iterations: int = 500,
+    n_seeds: int = 1,
+    seed_agreement_min: float = 0.8,
+    covariance_type: str = "diag",
 ) -> RegimeResult:
     weekly = market_frame.copy()
     weekly.index = pd.DatetimeIndex(weekly.index)
@@ -365,9 +557,13 @@ def fit_regime_model_weekly(
             training_window=training_window,
             refit_step=refit_step,
             macro_weighting=macro_weighting,
+            macro_weight=macro_weight,
             n_states=n_states,
             random_state=random_state,
             iterations=iterations,
+            n_seeds=n_seeds,
+            seed_agreement_min=seed_agreement_min,
+            covariance_type=covariance_type,
         )
     except InsufficientDataError:
         adaptive_window = max(26, min(training_window, max(26, len(weekly_frame) - refit_step)))
@@ -380,7 +576,11 @@ def fit_regime_model_weekly(
             training_window=adaptive_window,
             refit_step=refit_step,
             macro_weighting=macro_weighting,
+            macro_weight=macro_weight,
             n_states=n_states,
             random_state=random_state,
             iterations=iterations,
+            n_seeds=n_seeds,
+            seed_agreement_min=seed_agreement_min,
+            covariance_type=covariance_type,
         )

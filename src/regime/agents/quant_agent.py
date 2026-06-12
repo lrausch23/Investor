@@ -139,10 +139,16 @@ class QuantAgent(AgentBase):
 
         compute_unified_confidence = runtime.get("compute_unified_confidence")
         if callable(compute_unified_confidence):
+            calibrator = None
+            get_setting = runtime.get("get_setting")
+            if callable(get_setting) and str(get_setting("regime_probability_calibrated") or "").strip().lower() in {"1", "true", "yes", "on"}:
+                load_regime_calibrator = runtime.get("load_regime_calibrator")
+                if callable(load_regime_calibrator):
+                    calibrator = load_regime_calibrator(regime.latest_label)
             confidence = compute_unified_confidence(
                 float(regime.latest_probability),
                 float(getattr(composite_signal, "composite_strength", 0.0) or 0.0),
-                calibrator=None,
+                calibrator=calibrator,
             )
         else:
             confidence = SimpleNamespace(
@@ -159,7 +165,27 @@ class QuantAgent(AgentBase):
         aggregate_analysts = runtime.get("aggregate_analysts")
         if registry is not None and callable(extract_meta_features) and callable(aggregate_analysts):
             try:
-                features = extract_meta_features(regime.price_frame.iloc[-1])
+                from ..meta_labeler import meta_labeler_gate_enabled, meta_labeler_result_can_influence
+
+                meta_gate_enabled = meta_labeler_gate_enabled(runtime.get("get_setting"))
+                feature_row = dict(regime.price_frame.iloc[-1].to_dict())
+                feature_row.update(
+                    {
+                        "current_price": float(getattr(regime, "latest_price", 0.0) or 0.0),
+                        "transition_risk": float(getattr(regime, "transition_risk", 0.0) or 0.0),
+                        "regime_days": int(getattr(regime, "regime_days", 1) or 1),
+                        "composite_strength": float(getattr(composite_signal, "composite_strength", 0.0) or 0.0),
+                        "composite_action": str(getattr(composite_signal, "composite_action", "") or ""),
+                        "price_targets": dict(getattr(price_targets, "__dict__", {}) or {}),
+                    }
+                )
+                try:
+                    latest_technicals = technicals.dropna().iloc[-1]
+                    feature_row["rsi_14"] = latest_technicals.get("rsi_14")
+                    feature_row["macd_histogram"] = latest_technicals.get("macd_histogram")
+                except Exception:
+                    pass
+                features = extract_meta_features(feature_row)
                 analyst_results = []
                 for analyst_name in registry.list_analysts():
                     analyst = registry.get(analyst_name)
@@ -168,9 +194,14 @@ class QuantAgent(AgentBase):
                     if not _enabled_from_setting(runtime, analyst_name, True):
                         continue
                     result = analyst.analyze(ticker=ticker, features=features, regime_result=regime)
-                    analyst_results.append(result)
                     if str(getattr(result, "analyst_name", "")) == "xgboost_meta_labeler":
-                        meta_score = float(getattr(result, "confidence", 0.0) or 0.0)
+                        if meta_labeler_result_can_influence(result):
+                            meta_score = float(getattr(result, "confidence", 0.0) or 0.0)
+                        if not meta_gate_enabled:
+                            continue
+                        if not meta_labeler_result_can_influence(result):
+                            continue
+                    analyst_results.append(result)
                 if analyst_results:
                     ensemble_verdict = aggregate_analysts(
                         analyst_results,
@@ -198,4 +229,3 @@ class QuantAgent(AgentBase):
             volume=latest_volume,
             correlation_id=request.correlation_id,
         )
-

@@ -229,6 +229,20 @@ def test_orchestrator_sequences_fundamental_then_portfolio(monkeypatch: pytest.M
     assert "[agents:" in str(seen_decisions[0].sizing_rationale)
 
 
+def test_orchestrator_accepts_runtime_loader_for_portfolio_contexts() -> None:
+    bus = AsyncEventBus()
+    runtime = {
+        "list_paper_portfolios": lambda include_closed=False: [
+            {"id": 5, "status": "Active"},
+            {"id": 6, "status": "Closed"},
+        ],
+        "get_setting": lambda key: "5,6" if key == "regime_beta_portfolio_ids" else None,
+    }
+    orchestrator = AgentOrchestrator(bus, runtime_loader=lambda: (runtime, None))
+
+    assert orchestrator._portfolio_contexts() == [(5, "quant")]
+
+
 def test_orchestrator_fundamental_timeout_proceeds_quant_only(monkeypatch: pytest.MonkeyPatch) -> None:
     bus = AsyncEventBus()
     registry = get_agent_registry()

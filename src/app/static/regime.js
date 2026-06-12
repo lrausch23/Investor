@@ -2003,9 +2003,14 @@
       agentBadge.textContent = String(attentionAgents);
       agentBadge.style.display = attentionAgents > 0 ? "" : "none";
     }
-    const researchCount = (state.watchlist || []).filter((item) => String(item.status || "") === "Entry Signal").length;
+    const researchRows = Array.isArray(state.watchlist) ? state.watchlist : [];
+    const rawResearchSignals = researchRows.filter((item) => String(item.status || "") === "Entry Signal");
+    const actionableResearchSignals = rawResearchSignals.filter((item) => item.signal_health && item.signal_health.actionable);
+    const blockedResearchSignals = rawResearchSignals.filter((item) => item.signal_health && !item.signal_health.actionable);
+    const researchCount = actionableResearchSignals.length || blockedResearchSignals.length || rawResearchSignals.length;
     if (researchBadge) {
       researchBadge.textContent = String(researchCount);
+      researchBadge.className = `ui-badge ${actionableResearchSignals.length ? "ui-badge--safe" : blockedResearchSignals.length ? "ui-badge--warn" : "ui-badge--neutral"}`;
       researchBadge.style.display = researchCount > 0 ? "" : "none";
     }
   }
@@ -2537,6 +2542,49 @@
     }
   }
 
+  function watchlistHealthBadge(item) {
+    const health = item && item.signal_health ? item.signal_health : null;
+    if (!health) return "";
+    if (health.actionable) return '<span class="ui-badge ui-badge--safe" style="margin-left:6px">Agent Ready</span>';
+    if (health.is_stale) return '<span class="ui-badge ui-badge--warn" style="margin-left:6px">Stale Signal</span>';
+    if (String(health.grade || "") === "watch") return '<span class="ui-badge ui-badge--neutral" style="margin-left:6px">Watch Only</span>';
+    return '<span class="ui-badge ui-badge--warn" style="margin-left:6px">Agent Blocked</span>';
+  }
+
+  function watchlistCardStyle(item) {
+    const status = String(item.status || "");
+    const health = item.signal_health || null;
+    if (health && !health.actionable && (status === "Entry Signal" || status === "Added")) {
+      return `border-color:${COLORS.warning}; box-shadow:0 0 0 1px ${COLORS.warning} inset;`;
+    }
+    if (status === "Entry Signal" && health && health.actionable) {
+      return `border-color:${COLORS.bull}; box-shadow:0 0 0 1px ${COLORS.bull} inset;`;
+    }
+    if (status === "Entry Signal" && !health) {
+      return `border-color:${COLORS.bull}; box-shadow:0 0 0 1px ${COLORS.bull} inset;`;
+    }
+    return "";
+  }
+
+  function watchlistHealthLine(item) {
+    const health = item && item.signal_health ? item.signal_health : null;
+    if (!health) return "";
+    const age = health.source_age_hours == null ? "n/a" : `${Number(health.source_age_hours).toFixed(1)}h`;
+    const distance = health.price_distance_pct == null ? "n/a" : formatSignedPct(Number(health.price_distance_pct), 1);
+    const current = health.current_price == null ? "n/a" : formatCurrency(health.current_price, 2);
+    const cls = health.actionable ? "cell-ok" : health.is_stale || String(health.grade || "") === "blocked" ? "cell-warn" : "";
+    return `
+      <div class="ui-muted" style="margin-top:8px">
+        Agent signal health <span class="${cls}">${escapeHtml(health.label || health.grade || "Unscored")}</span>
+        · Score ${escapeHtml(health.score == null ? "—" : Number(health.score).toFixed(0))}
+        · Age ${escapeHtml(age)}
+        · Current ${escapeHtml(current)}
+        · Entry distance ${escapeHtml(distance)}
+      </div>
+      <div class="ui-muted" style="margin-top:4px">${escapeHtml(health.reason || "")}</div>
+    `;
+  }
+
   function renderWatchlist() {
     const mount = byId("regimeWatchlistMount");
     const countBadge = byId("regimeWatchlistCount");
@@ -2544,27 +2592,43 @@
     if (!mount) return;
     const rows = Array.isArray(state.watchlist) ? [...state.watchlist] : [];
     const signals = rows.filter((item) => String(item.status || "") === "Entry Signal");
+    const actionableSignals = signals.filter((item) => item.signal_health && item.signal_health.actionable);
+    const staleSignals = signals.filter((item) => item.signal_health && item.signal_health.is_stale);
     if (countBadge) countBadge.textContent = String(rows.length);
     if (signalsBadge) {
-      signalsBadge.textContent = `${signals.length} signals`;
+      signalsBadge.textContent = `${actionableSignals.length} actionable${staleSignals.length ? ` · ${staleSignals.length} stale` : ""}`;
+      signalsBadge.className = `ui-badge ${actionableSignals.length ? "ui-badge--safe" : staleSignals.length ? "ui-badge--warn" : "ui-badge--neutral"}`;
       signalsBadge.style.display = signals.length ? "" : "none";
     }
     if (!rows.length) {
       mount.innerHTML = '<div class="regime-empty-state"><div class="regime-empty-state__title">No research candidates yet</div><div class="ui-muted">Run a discovery scan to find opportunities.</div></div>';
       return;
     }
-    const ordered = [...signals, ...rows.filter((item) => String(item.status || "") !== "Entry Signal")];
+    const ordered = rows.sort((a, b) => {
+      const priority = (item) => {
+        const status = String(item.status || "");
+        const health = item.signal_health || {};
+        if (status === "Entry Signal" && health.actionable) return 0;
+        if (status === "Entry Signal" && health.is_stale) return 1;
+        if (status === "Entry Signal") return 2;
+        if (status === "Added" && health.actionable) return 3;
+        if (status === "Added") return 4;
+        return 5;
+      };
+      return priority(a) - priority(b) || Number(a.crowd_score || 999) - Number(b.crowd_score || 999) || String(a.ticker || "").localeCompare(String(b.ticker || ""));
+    });
     mount.innerHTML = ordered.map((item) => `
-      <div class="ui-card" style="padding:12px; ${String(item.status || "") === "Entry Signal" ? `border-color:${COLORS.bull}; box-shadow:0 0 0 1px ${COLORS.bull} inset;` : ""}">
+      <div class="ui-card" style="padding:12px; ${watchlistCardStyle(item)}">
         <div class="table-toolbar">
           <div>
-            <div class="ui-section-title">${escapeHtml(item.ticker || "")} <span class="${badgeClass(item.regime_label || "Neutral")}" style="margin-left:6px">${escapeHtml(item.regime_label || "N/A")}</span> <span class="${badgeClass(item.status === "Entry Signal" ? "Bull" : "Neutral")}" style="margin-left:6px">${escapeHtml(item.status || "Watching")}</span></div>
+            <div class="ui-section-title">${escapeHtml(item.ticker || "")} <span class="${badgeClass(item.regime_label || "Neutral")}" style="margin-left:6px">${escapeHtml(item.regime_label || "N/A")}</span> <span class="${badgeClass(item.status === "Entry Signal" && item.signal_health && item.signal_health.actionable ? "Bull" : "Neutral")}" style="margin-left:6px">${escapeHtml(item.status || "Watching")}</span>${watchlistHealthBadge(item)}</div>
             <div class="ui-muted">${escapeHtml(item.company_name || "")} · ${escapeHtml(item.theme_name || "")} · ${escapeHtml(item.supply_chain_layer || "Unassigned layer")}</div>
           </div>
           <div>${renderCrowdScore(item.crowd_score)}</div>
         </div>
         <div class="ui-muted" style="margin-top:8px">${escapeHtml(item.discovery_rationale || "")}</div>
         <div class="ui-muted" style="margin-top:8px">Entry ${escapeHtml(formatCurrency(item.suggested_entry_price, 2))} · Stop ${escapeHtml(formatCurrency(item.suggested_stop_price, 2))} · Prob ${(Number(item.regime_probability || 0) * 100).toFixed(0)}%</div>
+        ${watchlistHealthLine(item)}
         <div class="ui-muted" style="margin-top:8px">
           F-Score <span class="${Number(item.piotroski_score) >= 6 ? "cell-ok" : Number.isFinite(Number(item.piotroski_score)) ? "cell-bad" : ""}">${escapeHtml(item.piotroski_score == null ? "—" : item.piotroski_score)}</span>
           · ROIC ${escapeHtml(item.roic_pct == null ? "—" : `${formatFixed(item.roic_pct, 1)}%`)}
@@ -3020,9 +3084,10 @@
             </tbody>
           </table>
         </div>
-      </div>
-    `;
-    mount.querySelectorAll("[data-paper-cancel-plan]").forEach((button) => {
+	      </div>
+	    `;
+	    updateStatusBar();
+	    mount.querySelectorAll("[data-paper-cancel-plan]").forEach((button) => {
       button.addEventListener("click", () => {
         cancelPaperOrder(currentPaperPortfolioId(), button.getAttribute("data-paper-cancel-plan"));
       });
@@ -3766,7 +3831,7 @@
   function renderAgentModelSettings(settings) {
     const rows = Array.isArray(settings) ? settings : [];
     return `
-      <section class="ui-card" style="padding:12px; margin-top:14px">
+      <section class="ui-card" id="agent-llm-models" data-agent-model-settings-section style="padding:12px; margin-top:14px">
         <div class="table-toolbar">
           <div>
             <div class="ui-section-title">Agent LLM Models</div>
@@ -3859,6 +3924,280 @@
                   <td class="num ui-tabular-nums">${escapeHtml(row.win_rate_display || "—")}</td>
                 </tr>
               `).join("") : '<tr><td colspan="8" class="ui-muted">No LLM-attributed trade plans yet.</td></tr>'}
+            </tbody>
+          </table>
+        </div>
+      </section>
+    `;
+  }
+
+  function renderLlmOutcomeAttribution(rows) {
+    const items = Array.isArray(rows) ? rows : [];
+    return `
+      <section class="ui-card" style="padding:12px; margin-top:14px">
+        <div class="table-toolbar">
+          <div>
+            <div class="ui-section-title">LLM Verdict Outcomes</div>
+            <div class="ui-muted" style="margin-top:2px">Closed-trade outcomes grouped by recorded model verdict.</div>
+          </div>
+        </div>
+        <div class="table-wrap" style="margin-top:10px">
+          <table>
+            <thead>
+              <tr>
+                <th scope="col">Verdict</th>
+                <th scope="col" class="num">Trades</th>
+                <th scope="col" class="num">Win Rate</th>
+                <th scope="col" class="num">Avg Net P&L</th>
+                <th scope="col" class="num">Total Net P&L</th>
+                <th scope="col" class="num">Avg Confidence</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${items.length ? items.map((row) => `
+                <tr>
+                  <td><span class="ui-badge ui-badge--neutral">${escapeHtml(row.verdict || "unknown")}</span></td>
+                  <td class="num ui-tabular-nums">${escapeHtml(row.trade_count || 0)}</td>
+                  <td class="num ui-tabular-nums">${row.win_rate == null ? "—" : escapeHtml(`${Number(row.win_rate).toFixed(0)}%`)}</td>
+                  <td class="num ui-tabular-nums ${Number(row.avg_net_pnl || 0) >= 0 ? "cell-ok" : "cell-bad"}">${escapeHtml(formatCurrency(row.avg_net_pnl, 0))}</td>
+                  <td class="num ui-tabular-nums ${Number(row.realized_net_pnl || 0) >= 0 ? "cell-ok" : "cell-bad"}">${escapeHtml(formatCurrency(row.realized_net_pnl, 0))}</td>
+                  <td class="num ui-tabular-nums">${row.avg_confidence == null ? "—" : escapeHtml(Number(row.avg_confidence).toFixed(2))}</td>
+                </tr>
+              `).join("") : '<tr><td colspan="6" class="ui-muted">No LLM-attributed closed trades yet.</td></tr>'}
+            </tbody>
+          </table>
+        </div>
+      </section>
+    `;
+  }
+
+  function renderAgentCurrentActivity(schedule, pendingActionCount, planCounts, openPlanReadiness) {
+    const lastStatus = schedule && typeof schedule.last_status === "object" ? schedule.last_status : null;
+    const runRows = Array.isArray(lastStatus?.scheduled_run) ? lastStatus.scheduled_run : [];
+    const counts = planCounts || {};
+    const readiness = openPlanReadiness && typeof openPlanReadiness === "object" ? openPlanReadiness : {};
+    const readinessCounts = readiness.counts || {};
+    const readinessRows = Array.isArray(readiness.rows) ? readiness.rows : [];
+    const currentReady = Number(readinessCounts.ready || 0);
+    const currentBlocked = Number(readinessCounts.blocked || 0);
+    const currentErrors = Number(readinessCounts.error || 0);
+    const started = lastStatus?.started_at || schedule?.last_cycle_at || schedule?.last_checked_at || "";
+    const completed = lastStatus?.completed_at || schedule?.last_cycle_at || "";
+    const status = lastStatus?.status || (runRows.length ? "completed" : "not_run");
+    const totalCreated = runRows.reduce((sum, row) => sum + Number(row.created_count || 0), 0);
+    const totalApproved = runRows.reduce((sum, row) => sum + Number(row.auto_approval?.approved || 0), 0);
+    const totalBlocked = runRows.reduce((sum, row) => sum + Number(row.auto_approval?.blocked || 0), 0);
+    const totalSkipped = runRows.reduce((sum, row) => sum + Number(row.auto_approval?.skipped || 0), 0);
+    const totalSubmitted = runRows.reduce((sum, row) => sum + Number(row.auto_execution?.submitted || row.auto_execution?.submitted_count || 0), 0);
+    const brokerWorking = Number(counts.Submitted || 0) + Number(counts["Partially Filled"] || 0);
+    const localOpenPlans = Number(pendingActionCount ?? 0);
+    const localReviewPlans = Number(counts.Pending || 0) + Number(counts.Approved || 0);
+    const operatingMode = String(lastStatus?.settings?.operating_mode || "").toLowerCase();
+    const autonomousMode = operatingMode === "autonomous";
+    const thirdMetricLabel = autonomousMode ? "Last-cycle Blocked" : "Needs Review";
+    const thirdMetricValue = autonomousMode ? totalBlocked : localReviewPlans;
+    const fourthMetricLabel = autonomousMode ? "Current Ready" : "Skipped";
+    const fourthMetricValue = autonomousMode ? currentReady : totalSkipped;
+    const statusBadge = status === "completed" ? "ui-badge ui-badge--safe" : status === "failed" ? "ui-badge ui-badge--bad" : "ui-badge ui-badge--neutral";
+    const reasonFor = (row) => {
+      const details = Array.isArray(row.auto_approval?.details) ? row.auto_approval.details : [];
+      if (!details.length) return row.auto_execution?.reason || row.market_window?.reason || "No approval detail";
+      return details.map((item) => {
+        const parts = [item.ticker, item.action, item.result].filter(Boolean);
+        const failedChecks = Array.isArray(item.guardrail_failures) ? item.guardrail_failures : [];
+        const guardrailMessages = failedChecks.length
+          ? failedChecks
+          : (Array.isArray(item.guardrail_checks) ? item.guardrail_checks : [])
+            .filter((check) => check && check.passed === false)
+            .map((check) => check.message || check.name)
+            .filter(Boolean);
+        const detail = item.reason || item.message || guardrailMessages.join("; ");
+        return detail ? `${parts.join(" ")} - ${detail}` : parts.join(" ");
+      }).join("; ");
+    };
+    return `
+      <section class="ui-card" style="padding:12px; margin-top:14px">
+        <div class="table-toolbar">
+          <div>
+            <div class="ui-section-title">Current Agent Activity</div>
+            <div class="ui-muted" style="margin-top:2px">
+              Last cycle ${escapeHtml(started ? relativeTime(started) : "never")} · ${escapeHtml(schedule?.preferred_window || "US market hours")}
+            </div>
+          </div>
+          <div style="display:flex; gap:8px; flex-wrap:wrap">
+            <span class="${statusBadge}">${escapeHtml(status)}</span>
+            <span class="${localOpenPlans ? "ui-badge ui-badge--warn" : "ui-badge ui-badge--safe"}">Local open ${escapeHtml(localOpenPlans)}</span>
+            <span class="${currentReady ? "ui-badge ui-badge--safe" : "ui-badge ui-badge--neutral"}">Open ready ${escapeHtml(currentReady)}</span>
+            <span class="${currentBlocked || currentErrors ? "ui-badge ui-badge--warn" : "ui-badge ui-badge--safe"}">Open blocked ${escapeHtml(currentBlocked + currentErrors)}</span>
+            <span class="${brokerWorking ? "ui-badge ui-badge--warn" : "ui-badge ui-badge--safe"}">Broker working ${escapeHtml(brokerWorking)}</span>
+            <span class="${totalBlocked ? "ui-badge ui-badge--warn" : "ui-badge ui-badge--safe"}">Last-cycle blocked ${escapeHtml(totalBlocked)}</span>
+            <span class="${totalSubmitted ? "ui-badge ui-badge--safe" : "ui-badge ui-badge--neutral"}">Last-cycle submitted ${escapeHtml(totalSubmitted)}</span>
+          </div>
+        </div>
+        <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(150px, 1fr)); gap:10px; margin-top:12px">
+          <div style="border:1px solid ${COLORS.border}; border-radius:8px; padding:10px"><div class="ui-muted">Created</div><div class="ui-tabular-nums" style="font-weight:700; margin-top:4px">${escapeHtml(totalCreated)}</div></div>
+          <div style="border:1px solid ${COLORS.border}; border-radius:8px; padding:10px"><div class="ui-muted">Approved</div><div class="ui-tabular-nums" style="font-weight:700; margin-top:4px">${escapeHtml(totalApproved)}</div></div>
+          <div style="border:1px solid ${COLORS.border}; border-radius:8px; padding:10px"><div class="ui-muted">${escapeHtml(thirdMetricLabel)}</div><div class="ui-tabular-nums" style="font-weight:700; margin-top:4px">${escapeHtml(thirdMetricValue)}</div></div>
+          <div style="border:1px solid ${COLORS.border}; border-radius:8px; padding:10px"><div class="ui-muted">${escapeHtml(fourthMetricLabel)}</div><div class="ui-tabular-nums" style="font-weight:700; margin-top:4px">${escapeHtml(fourthMetricValue)}</div></div>
+          <div style="border:1px solid ${COLORS.border}; border-radius:8px; padding:10px"><div class="ui-muted">Completed</div><div class="ui-tabular-nums" style="font-weight:700; margin-top:4px">${escapeHtml(completed ? relativeTime(completed) : "—")}</div></div>
+        </div>
+        ${readinessRows.length ? `
+          <div class="table-wrap" style="margin-top:10px">
+            <table>
+              <thead><tr><th>Open Plan</th><th>Current Readiness</th><th>Reason</th></tr></thead>
+              <tbody>
+                ${readinessRows.map((row) => `
+                  <tr>
+                    <td>
+                      <div style="font-weight:600">${escapeHtml(row.portfolio_name || `Portfolio ${row.portfolio_id || ""}`)}</div>
+                      <div class="ui-muted">${escapeHtml(row.ticker || "")} ${escapeHtml(row.action || "")} · ${escapeHtml(row.status || "")}</div>
+                    </td>
+                    <td><span class="${row.ready ? "ui-badge ui-badge--safe" : "ui-badge ui-badge--warn"}">${row.ready ? "Ready" : "Blocked"}</span></td>
+                    <td>${escapeHtml(row.reason || "")}</td>
+                  </tr>
+                `).join("")}
+              </tbody>
+            </table>
+          </div>
+        ` : ""}
+        ${runRows.length ? `
+          <div class="table-wrap" style="margin-top:10px">
+            <table>
+              <thead><tr><th>Portfolio</th><th>Plans</th><th>Approval</th><th>Execution</th><th>Reason</th></tr></thead>
+              <tbody>
+                ${runRows.map((row) => {
+                  const approval = row.auto_approval || {};
+                  const execution = row.auto_execution || {};
+                  const executionLabel = execution.skipped ? `skipped · ${execution.reason || ""}` : execution.submitted || execution.executed ? `submitted ${execution.submitted || 0} · executed ${execution.executed || 0}` : "not submitted";
+                  return `
+                    <tr>
+                      <td>
+                        <div style="font-weight:600">${escapeHtml(row.portfolio_name || `Portfolio ${row.portfolio_id || ""}`)}</div>
+                        <div class="ui-muted">${escapeHtml(row.broker_status?.execution_mode || row.broker_type || "broker")}</div>
+                      </td>
+                      <td class="ui-tabular-nums">created ${escapeHtml(row.created_count || 0)} · buy ${escapeHtml(row.buy_count || 0)} · exit ${escapeHtml(row.exit_count || 0)}</td>
+                      <td><span class="${Number(approval.blocked || 0) ? "ui-badge ui-badge--warn" : Number(approval.approved || 0) ? "ui-badge ui-badge--safe" : "ui-badge ui-badge--neutral"}">approved ${escapeHtml(approval.approved || 0)} · blocked ${escapeHtml(approval.blocked || 0)}</span></td>
+                      <td>${escapeHtml(executionLabel)}</td>
+                      <td>${escapeHtml(reasonFor(row))}</td>
+                    </tr>
+                  `;
+                }).join("")}
+              </tbody>
+            </table>
+          </div>
+        ` : `<div class="ui-muted" style="margin-top:10px">No scheduled run details are available yet.</div>`}
+      </section>
+    `;
+  }
+
+  function agentIntakeBadge(decision) {
+    const value = String(decision || "unknown");
+    if (value === "would_create_buy_plan") return '<span class="ui-badge ui-badge--safe">Ready</span>';
+    if (value === "pending_buy_exists") return '<span class="ui-badge ui-badge--neutral">Pending</span>';
+    if (value === "already_held") return '<span class="ui-badge ui-badge--neutral">Held</span>';
+    if (value.includes("signal_quality")) return '<span class="ui-badge ui-badge--warn">Signal blocked</span>';
+    if (value.includes("hurdle") || value.includes("duration") || value.includes("anti_churn")) return '<span class="ui-badge ui-badge--warn">Policy blocked</span>';
+    return `<span class="ui-badge ui-badge--neutral">${escapeHtml(value.replaceAll("_", " "))}</span>`;
+  }
+
+  function renderAgentCandidateIntake(intake, byAgent) {
+    const rows = Array.isArray(intake?.candidates) ? intake.candidates : [];
+    const agentRows = Array.isArray(byAgent) ? byAgent : [];
+    const counts = intake?.counts || {};
+    const blocked = Object.entries(counts).filter(([key]) => String(key).startsWith("blocked")).reduce((sum, [, value]) => sum + Number(value || 0), 0);
+    const ready = Number(counts.would_create_buy_plan || 0);
+    const stale = rows.filter((row) => Number(row.signal_quality?.source_age_hours || 0) >= 72).length;
+    const agentCount = (agent, decision) => Number((agent?.counts || {})[decision] || 0);
+    const agentBlocked = (agent) => Object.entries(agent?.counts || {})
+      .filter(([key]) => String(key).startsWith("blocked"))
+      .reduce((sum, [, value]) => sum + Number(value || 0), 0);
+    return `
+      <section class="ui-card" style="padding:12px; margin-top:14px">
+        <div class="table-toolbar">
+          <div>
+            <div class="ui-section-title">Agent Candidate Intake</div>
+            <div class="ui-muted" style="margin-top:2px">Shows why Research candidates do or do not become agent buy plans.</div>
+          </div>
+          <div style="display:flex; gap:8px; flex-wrap:wrap">
+            <span class="${ready ? "ui-badge ui-badge--safe" : "ui-badge ui-badge--neutral"}">Ready ${escapeHtml(ready)}</span>
+            <span class="${blocked ? "ui-badge ui-badge--warn" : "ui-badge ui-badge--safe"}">Blocked ${escapeHtml(blocked)}</span>
+            <span class="${stale ? "ui-badge ui-badge--warn" : "ui-badge ui-badge--safe"}">Stale ${escapeHtml(stale)}</span>
+            <span class="ui-badge ui-badge--neutral">Total ${escapeHtml(intake?.total_candidates || rows.length || 0)}</span>
+          </div>
+        </div>
+        ${intake?.error ? `<div class="ui-muted" style="margin-top:10px">Unable to compute candidate intake: ${escapeHtml(intake.error)}</div>` : ""}
+        ${agentRows.length ? `
+          <div class="table-wrap" style="margin-top:10px">
+            <table>
+              <thead>
+                <tr>
+                  <th scope="col">Agent</th>
+                  <th scope="col" class="num">Ready</th>
+                  <th scope="col" class="num">Blocked</th>
+                  <th scope="col" class="num">Pending</th>
+                  <th scope="col" class="num">Held</th>
+                  <th scope="col" class="num">Total</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${agentRows.map((agent) => {
+                  const agentReady = agentCount(agent, "would_create_buy_plan");
+                  const blockedCount = agentBlocked(agent);
+                  return `
+                    <tr>
+                      <td>
+                        <div style="font-weight:600">${escapeHtml(agent.label || agent.agent || "")}</div>
+                        <div class="ui-muted">Portfolio ${escapeHtml(agent.portfolio_id || "")}</div>
+                      </td>
+                      <td class="num ui-tabular-nums">${escapeHtml(agentReady)}</td>
+                      <td class="num ui-tabular-nums">${escapeHtml(blockedCount)}</td>
+                      <td class="num ui-tabular-nums">${escapeHtml(agentCount(agent, "pending_buy_exists"))}</td>
+                      <td class="num ui-tabular-nums">${escapeHtml(agentCount(agent, "already_held"))}</td>
+                      <td class="num ui-tabular-nums">${escapeHtml(agent.total_candidates || 0)}</td>
+                    </tr>
+                  `;
+                }).join("")}
+              </tbody>
+            </table>
+          </div>
+        ` : ""}
+        <div class="table-wrap" style="margin-top:10px">
+          <table>
+            <thead>
+              <tr>
+                <th scope="col">Ticker</th>
+                <th scope="col">Decision</th>
+                <th scope="col">Signal</th>
+                <th scope="col" class="num">Entry</th>
+                <th scope="col" class="num">Current</th>
+                <th scope="col">Latest Plan</th>
+                <th scope="col">Reason</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${rows.length ? rows.map((row) => {
+                const quality = row.signal_quality || {};
+                const sourceAge = quality.source_age_hours == null ? "—" : `${Number(quality.source_age_hours).toFixed(1)}h`;
+                const distance = quality.price_distance_pct == null ? "—" : formatSignedPct(Number(quality.price_distance_pct), 1);
+                const plan = row.latest_plan || null;
+                return `
+                  <tr>
+                    <td>
+                      <div style="font-weight:600">${escapeHtml(row.ticker || "")}</div>
+                      <div class="ui-muted">${escapeHtml(row.theme_name || "")}${row.status ? ` · ${escapeHtml(row.status)}` : ""}</div>
+                    </td>
+                    <td>${agentIntakeBadge(row.decision)}</td>
+                    <td>
+                      <div>${escapeHtml(quality.grade || "unscored")}${quality.score != null ? ` · ${escapeHtml(Number(quality.score).toFixed(0))}` : ""}</div>
+                      <div class="ui-muted">Age ${escapeHtml(sourceAge)} · Dist ${escapeHtml(distance)}</div>
+                    </td>
+                    <td class="num ui-tabular-nums">${escapeHtml(formatCurrency(row.entry_price, 2))}</td>
+                    <td class="num ui-tabular-nums">${escapeHtml(formatCurrency(row.current_price, 2))}</td>
+                    <td>${plan ? `<span class="${plan.status === "Executed" ? "ui-badge ui-badge--safe" : plan.status === "Rejected" || plan.status === "Expired" ? "ui-badge ui-badge--warn" : "ui-badge ui-badge--neutral"}">${escapeHtml(plan.status || "")}</span><div class="ui-muted" style="margin-top:4px">${escapeHtml(plan.created_at ? relativeTime(plan.created_at) : "")}</div>` : '<span class="ui-muted">None</span>'}</td>
+                    <td>${escapeHtml(row.reason || "")}</td>
+                  </tr>
+                `;
+              }).join("") : '<tr><td colspan="7" class="ui-muted">No discovery candidates are currently in agent intake.</td></tr>'}
             </tbody>
           </table>
         </div>
@@ -4003,6 +4342,7 @@
             <span class="${brokerBadgeClass}">${escapeHtml(brokerLabel)}</span>
             <span class="${liveLocked ? "ui-badge ui-badge--safe" : "ui-badge ui-badge--bad"}">${liveLocked ? "Live locked" : "Live unlocked"}</span>
             <button class="btn btn--secondary" type="button" id="regimeAgentDashboardRefresh">Refresh</button>
+            <button class="btn btn--secondary" type="button" id="regimeAgentModelSettingsJump">Model Settings</button>
             <button class="btn btn--secondary" type="button" id="regimeAgentDashboardTrading">Trading</button>
           </div>
         </div>
@@ -4049,6 +4389,12 @@
 	          <span class="ui-badge ui-badge--neutral">After-tax basis</span>
 	        </div>
 	      </section>
+
+	      ${renderAgentCurrentActivity(schedule, payload.pending_action_count, payload.plan_counts, payload.open_plan_readiness)}
+	      ${renderAgentCandidateIntake(payload.candidate_intake, payload.candidate_intake_by_agent)}
+	      ${renderAgentModelSettings(payload.agent_model_settings)}
+	      ${renderLlmAttribution(payload.llm_attribution)}
+	      ${renderLlmOutcomeAttribution(payload.llm_outcome_attribution)}
 
 	      ${broker.type === "ibkr" ? `
 	      <section class="ui-card" style="padding:12px; margin-top:14px">
@@ -4156,9 +4502,6 @@
 	          </table>
 	        </div>
 		      </section>
-
-		      ${renderAgentModelSettings(payload.agent_model_settings)}
-		      ${renderLlmAttribution(payload.llm_attribution)}
 
 		      <section class="ui-card" style="padding:12px; margin-top:14px">
 	        <div class="table-toolbar">
@@ -4273,6 +4616,13 @@
     `;
     const refreshBtn = byId("regimeAgentDashboardRefresh");
     if (refreshBtn) refreshBtn.addEventListener("click", () => loadAgentDashboard());
+    const modelBtn = byId("regimeAgentModelSettingsJump");
+    if (modelBtn) {
+      modelBtn.addEventListener("click", () => {
+        const target = byId("agent-llm-models");
+        if (target) target.scrollIntoView({ behavior: "smooth", block: "start" });
+      });
+    }
     const tradingBtn = byId("regimeAgentDashboardTrading");
     if (tradingBtn) tradingBtn.addEventListener("click", () => switchTab("trading"));
     bindAgentModelSettings();
@@ -4293,7 +4643,8 @@
       const portfolioId = payload?.portfolio_summary?.portfolio_id;
       if (payload?.broker?.type === "ibkr" && portfolioId != null && state.config?.endpoints?.ibkr_account_snapshot) {
         try {
-          const snapshotUrl = `${state.config.endpoints.ibkr_account_snapshot}?portfolio_id=${encodeURIComponent(String(portfolioId))}`;
+          const scopeQuery = Number(payload?.agent_portfolio_count || 0) > 1 ? "&scope=agent_beta" : "";
+          const snapshotUrl = `${state.config.endpoints.ibkr_account_snapshot}?portfolio_id=${encodeURIComponent(String(portfolioId))}${scopeQuery}`;
           const snapshotResponse = await fetch(snapshotUrl, { headers: { Accept: "application/json" } });
           const snapshotPayload = await snapshotResponse.json();
           state.ibkrAccountSnapshot = snapshotResponse.ok ? snapshotPayload : { connected: false, error: snapshotPayload.detail || snapshotPayload.error || `Snapshot failed (${snapshotResponse.status})` };
@@ -6699,6 +7050,9 @@
       renderVixStatus();
       renderMonitoringDashboard(null);
       renderAgentDashboard();
+      if (document.querySelector('[data-regime-panel="agents"]')?.classList.contains("regime-tab-panel--active")) {
+        loadAgentDashboard().catch(() => {});
+      }
     } catch (error) {
       console.error("Unable to render initial paper trading shell.", error);
     }

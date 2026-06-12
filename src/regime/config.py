@@ -56,6 +56,11 @@ class SignalThresholds:
     bear_emerging_probability: float = 0.40
     hold_bull_max_transition_risk: float = 0.30
     earnings_strength_penalty: float = 0.15
+    use_empirical_durations: bool = False
+    use_forward_curve_gates: bool = False
+    strong_buy_min_p_bull_day5: float = 0.70
+    buy_min_p_bull_day5: float = 0.55
+    neutral_tilt_requires_modal: bool = False
 
 
 DEFAULT_SIGNAL_THRESHOLDS = SignalThresholds()

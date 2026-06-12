@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime as dt
 import importlib
 from dataclasses import asdict
 from pathlib import Path
@@ -183,7 +184,7 @@ def test_buy_plan_has_arrival_price(temp_modules, monkeypatch: pytest.MonkeyPatc
     store.upsert_watchlist_candidate(theme["id"], "NVDA", suggested_entry_price=100.0, crowd_score=30, regime_label="Bull", regime_probability=0.8, status="Entry Signal")
     store.save_signal_snapshot(
         ticker="NVDA",
-        snapshot_date="2026-03-31",
+        snapshot_date=dt.date.today().isoformat(),
         action="Buy",
         regime_label="Bull",
         regime_probability=0.8,

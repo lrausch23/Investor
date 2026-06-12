@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime as dt
 import importlib
 
 import pytest
@@ -17,6 +18,25 @@ def temp_modules(tmp_path, monkeypatch):
     config = importlib.reload(regime_config)
     paper = importlib.reload(paper_trading_module)
     return store, paper, config
+
+
+def _save_buy_signal_snapshot(store, ticker: str, price: float) -> None:
+    store.save_signal_snapshot(
+        ticker=ticker,
+        snapshot_date=dt.date.today().isoformat(),
+        action="Buy",
+        regime_label="Bull",
+        regime_probability=0.65,
+        composite_strength=0.7,
+        benchmark="SPY",
+        current_price=price,
+        entry_price=price,
+        exit_price=price * 1.10,
+        stop_price=price * 0.95,
+        risk_reward_ratio=2.0,
+        timeframe_days=10,
+        expected_regime_duration=12.0,
+    )
 
 
 def test_get_watchlist_single_status(temp_modules) -> None:
@@ -63,6 +83,7 @@ def test_generate_buy_plans_includes_added_tickers(temp_modules, monkeypatch) ->
         regime_probability=0.65,
         status="Added",
     )
+    _save_buy_signal_snapshot(store, "LSCC", 50.0)
     monkeypatch.setattr(paper, "_batch_current_prices", lambda tickers: {"LSCC": 50.0})
     plans = paper.generate_buy_plans(portfolio["id"])
     assert [plan["ticker"] for plan in plans] == ["LSCC"]
@@ -83,6 +104,7 @@ def test_generate_buy_plans_includes_entry_signal_tickers(temp_modules, monkeypa
         regime_probability=0.61,
         status="Entry Signal",
     )
+    _save_buy_signal_snapshot(store, "WOLF", 20.0)
     monkeypatch.setattr(paper, "_batch_current_prices", lambda tickers: {"WOLF": 20.0})
     plans = paper.generate_buy_plans(portfolio["id"])
     assert [plan["ticker"] for plan in plans] == ["WOLF"]
@@ -123,6 +145,7 @@ def test_generate_buy_plans_dedup_same_ticker_different_themes(temp_modules, mon
         suggested_entry_price=50.0,
         status="Added",
     )
+    _save_buy_signal_snapshot(store, "LSCC", 50.0)
     monkeypatch.setattr(paper, "_batch_current_prices", lambda tickers: {"LSCC": 50.0})
     plans = paper.generate_buy_plans(portfolio["id"])
     assert len(plans) == 2
@@ -144,6 +167,7 @@ def test_generate_buy_plans_dedup_same_ticker_same_theme(temp_modules, monkeypat
         suggested_entry_price=50.0,
         status="Added",
     )
+    _save_buy_signal_snapshot(store, "LSCC", 50.0)
     monkeypatch.setattr(paper, "get_watchlist", lambda status=None: [candidate, dict(candidate)])
     monkeypatch.setattr(paper, "_batch_current_prices", lambda tickers: {"LSCC": 50.0})
     plans = paper.generate_buy_plans(portfolio["id"])

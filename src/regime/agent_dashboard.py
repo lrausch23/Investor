@@ -5,6 +5,7 @@ from collections import Counter
 from datetime import datetime, timezone
 from typing import Any
 
+from .broker_adapter import OrderRequest, PaperBrokerAdapter, validate_guardrails
 from .config import DEFAULT_IBKR_CONFIG, DEFAULT_RISK_GUARDRAILS, ibkr_execution_mode
 from .paper_trading import compute_beta_target_progress, estimate_after_tax_performance
 from .persistence import (
@@ -15,6 +16,7 @@ from .persistence import (
     get_operating_mode,
     get_paper_portfolio,
     get_paper_portfolio_summary,
+    get_llm_attribution_summary,
     get_setting,
     list_paper_portfolios,
     get_trade_plans,
@@ -109,6 +111,89 @@ def _format_currency(value: float | None, digits: int = 0) -> str:
     if value is None:
         return "-"
     return f"${float(value):,.{digits}f}"
+
+
+def _guardrail_check_row(check: Any) -> dict[str, Any]:
+    if isinstance(check, dict):
+        return dict(check)
+    return {
+        "name": getattr(check, "name", ""),
+        "passed": getattr(check, "passed", None),
+        "message": getattr(check, "message", ""),
+        "actual": getattr(check, "actual", None),
+        "limit": getattr(check, "limit", None),
+    }
+
+
+def _open_plan_readiness(
+    portfolio_id: int,
+    *,
+    portfolio_name: str | None = None,
+    plans: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    local_plans = [
+        plan
+        for plan in (plans if plans is not None else get_trade_plans(portfolio_id, status="all"))
+        if str(plan.get("status") or "") in {"Pending", "Approved"}
+    ]
+    adapter = PaperBrokerAdapter(portfolio_id)
+    rows: list[dict[str, Any]] = []
+    counts: Counter[str] = Counter()
+    for plan in local_plans:
+        plan_id = int(plan.get("id") or 0)
+        ticker = str(plan.get("ticker") or "").upper()
+        action = str(plan.get("action") or "")
+        try:
+            order = OrderRequest(
+                portfolio_id=portfolio_id,
+                ticker=ticker,
+                action=action,
+                quantity=_as_float(plan.get("quantity")),
+                order_type=str(plan.get("order_type") or "limit"),
+                limit_price=_as_float(plan.get("proposed_price")) or None,
+                time_in_force=str(plan.get("time_in_force") or "DAY"),
+                routing_strategy=str(plan.get("routing_strategy") or ""),
+                algo_strategy=str(plan.get("algo_strategy") or ""),
+                source=str(plan.get("source") or "plan"),
+                notes=str(plan.get("rationale") or ""),
+            )
+            result = validate_guardrails(order, adapter, DEFAULT_RISK_GUARDRAILS)
+            checks = [_guardrail_check_row(check) for check in list(getattr(result, "checks", None) or [])]
+            failures = [str(row.get("message") or row.get("name")) for row in checks if row.get("passed") is False]
+            ready = bool(getattr(result, "allowed", False))
+            counts["ready" if ready else "blocked"] += 1
+            rows.append(
+                {
+                    "portfolio_id": int(portfolio_id),
+                    "portfolio_name": portfolio_name or f"Portfolio {portfolio_id}",
+                    "plan_id": plan_id,
+                    "ticker": ticker,
+                    "action": action,
+                    "status": str(plan.get("status") or ""),
+                    "ready": ready,
+                    "reason": "; ".join(failures) if failures else "Guardrails currently pass.",
+                    "guardrail_checks": checks,
+                    "updated_at": plan.get("updated_at") or plan.get("created_at"),
+                }
+            )
+        except Exception as exc:
+            counts["error"] += 1
+            rows.append(
+                {
+                    "portfolio_id": int(portfolio_id),
+                    "portfolio_name": portfolio_name or f"Portfolio {portfolio_id}",
+                    "plan_id": plan_id,
+                    "ticker": ticker,
+                    "action": action,
+                    "status": str(plan.get("status") or ""),
+                    "ready": False,
+                    "reason": f"Readiness check failed: {exc}",
+                    "guardrail_checks": [],
+                    "updated_at": plan.get("updated_at") or plan.get("created_at"),
+                }
+            )
+    counts["total"] = len(local_plans)
+    return {"counts": dict(counts), "rows": rows}
 
 
 def _latest_timestamp(rows: list[dict[str, Any]], *fields: str) -> str | None:
@@ -326,6 +411,7 @@ def compute_agent_portfolio_dashboard(
     positions = list(summary.get("positions") or [])
     plans = get_trade_plans(portfolio_id, status="all")
     llm_attribution = _llm_attribution_rows(plans, positions)
+    llm_outcome_attribution = get_llm_attribution_summary(days=30)
     audit = get_audit_trail(portfolio_id=portfolio_id, days=7, limit=200)
     daily_audit = get_daily_audit_summary(portfolio_id)
     agent_map = _agent_enabled_map(agents_status)
@@ -518,8 +604,14 @@ def compute_agent_portfolio_dashboard(
         "target": target,
         "agents": agent_rows,
         "llm_attribution": llm_attribution,
+        "llm_outcome_attribution": llm_outcome_attribution,
         "plan_counts": plan_counts,
         "pending_action_count": int(pending_like),
+        "open_plan_readiness": _open_plan_readiness(
+            int(portfolio_id),
+            portfolio_name=str(portfolio.get("name") or f"Portfolio {portfolio_id}"),
+            plans=plans,
+        ),
         "audit_summary": daily_audit,
         "recent_activity": audit[:12],
         "guardrails": {
@@ -556,6 +648,17 @@ def _combine_plan_counts(dashboards: list[dict[str, Any]]) -> dict[str, int]:
     for dashboard in dashboards:
         counter.update({str(key): int(value) for key, value in dict(dashboard.get("plan_counts") or {}).items()})
     return {key: int(value) for key, value in sorted(counter.items())}
+
+
+def _combine_open_plan_readiness(dashboards: list[dict[str, Any]]) -> dict[str, Any]:
+    counter: Counter[str] = Counter()
+    rows: list[dict[str, Any]] = []
+    for dashboard in dashboards:
+        readiness = dict(dashboard.get("open_plan_readiness") or {})
+        counter.update({str(key): int(value) for key, value in dict(readiness.get("counts") or {}).items()})
+        rows.extend(list(readiness.get("rows") or []))
+    counter["total"] = len(rows)
+    return {"counts": {key: int(value) for key, value in sorted(counter.items())}, "rows": rows}
 
 
 def _agent_portfolio_row(agent: dict[str, str], dashboard: dict[str, Any]) -> dict[str, Any]:
@@ -685,25 +788,25 @@ def _competition_payload(agent_rows: list[dict[str, Any]], portfolio_ids: list[i
     for index, item in enumerate(leaderboard, start=1):
         item["rank"] = index
         item["status"] = "winner" if index == 1 else "competing"
-        row = row_by_portfolio.get(int(item.get("portfolio_id") or 0))
-        if row is not None:
-            row["rank"] = index
-            row["competition_status"] = item["status"]
-            row["competition_profit"] = item["after_tax_profit"]
-            row["competition_return_pct"] = item["after_tax_return_pct"]
+        portfolio_row = row_by_portfolio.get(int(item.get("portfolio_id") or 0))
+        if portfolio_row is not None:
+            portfolio_row["rank"] = index
+            portfolio_row["competition_status"] = item["status"]
+            portfolio_row["competition_profit"] = item["after_tax_profit"]
+            portfolio_row["competition_return_pct"] = item["after_tax_return_pct"]
     overlap = cross_agent_overlap_summary(portfolio_ids)
     item_by_portfolio = {int(item.get("portfolio_id") or 0): item for item in leaderboard}
     for overlap_row in list(overlap.get("risk_tickers") or []):
         ticker = str(overlap_row.get("ticker") or "")
         for owner in list(overlap_row.get("owners") or []):
-            item = item_by_portfolio.get(int(owner.get("portfolio_id") or 0))
-            if item is None:
+            leader_item = item_by_portfolio.get(int(owner.get("portfolio_id") or 0))
+            if leader_item is None:
                 continue
             warning = f"overlap_{ticker}"
-            if warning not in item["risk_warnings"]:
-                item["risk_warnings"].append(warning)
-            if item.get("risk_status") == "ok":
-                item["risk_status"] = "warning"
+            if warning not in leader_item["risk_warnings"]:
+                leader_item["risk_warnings"].append(warning)
+            if leader_item.get("risk_status") == "ok":
+                leader_item["risk_status"] = "warning"
     return {
         "enabled": enabled,
         "basis": "estimated_after_tax_profit",
@@ -838,9 +941,11 @@ def compute_beta_agent_dashboard(
     first["agent_portfolios"] = agent_portfolios
     first["agent_model_settings"] = model_settings
     first["llm_attribution"] = _combine_llm_attribution(dashboards)
+    first["llm_outcome_attribution"] = get_llm_attribution_summary(days=30)
     first["competition"] = _competition_payload(agent_rows, portfolio_ids)
     first["plan_counts"] = plan_counts
     first["pending_action_count"] = int(sum(plan_counts.get(status, 0) for status in ("Pending", "Approved", "Submitted", "Partially Filled")))
+    first["open_plan_readiness"] = _combine_open_plan_readiness(dashboards)
     first["recent_activity"] = recent_activity
     first["agent_portfolio_count"] = len(agent_portfolios)
     first["per_agent_budget"] = total_starting / len(agent_portfolios) if agent_portfolios else 0.0

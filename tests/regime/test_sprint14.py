@@ -262,6 +262,30 @@ def test_regime_history_payload_preserved_for_rendering(monkeypatch) -> None:
     payload = regime_route._build_regime_dashboard_payload(benchmark="SOXX", period="3y", tickers=["NVDA"])
     assert payload["regime_history"][0]["previous_label"] == "Neutral"
     assert payload["regime_history"][0]["current_label"] == "Bull"
+    row = payload["rows"][0]
+    assert row["previous_regime"] == "Neutral"
+    assert row["p_bull_day5"] == 0.72
+    assert row["p_neutral_day5"] == 0.18
+    assert row["p_bear_day5"] == 0.1
+    assert row["forward_probabilities"]["p_bull_day5"] == 0.72
+    assert row["signal_diagnostics"]["p_bull_day5"] == 0.72
+
+
+def test_forward_probability_context_uses_explicit_day_rows() -> None:
+    context = regime_route._forward_curve_probability_context(
+        pd.DataFrame(
+            {
+                "day": [1, 5, 21],
+                "p_bull": [0.62, 0.48, 0.41],
+                "p_neutral": [0.28, 0.39, 0.37],
+                "p_bear": [0.10, 0.13, 0.22],
+            }
+        )
+    )
+    assert context["p_bull_day5"] == 0.48
+    assert context["p_neutral_day5"] == 0.39
+    assert context["p_bear_day5"] == 0.13
+    assert context["p_bull_day21"] == 0.41
 
 
 def test_non_material_tax_signal_still_exposes_lot_details(monkeypatch) -> None:

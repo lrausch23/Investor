@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import datetime as dt
 import importlib
 import inspect
 import sys
@@ -233,8 +234,26 @@ def test_generate_buy_plans_persists_algo_strategy(temp_modules, monkeypatch) ->
         suggested_entry_price=100.0,
         status="Entry Signal",
     )
+    store.save_signal_snapshot(
+        ticker="NVDA",
+        snapshot_date=dt.datetime.now(dt.timezone.utc).date().isoformat(),
+        action="Buy",
+        regime_label="Bull",
+        regime_probability=0.90,
+        composite_strength=0.80,
+        benchmark="SPY",
+        current_price=100.0,
+        entry_price=100.0,
+        exit_price=110.0,
+        stop_price=98.0,
+        risk_reward_ratio=5.0,
+        timeframe_days=21,
+        expected_regime_duration=30.0,
+    )
     monkeypatch.setattr(routing, "compute_adv", lambda ticker, lookback_days=20: 5_000.0)
     monkeypatch.setattr(paper, "_batch_current_prices", lambda tickers: {"NVDA": 100.0})
+    monkeypatch.setattr(paper, "_lookup_atr", lambda ticker: 1.0)
+    monkeypatch.setattr(paper, "_lookup_beta", lambda ticker: 1.0)
     plans = paper.generate_buy_plans(portfolio["id"])
     assert plans[0]["algo_strategy"] in {"TWAP", "VWAP"}
 

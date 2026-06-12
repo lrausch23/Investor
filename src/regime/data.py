@@ -75,8 +75,9 @@ def _download_price_history(ticker: str, period: str, interval: str) -> tuple[st
         from .ibkr_market_data import IBKRMarketDataProvider, apply_regime_provider_settings
 
         provider_order, enabled = apply_regime_provider_settings()
+        ibkr_provider_cls = IBKRMarketDataProvider
     except Exception:
-        IBKRMarketDataProvider = None  # type: ignore[assignment]
+        ibkr_provider_cls = None
         provider_order = ["yfinance"]
         enabled = {"yfinance": True}
 
@@ -86,8 +87,8 @@ def _download_price_history(ticker: str, period: str, interval: str) -> tuple[st
             if enabled and not bool(enabled.get(provider_key, False)):
                 continue
             try:
-                if provider_key == "ibkr" and IBKRMarketDataProvider is not None:
-                    provider = IBKRMarketDataProvider()
+                if provider_key == "ibkr" and ibkr_provider_cls is not None:
+                    provider = ibkr_provider_cls()
                     if not provider.is_available():
                         continue
                     history = provider.fetch(symbol=candidate, start=start_date, end=end_date)

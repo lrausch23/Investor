@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime as dt
 import importlib
 
 import pandas as pd
@@ -35,6 +36,25 @@ def temp_modules(tmp_path, monkeypatch):
 
 def _client() -> TestClient:
     return TestClient(create_app())
+
+
+def _save_buy_signal_snapshot(store, ticker: str, price: float) -> None:
+    store.save_signal_snapshot(
+        ticker=ticker,
+        snapshot_date=dt.date.today().isoformat(),
+        action="Buy",
+        regime_label="Bull",
+        regime_probability=0.8,
+        composite_strength=0.7,
+        benchmark="SPY",
+        current_price=price,
+        entry_price=price,
+        exit_price=price * 1.10,
+        stop_price=price * 0.95,
+        risk_reward_ratio=2.0,
+        timeframe_days=10,
+        expected_regime_duration=12.0,
+    )
 
 
 def test_compute_adv_normal(temp_modules, monkeypatch) -> None:
@@ -283,6 +303,7 @@ def test_generate_buy_plans_has_routing(temp_modules, monkeypatch) -> None:
         suggested_entry_price=100.0,
         status="Entry Signal",
     )
+    _save_buy_signal_snapshot(store, "NVDA", 100.0)
     monkeypatch.setattr(routing, "compute_adv", lambda ticker, lookback_days=20: 2_000_000.0)
     monkeypatch.setattr(paper, "_batch_current_prices", lambda tickers: {"NVDA": 100.0})
     plans = paper.generate_buy_plans(portfolio["id"])

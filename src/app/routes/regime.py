@@ -159,6 +159,7 @@ def _load_hmm_runtime() -> tuple[dict[str, Any] | None, str | None]:
         from src.regime.llm_layer import build_qualitative_assessment, configured_frontier_model, list_provider_models
         from src.regime.diagnostics import calibration_payload, duration_accuracy
         from src.regime.diagnostics import fit_probability_calibrator
+        from src.regime.regime_calibration import load_regime_calibrator
         from src.regime.backtest import compare_to_benchmark, run_backtest
         from src.regime.portfolio import compute_return_correlations, portfolio_risk_summary_dict
         from src.regime.persistence import (
@@ -204,8 +205,10 @@ def _load_hmm_runtime() -> tuple[dict[str, Any] | None, str | None]:
             get_auto_approve_threshold,
             get_alerts,
             get_notification_preferences,
+            get_latest_thesis_monitor_run,
             acknowledge_alert,
             acknowledge_all_alerts,
+            get_thesis_monitor_runs,
             get_daily_capital_ceiling_pct,
             get_daily_capital_deployed,
             get_supply_chain,
@@ -285,6 +288,7 @@ def _load_hmm_runtime() -> tuple[dict[str, Any] | None, str | None]:
             extract_meta_features,
             get_next_version,
             list_saved_versions,
+            meta_labeler_result_can_influence,
             should_retrain,
             _version_path,
         )
@@ -337,7 +341,16 @@ def _load_hmm_runtime() -> tuple[dict[str, Any] | None, str | None]:
             tax_adjusted_signals,
             compute_unified_confidence,
         )
-        from src.regime.triple_barrier import BarrierConfig, apply_triple_barrier_labels, build_labeled_frame, build_multi_ticker_labeled_frame
+        from src.regime.triple_barrier import (
+            DEFAULT_MANAGED_EXIT_CONFIG,
+            BarrierConfig,
+            ManagedExitConfig,
+            apply_triple_barrier_labels,
+            build_labeled_frame,
+            build_managed_labeled_frame,
+            build_multi_ticker_labeled_frame,
+            build_multi_ticker_managed_frame,
+        )
         from src.regime.vix_freeze import (
             check_vix_freeze,
             get_vix_freeze_threshold,
@@ -366,6 +379,7 @@ def _load_hmm_runtime() -> tuple[dict[str, Any] | None, str | None]:
             get_execution_quality_trades,
         )
         from src.regime.signal_quality import evaluate_signal_quality
+        from src.regime.thesis_monitor import hbm_thesis_monitor_config, run_hbm_thesis_monitor
     except ImportError:
         return None, (
             "Regime analytics are unavailable because hmm-market-regime-tool is not installed "
@@ -443,6 +457,10 @@ def _load_hmm_runtime() -> tuple[dict[str, Any] | None, str | None]:
         "save_alert": save_alert,
         "get_alerts": get_alerts,
         "get_notification_preferences": get_notification_preferences,
+        "get_latest_thesis_monitor_run": get_latest_thesis_monitor_run,
+        "get_thesis_monitor_runs": get_thesis_monitor_runs,
+        "hbm_thesis_monitor_config": hbm_thesis_monitor_config,
+        "run_hbm_thesis_monitor": run_hbm_thesis_monitor,
         "acknowledge_alert": acknowledge_alert,
         "acknowledge_all_alerts": acknowledge_all_alerts,
         "get_all_settings": get_all_settings,
@@ -497,8 +515,12 @@ def _load_hmm_runtime() -> tuple[dict[str, Any] | None, str | None]:
         "aggregate_analysts": aggregate_analysts,
         "apply_triple_barrier_labels": apply_triple_barrier_labels,
         "build_labeled_frame": build_labeled_frame,
+        "build_managed_labeled_frame": build_managed_labeled_frame,
         "build_multi_ticker_labeled_frame": build_multi_ticker_labeled_frame,
+        "build_multi_ticker_managed_frame": build_multi_ticker_managed_frame,
         "BarrierConfig": BarrierConfig,
+        "ManagedExitConfig": ManagedExitConfig,
+        "DEFAULT_MANAGED_EXIT_CONFIG": DEFAULT_MANAGED_EXIT_CONFIG,
         "PassthroughAnalyst": PassthroughAnalyst,
         "MetaLabelerEngine": MetaLabelerEngine,
         "MetaLabelerConfig": MetaLabelerConfig,
@@ -508,6 +530,7 @@ def _load_hmm_runtime() -> tuple[dict[str, Any] | None, str | None]:
         "KalmanConfig": KalmanConfig,
         "KalmanFilterAnalyst": KalmanFilterAnalyst,
         "extract_meta_features": extract_meta_features,
+        "meta_labeler_result_can_influence": meta_labeler_result_can_influence,
         "create_and_register_meta_labeler": create_and_register,
         "auto_load_active_model": auto_load_active_model,
         "should_retrain": should_retrain,
@@ -615,6 +638,7 @@ def _load_hmm_runtime() -> tuple[dict[str, Any] | None, str | None]:
         "multi_timeframe_signal": multi_timeframe_signal,
         "duration_accuracy": duration_accuracy,
         "fit_probability_calibrator": fit_probability_calibrator,
+        "load_regime_calibrator": load_regime_calibrator,
         "compute_unified_confidence": compute_unified_confidence,
         "compute_position_size": compute_position_size,
         "evaluate_signal_quality": evaluate_signal_quality,
@@ -680,6 +704,125 @@ def _json_ready(value: Any) -> Any:
             logger.debug("Failed isoformat() conversion in _json_ready.", exc_info=exc)
             pass
     return value
+
+
+def _forward_curve_probability_context(forward_curve: Any) -> dict[str, Any]:
+    records = _json_ready(forward_curve)
+    if isinstance(records, dict):
+        records = list(records.values())
+    if not isinstance(records, list) or not records:
+        return {}
+
+    def row_day(row: dict[str, Any]) -> int | None:
+        try:
+            return int(row.get("day"))
+        except Exception:
+            return None
+
+    def row_for_day(day: int) -> dict[str, Any]:
+        dict_rows = [row for row in records if isinstance(row, dict)]
+        if not dict_rows:
+            return {}
+        for row in dict_rows:
+            if row_day(row) == day:
+                return row
+        ordered_rows = sorted(
+            ((row_day(row), row) for row in dict_rows if row_day(row) is not None),
+            key=lambda item: item[0],
+        )
+        if ordered_rows:
+            prior_rows = [row for row_day_value, row in ordered_rows if row_day_value <= day]
+            return prior_rows[-1] if prior_rows else ordered_rows[0][1]
+        index = min(max(day - 1, 0), len(dict_rows) - 1)
+        return dict_rows[index]
+
+    def as_float(row: dict[str, Any], key: str) -> float | None:
+        try:
+            value = row.get(key)
+            return float(value) if value is not None else None
+        except Exception:
+            return None
+
+    day5 = row_for_day(5)
+    day21 = row_for_day(21)
+    return {
+        "p_bull_day5": as_float(day5, "p_bull"),
+        "p_neutral_day5": as_float(day5, "p_neutral"),
+        "p_bear_day5": as_float(day5, "p_bear"),
+        "p_bull_day21": as_float(day21, "p_bull"),
+        "p_neutral_day21": as_float(day21, "p_neutral"),
+        "p_bear_day21": as_float(day21, "p_bear"),
+    }
+
+
+def _meta_feature_context_row(item: dict[str, Any], forward_probabilities: dict[str, Any] | None = None) -> dict[str, Any]:
+    regime = item.get("regime_obj")
+    row: dict[str, Any] = {}
+    try:
+        row.update(getattr(regime, "price_frame").iloc[-1].to_dict())
+    except Exception:
+        pass
+    row["current_price"] = float(getattr(regime, "latest_price", 0.0) or 0.0)
+    row["transition_risk"] = float(getattr(regime, "transition_risk", row.get("transition_risk") or 0.0) or 0.0)
+    row["regime_days"] = int(getattr(regime, "regime_days", row.get("regime_days") or 1) or 1)
+    composite_signal = item.get("composite_signal")
+    if composite_signal is not None:
+        row["composite_strength"] = float(getattr(composite_signal, "composite_strength", 0.0) or 0.0)
+        row["composite_action"] = str(getattr(composite_signal, "composite_action", "") or "")
+    if forward_probabilities:
+        row.update(forward_probabilities)
+    price_targets = item.get("price_targets")
+    if price_targets is not None:
+        if is_dataclass(price_targets):
+            target_payload = asdict(price_targets)
+        elif isinstance(price_targets, dict):
+            target_payload = dict(price_targets)
+        else:
+            target_payload = dict(getattr(price_targets, "__dict__", {}) or {})
+        row["price_targets"] = target_payload
+        for key in ("entry_price", "exit_price", "target_price", "stop_price", "risk_reward_ratio", "atr_value", "atr_14"):
+            if key in target_payload:
+                row[key] = target_payload[key]
+        if "target_price" not in row and "exit_price" in target_payload:
+            row["target_price"] = target_payload.get("exit_price")
+        if "atr_14" not in row and "atr_value" in target_payload:
+            row["atr_14"] = target_payload.get("atr_value")
+    technicals = item.get("technicals")
+    try:
+        latest = technicals.dropna().iloc[-1]
+        row["rsi_14"] = latest.get("rsi_14")
+        row["macd_histogram"] = latest.get("macd_histogram")
+    except Exception:
+        pass
+    if item.get("signal_quality_score") is not None:
+        row["signal_quality_score"] = item.get("signal_quality_score")
+    return row
+
+
+def _previous_regime_by_ticker(
+    regime_history: list[dict[str, Any]],
+    current_regimes: dict[str, str] | None = None,
+) -> dict[str, str]:
+    def normalize_label(value: Any) -> str:
+        raw = str(value or "").strip()
+        return raw.title() if raw.lower() in {"bull", "neutral", "bear"} else raw
+
+    current_regimes = {str(key).upper(): normalize_label(value) for key, value in (current_regimes or {}).items()}
+    by_ticker: dict[str, str] = {}
+    rows = [item for item in regime_history if isinstance(item, dict)]
+    for row in sorted(rows, key=lambda item: str(item.get("changed_at") or ""), reverse=True):
+        ticker = str(row.get("ticker") or "").upper()
+        if not ticker or ticker in by_ticker:
+            continue
+        current = normalize_label(row.get("current_label"))
+        if current_regimes.get(ticker) and current and current != current_regimes[ticker]:
+            continue
+        previous = normalize_label(row.get("previous_label"))
+        if current_regimes.get(ticker) and previous == current_regimes[ticker]:
+            continue
+        if previous:
+            by_ticker[ticker] = previous
+    return by_ticker
 
 
 def _signal_class(action: str) -> str:
@@ -1676,8 +1819,12 @@ def _sector_by_ticker(db_path: str | None, tickers: list[str]) -> dict[str, str]
 
 
 def _fit_regime_with_adaptive_window(runtime: dict[str, Any], *, ticker: str, market_frame: Any) -> Any:
+    fit_kwargs = _hmm_fit_kwargs_from_runtime(runtime)
     try:
-        return runtime["fit_regime_model"](ticker=ticker, market_frame=market_frame)
+        try:
+            return runtime["fit_regime_model"](ticker=ticker, market_frame=market_frame, **fit_kwargs)
+        except TypeError:
+            return runtime["fit_regime_model"](ticker=ticker, market_frame=market_frame)
     except Exception as exc:
         if "Insufficient history for walk-forward analysis" not in str(exc):
             raise
@@ -1686,11 +1833,56 @@ def _fit_regime_with_adaptive_window(runtime: dict[str, Any], *, ticker: str, ma
         if adaptive_window >= 504:
             raise
         logger.info("Retrying HMM fit for %s with adaptive training_window=%d", ticker, adaptive_window)
-        return runtime["fit_regime_model"](
-            ticker=ticker,
-            market_frame=market_frame,
-            training_window=adaptive_window,
-        )
+        try:
+            return runtime["fit_regime_model"](
+                ticker=ticker,
+                market_frame=market_frame,
+                training_window=adaptive_window,
+                **fit_kwargs,
+            )
+        except TypeError:
+            return runtime["fit_regime_model"](
+                ticker=ticker,
+                market_frame=market_frame,
+                training_window=adaptive_window,
+            )
+
+
+def _hmm_fit_kwargs_from_runtime(runtime: dict[str, Any]) -> dict[str, Any]:
+    get_setting_fn = runtime.get("get_setting")
+    if not callable(get_setting_fn):
+        return {}
+
+    def _int_setting(key: str, default: int, *, minimum: int, maximum: int) -> int:
+        try:
+            value = int(get_setting_fn(key) or default)
+        except Exception:
+            value = default
+        return max(minimum, min(maximum, value))
+
+    def _float_setting(key: str, default: float, *, minimum: float, maximum: float) -> float:
+        try:
+            value = float(get_setting_fn(key) or default)
+        except Exception:
+            value = default
+        return max(minimum, min(maximum, value))
+
+    def _bool_setting(key: str, default: bool) -> bool:
+        raw = get_setting_fn(key)
+        if raw is None:
+            return default
+        return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+    covariance = str(get_setting_fn("hmm_covariance_type") or "diag").strip().lower()
+    if covariance not in {"diag", "full", "spherical", "tied"}:
+        covariance = "diag"
+    return {
+        "n_seeds": _int_setting("hmm_n_seeds", 1, minimum=1, maximum=10),
+        "seed_agreement_min": _float_setting("hmm_seed_agreement_min", 0.8, minimum=0.0, maximum=1.0),
+        "covariance_type": covariance,
+        "macro_weight": _float_setting("hmm_macro_weight", 1.5, minimum=0.0, maximum=10.0),
+        "macro_weighting": _bool_setting("hmm_macro_weighting", False),
+    }
 
 
 def _position_market_value(position: Any) -> float | None:
@@ -2151,10 +2343,15 @@ def _build_regime_dashboard_payload(
         compute_unified_confidence_fn = runtime.get("compute_unified_confidence")
         if callable(compute_unified_confidence_fn):
             try:
+                confidence_calibrator = calibrator
+                if str(runtime.get("get_setting")("regime_probability_calibrated") or "").strip().lower() in {"1", "true", "yes", "on"}:
+                    load_regime_calibrator_fn = runtime.get("load_regime_calibrator")
+                    if callable(load_regime_calibrator_fn):
+                        confidence_calibrator = load_regime_calibrator_fn(regime.latest_label) or confidence_calibrator
                 unified_confidence = compute_unified_confidence_fn(
                     float(regime.latest_probability),
                     float(getattr(composite_signal, "composite_strength", 0.0) or 0.0),
-                    calibrator=calibrator,
+                    calibrator=confidence_calibrator,
                 )
             except Exception as exc:
                 logger.debug("Unable to compute unified confidence for %s.", ticker, exc_info=exc)
@@ -2309,6 +2506,11 @@ def _build_regime_dashboard_payload(
     runtime_sector_map_fn = runtime.get("get_sector_map")
     sector_map = runtime_sector_map_fn(investor_db_path, selected_tickers) if callable(runtime_sector_map_fn) else _sector_by_ticker(investor_db_path, selected_tickers)
     payload["regime_history"] = _fetch_regime_change_history(selected_tickers, days=90)
+    current_regimes = {
+        str(item["ticker"]).upper(): str(item["regime_obj"].latest_label)
+        for item in fitted_rows
+    }
+    previous_regimes = _previous_regime_by_ticker(payload["regime_history"], current_regimes)
     compute_return_correlations_fn = runtime.get("compute_return_correlations")
     concentration_adjusted_strength_fn = runtime.get("concentration_adjusted_strength")
     if callable(compute_return_correlations_fn) and callable(concentration_adjusted_strength_fn) and fitted_rows:
@@ -2393,7 +2595,8 @@ def _build_regime_dashboard_payload(
         for item in fitted_rows:
             try:
                 ticker_key = str(item["ticker"]).upper()
-                features = runtime["extract_meta_features"](item["regime_obj"].price_frame.iloc[-1])
+                feature_row = _meta_feature_context_row(item, _forward_curve_probability_context(item.get("forward_curve")))
+                features = runtime["extract_meta_features"](feature_row)
                 if meta_labeler_active:
                     ml_result = meta_labeler_engine.analyze(
                         ticker=ticker_key,
@@ -2401,7 +2604,12 @@ def _build_regime_dashboard_payload(
                         regime_result=item["regime_obj"],
                     )
                     meta_results[ticker_key] = ml_result
-                    meta_scores[ticker_key] = float(getattr(ml_result, "confidence", 0.0) or 0.0)
+                    can_influence = True
+                    result_can_influence_fn = runtime.get("meta_labeler_result_can_influence")
+                    if callable(result_can_influence_fn):
+                        can_influence = bool(result_can_influence_fn(ml_result))
+                    if can_influence:
+                        meta_scores[ticker_key] = float(getattr(ml_result, "confidence", 0.0) or 0.0)
                 if registry:
                     lstm_engine = registry.get("lstm_sequence")
                     if lstm_engine is not None:
@@ -2480,6 +2688,7 @@ def _build_regime_dashboard_payload(
             if callable(save_regime_event_fn):
                 previous_event = save_regime_event_fn(item["ticker"], item["regime_obj"].latest_label, int(item["regime_obj"].latest_state_id))
                 previous_label = (previous_event or {}).get("previous_label")
+                item["previous_regime_from_event"] = previous_label
                 if previous_label and previous_label != item["regime_obj"].latest_label and callable(save_regime_change_with_price_fn):
                     try:
                         save_regime_change_with_price_fn(
@@ -2507,6 +2716,12 @@ def _build_regime_dashboard_payload(
         lstm_result = lstm_results.get(ticker_key)
         kalman_result = kalman_results.get(ticker_key)
         meta_prob = meta_scores.get(ticker_key)
+        forward_probabilities = _forward_curve_probability_context(item["forward_curve"])
+        previous_regime = previous_regimes.get(ticker_key)
+        if not previous_regime:
+            event_previous = str(item.get("previous_regime_from_event") or "").strip()
+            if event_previous and event_previous != str(regime.latest_label):
+                previous_regime = event_previous
         frontier_panel = _frontier_panel(
             qualitative=qualitative,
             label=regime.latest_label,
@@ -2534,6 +2749,12 @@ def _build_regime_dashboard_payload(
             "forward_strength": round(float(getattr(item["forward_signal"], "strength", 0.0) or 0.0), 3),
             "forward_transition_risk": round(float(getattr(item["forward_signal"], "transition_risk", 0.0)), 3),
             "forward_expected_duration": round(float(getattr(item["forward_signal"], "expected_duration", 0.0)), 1),
+            "p_bull_day5": forward_probabilities.get("p_bull_day5"),
+            "p_neutral_day5": forward_probabilities.get("p_neutral_day5"),
+            "p_bear_day5": forward_probabilities.get("p_bear_day5"),
+            "p_bull_day21": forward_probabilities.get("p_bull_day21"),
+            "p_neutral_day21": forward_probabilities.get("p_neutral_day21"),
+            "p_bear_day21": forward_probabilities.get("p_bear_day21"),
             "technical_signal": item["technical_signal"],
             "composite_action": item["composite_signal"].composite_action,
             "composite_strength": round(float(getattr(item["composite_signal"], "composite_strength", 0.0) or 0.0), 3),
@@ -2560,6 +2781,7 @@ def _build_regime_dashboard_payload(
             {
                 "ticker": ticker,
                 "regime": regime.latest_label,
+                "previous_regime": previous_regime,
                 "state_id": int(regime.latest_state_id),
                 "regime_class": _regime_class(regime.latest_label),
                 "probability": float(regime.latest_probability),
@@ -2571,6 +2793,13 @@ def _build_regime_dashboard_payload(
                 "multi_timeframe_aligned": (getattr(item["composite_signal"], "weekly_regime", None) or item["regime_obj"].latest_label) == item["regime_obj"].latest_label,
                 "forward_signal": item["forward_signal"].action,
                 "forward_signal_class": _signal_class(item["forward_signal"].action),
+                "forward_probabilities": forward_probabilities,
+                "p_bull_day5": forward_probabilities.get("p_bull_day5"),
+                "p_neutral_day5": forward_probabilities.get("p_neutral_day5"),
+                "p_bear_day5": forward_probabilities.get("p_bear_day5"),
+                "p_bull_day21": forward_probabilities.get("p_bull_day21"),
+                "p_neutral_day21": forward_probabilities.get("p_neutral_day21"),
+                "p_bear_day21": forward_probabilities.get("p_bear_day21"),
                 "technical_signal": item["technical_signal"],
                 "price_targets": _json_ready(item["price_targets"]),
                 "price_targets_error": item.get("price_targets_error"),
@@ -3149,6 +3378,8 @@ def _build_shell_context(
             "alerts": "/regime/alerts",
             "alert_acknowledge": "/regime/alerts/__ALERT_ID__/acknowledge",
             "alerts_acknowledge_all": "/regime/alerts/acknowledge-all",
+            "hbm_thesis_monitor": "/regime/thesis-monitor/hbm",
+            "hbm_thesis_monitor_run": "/regime/thesis-monitor/hbm/run",
             "journal": "/regime/journal",
             "journal_stats": "/regime/journal/stats",
             "vix_status": "/regime/vix/status",
@@ -3746,6 +3977,7 @@ def _ensemble_settings_payload(runtime: dict[str, Any]) -> dict[str, str]:
         "barrier_stop_loss_atr_mult": "2.0",
         "barrier_max_holding_days": "21",
         "meta_compute_backend": "local",
+        "meta_labeler_veto_mode": "gate",
     }
     payload.update(runtime["get_all_settings"]("ensemble_"))
     payload.update(runtime["get_all_settings"]("barrier_"))
@@ -3842,7 +4074,91 @@ def _meta_labeler_config_from_runtime(runtime: dict[str, Any]) -> Any:
         random_state=defaults.random_state,
         min_training_samples=_int_setting("meta_min_training_samples", defaults.min_training_samples),
         walk_forward_gap=_int_setting("meta_walk_forward_gap", defaults.walk_forward_gap),
+        n_folds=_int_setting("meta_n_folds", getattr(defaults, "n_folds", 5)),
+        embargo_bars=_int_setting("meta_embargo_bars", getattr(defaults, "embargo_bars", 21)),
+        embargo_days=_int_setting("meta_embargo_days", getattr(defaults, "embargo_days", 30)),
     )
+
+
+def _meta_labeler_label_mode(runtime: dict[str, Any]) -> str:
+    try:
+        configured = str(runtime.get("get_setting", lambda _key: None)("meta_labeler_label_mode") or "").strip().lower()
+    except Exception:
+        configured = ""
+    return "legacy" if configured == "legacy" else "managed"
+
+
+def _dataclass_payload(value: Any) -> dict[str, Any]:
+    if value is None:
+        return {}
+    if is_dataclass(value):
+        return dict(asdict(value))
+    if isinstance(value, dict):
+        return dict(value)
+    return {
+        key: getattr(value, key)
+        for key in dir(value)
+        if not key.startswith("_") and not callable(getattr(value, key, None))
+    }
+
+
+def _managed_exit_config_from_runtime(runtime: dict[str, Any]) -> Any:
+    defaults = runtime.get("DEFAULT_MANAGED_EXIT_CONFIG")
+    if defaults is not None:
+        return defaults
+    config_cls = runtime.get("ManagedExitConfig")
+    return config_cls() if callable(config_cls) else None
+
+
+def _build_meta_labeler_labeled_frame(
+    runtime: dict[str, Any],
+    ticker: str,
+    market_frame: Any,
+    regime_result: Any,
+) -> tuple[Any, str, dict[str, Any]]:
+    mode = _meta_labeler_label_mode(runtime)
+    if mode == "managed" and callable(runtime.get("build_managed_labeled_frame")):
+        config = _managed_exit_config_from_runtime(runtime)
+        return (
+            runtime["build_managed_labeled_frame"](ticker, regime_result, config=config),
+            "managed",
+            _dataclass_payload(config),
+        )
+    return runtime["build_labeled_frame"](ticker, market_frame, regime_result), "legacy", {}
+
+
+def _build_meta_labeler_multi_frame(
+    runtime: dict[str, Any],
+    pairs: list[tuple[str, Any]],
+) -> tuple[Any, str, dict[str, Any]]:
+    mode = _meta_labeler_label_mode(runtime)
+    if mode == "managed" and callable(runtime.get("build_multi_ticker_managed_frame")):
+        config = _managed_exit_config_from_runtime(runtime)
+        return (
+            runtime["build_multi_ticker_managed_frame"](pairs, config=config),
+            "managed",
+            _dataclass_payload(config),
+        )
+    return runtime["build_multi_ticker_labeled_frame"](pairs), "legacy", {}
+
+
+def _meta_labeler_config_payload(engine: Any, *, label_mode: str, label_config: dict[str, Any]) -> dict[str, Any]:
+    payload = {
+        "n_estimators": engine._config.n_estimators,
+        "learning_rate": engine._config.learning_rate,
+        "max_depth": engine._config.max_depth,
+        "subsample": engine._config.subsample,
+        "colsample_bytree": engine._config.colsample_bytree,
+        "min_training_samples": engine._config.min_training_samples,
+        "walk_forward_gap": engine._config.walk_forward_gap,
+        "n_folds": getattr(engine._config, "n_folds", None),
+        "embargo_bars": getattr(engine._config, "embargo_bars", None),
+        "embargo_days": getattr(engine._config, "embargo_days", None),
+        "label_mode": label_mode,
+    }
+    if label_config:
+        payload["managed_exit_config"] = label_config
+    return payload
 
 
 def _collect_meta_labeler_pairs(
@@ -3859,12 +4175,21 @@ def _collect_meta_labeler_pairs(
         try:
             market_series = runtime["download_market_frame"](ticker=ticker, period=period)
             market_frame = getattr(market_series, "frame", market_series)
-            regime_result = runtime["fit_regime_model"](
-                ticker=ticker,
-                market_frame=market_frame,
-                training_window=training_window,
-                refit_step=refit_step,
-            )
+            try:
+                regime_result = runtime["fit_regime_model"](
+                    ticker=ticker,
+                    market_frame=market_frame,
+                    training_window=training_window,
+                    refit_step=refit_step,
+                    record_forward_probabilities=True,
+                )
+            except TypeError:
+                regime_result = runtime["fit_regime_model"](
+                    ticker=ticker,
+                    market_frame=market_frame,
+                    training_window=training_window,
+                    refit_step=refit_step,
+                )
             pairs.append((ticker, regime_result))
         except Exception:
             logger.warning("Unable to prepare meta-labeler training data for %s.", ticker, exc_info=True)
@@ -3893,7 +4218,7 @@ def _train_meta_labeler_multi_sync(
     )
     if not pairs:
         raise DataValidationError("No tickers produced valid regime results.")
-    labeled_frame = runtime["build_multi_ticker_labeled_frame"](pairs)
+    labeled_frame, label_mode, label_config = _build_meta_labeler_multi_frame(runtime, pairs)
     config = _meta_labeler_config_from_runtime(runtime)
     combined_samples = int(len(labeled_frame))
     tickers_used = [ticker for ticker, _ in pairs]
@@ -3903,6 +4228,8 @@ def _train_meta_labeler_multi_sync(
             "tickers_used": tickers_used,
             "tickers_skipped": skipped,
             "combined_samples": combined_samples,
+            "label_mode": label_mode,
+            "managed_exit_config": label_config if label_config else None,
             "ready": False,
             "status": "insufficient_data",
         }
@@ -3910,12 +4237,14 @@ def _train_meta_labeler_multi_sync(
     engine = registry.get("xgboost_meta_labeler")
     if engine is None:
         engine = runtime["create_and_register_meta_labeler"](config)
-    metrics = engine.train(labeled_frame)
+    metrics = engine.train(labeled_frame, label_mode=label_mode, label_config=label_config if label_config else None)
     result: dict[str, Any] = {
         "tickers": tickers,
         "tickers_used": tickers_used,
         "tickers_skipped": skipped,
         "combined_samples": combined_samples,
+        "label_mode": label_mode,
+        "managed_exit_config": label_config if label_config else None,
         "metrics": metrics,
         "ready": bool(engine.is_ready()),
         "status": "trained" if engine.is_ready() else "not_ready",
@@ -3930,15 +4259,7 @@ def _train_meta_labeler_multi_sync(
         new_version = runtime["get_next_version"]()
         model_path = runtime["_version_path"](new_version)
         save_result = engine.save_model(model_path)
-        config_dict = {
-            "n_estimators": engine._config.n_estimators,
-            "learning_rate": engine._config.learning_rate,
-            "max_depth": engine._config.max_depth,
-            "subsample": engine._config.subsample,
-            "colsample_bytree": engine._config.colsample_bytree,
-            "min_training_samples": engine._config.min_training_samples,
-            "walk_forward_gap": engine._config.walk_forward_gap,
-        }
+        config_dict = _meta_labeler_config_payload(engine, label_mode=label_mode, label_config=label_config)
         runtime["log_training_run"](
             version=new_version,
             ticker=",".join(sorted(tickers_used)),
@@ -4014,7 +4335,7 @@ def _train_lstm_multi_sync(
     )
     if not pairs:
         raise DataValidationError("No tickers produced valid regime results.")
-    labeled_frame = runtime["build_multi_ticker_labeled_frame"](pairs)
+    labeled_frame, label_mode, label_config = _build_meta_labeler_multi_frame(runtime, pairs)
     registry = runtime["get_registry"]()
     engine = registry.get("lstm_sequence")
     if engine is None:
@@ -4028,6 +4349,8 @@ def _train_lstm_multi_sync(
         "tickers_used": [ticker for ticker, _ in pairs],
         "tickers_skipped": skipped,
         "combined_samples": int(len(labeled_frame)),
+        "label_mode": label_mode,
+        "managed_exit_config": label_config if label_config else None,
         "metrics": metrics,
         "ready": bool(engine.is_ready()),
         "status": str(metrics.get("status") or ("trained" if engine.is_ready() else "not_ready")),
@@ -4182,12 +4505,17 @@ async def regime_meta_labeler_train(
             training_window=training_window,
             refit_step=refit_step,
         )
-        labeled_frame = runtime["build_labeled_frame"](ticker, market_frame, regime_result)
+        labeled_frame, label_mode, label_config = _build_meta_labeler_labeled_frame(
+            runtime,
+            ticker,
+            market_frame,
+            regime_result,
+        )
         registry = runtime["get_registry"]()
         engine = registry.get("xgboost_meta_labeler")
         if engine is None:
             engine = runtime["create_and_register_meta_labeler"](_meta_labeler_config_from_runtime(runtime))
-        metrics = engine.train(labeled_frame)
+        metrics = engine.train(labeled_frame, label_mode=label_mode, label_config=label_config if label_config else None)
         save_result: dict[str, Any] = {}
         if engine.is_ready():
             active_version_str = runtime["get_setting"]("meta_labeler_active_version")
@@ -4200,15 +4528,7 @@ async def regime_meta_labeler_train(
             model_path = runtime["_version_path"](new_version)
             save_result = engine.save_model(model_path)
             save_result["version"] = new_version
-            config_dict = {
-                "n_estimators": engine._config.n_estimators,
-                "learning_rate": engine._config.learning_rate,
-                "max_depth": engine._config.max_depth,
-                "subsample": engine._config.subsample,
-                "colsample_bytree": engine._config.colsample_bytree,
-                "min_training_samples": engine._config.min_training_samples,
-                "walk_forward_gap": engine._config.walk_forward_gap,
-            }
+            config_dict = _meta_labeler_config_payload(engine, label_mode=label_mode, label_config=label_config)
             runtime["log_training_run"](
                 version=new_version,
                 ticker=ticker,
@@ -4217,7 +4537,14 @@ async def regime_meta_labeler_train(
                 config=config_dict,
             )
             runtime["set_setting"]("meta_labeler_active_version", str(new_version))
-        return {"ticker": ticker, "metrics": metrics, "ready": engine.is_ready(), **save_result}
+        return {
+            "ticker": ticker,
+            "label_mode": label_mode,
+            "managed_exit_config": label_config if label_config else None,
+            "metrics": metrics,
+            "ready": engine.is_ready(),
+            **save_result,
+        }
 
     result = await asyncio.to_thread(_train_sync)
     return JSONResponse(content=_json_ready(result))
@@ -4486,9 +4813,11 @@ def regime_ibkr_test_connection(
 @router.get("/ibkr/account-snapshot")
 def regime_ibkr_account_snapshot(
     portfolio_id: int | None = None,
+    scope: str | None = None,
     actor: str = Depends(require_actor),
 ):
     del actor
+    from src.regime.beta_agents import parse_portfolio_ids
     from src.regime.config import IBKRConfig
     from src.regime.ib_connection import get_ib_backend
     from src.regime.persistence import get_paper_portfolio, get_paper_portfolio_summary, get_setting
@@ -4529,19 +4858,61 @@ def regime_ibkr_account_snapshot(
             },
         )
 
-    broker_positions = [
-        {
-            "account_id": str(position.account_id),
-            "ticker": str(position.contract_symbol).upper(),
-            "quantity": float(position.quantity),
-            "avg_cost": float(position.avg_cost),
-            "market_value": float(position.market_value),
-            "unrealized_pnl": float(position.unrealized_pnl),
+    broker_positions = []
+    for position in broker_positions_raw:
+        quantity = float(position.quantity)
+        market_value = float(position.market_value)
+        if abs(quantity) <= 1e-6 and abs(market_value) <= 1e-6:
+            continue
+        broker_positions.append(
+            {
+                "account_id": str(position.account_id),
+                "ticker": str(position.contract_symbol).upper(),
+                "quantity": quantity,
+                "avg_cost": float(position.avg_cost),
+                "market_value": market_value,
+                "unrealized_pnl": float(position.unrealized_pnl),
+            }
+        )
+    aggregate_beta = str(scope or "").strip().lower() in {"agent_beta", "beta_agents", "agents"}
+    if aggregate_beta:
+        portfolio_ids = parse_portfolio_ids(get_setting("regime_beta_portfolio_ids"))
+        if not portfolio_ids and resolved_portfolio_id is not None:
+            portfolio_ids = [int(resolved_portfolio_id)]
+        aggregated_positions: dict[str, dict[str, Any]] = {}
+        for item_id in portfolio_ids:
+            item_summary = get_paper_portfolio_summary(int(item_id)) or {}
+            for position in list(item_summary.get("positions") or []):
+                ticker = str(position.get("ticker") or "").upper()
+                if not ticker:
+                    continue
+                row = aggregated_positions.setdefault(
+                    ticker,
+                    {
+                        "ticker": ticker,
+                        "quantity": 0.0,
+                        "current_value": 0.0,
+                        "market_value": 0.0,
+                    },
+                )
+                quantity = float(position.get("quantity") or 0.0)
+                value = float(position.get("current_value") or position.get("market_value") or 0.0)
+                row["quantity"] = float(row["quantity"]) + quantity
+                row["current_value"] = float(row["current_value"]) + value
+                row["market_value"] = float(row["market_value"]) + value
+        app_portfolio = {
+            "id": None,
+            "name": "Regime Agent Beta - Aggregate Agent Ledgers",
+            "portfolio_ids": portfolio_ids,
         }
-        for position in broker_positions_raw
-    ]
-    app_portfolio = get_paper_portfolio(resolved_portfolio_id) if resolved_portfolio_id is not None else None
-    app_summary = get_paper_portfolio_summary(resolved_portfolio_id) if resolved_portfolio_id is not None and app_portfolio else None
+        app_summary = {
+            "portfolio_scope": "aggregate_beta_agents",
+            "portfolio_ids": portfolio_ids,
+            "positions": [aggregated_positions[key] for key in sorted(aggregated_positions)],
+        }
+    else:
+        app_portfolio = get_paper_portfolio(resolved_portfolio_id) if resolved_portfolio_id is not None else None
+        app_summary = get_paper_portfolio_summary(resolved_portfolio_id) if resolved_portfolio_id is not None and app_portfolio else None
     app_positions = list((app_summary or {}).get("positions") or [])
     broker_by_ticker = {str(row.get("ticker") or "").upper(): row for row in broker_positions}
     app_by_ticker = {str(row.get("ticker") or "").upper(): row for row in app_positions}
@@ -5050,7 +5421,15 @@ def regime_watchlist(
     theme_filter = int(theme_id) if str(theme_id).isdigit() else None
     crowd_filter = int(max_crowd_score) if str(max_crowd_score).isdigit() else None
     rows = runtime["get_watchlist"](theme_id=theme_filter, status=status or None, max_crowd_score=crowd_filter)
-    return JSONResponse(content={"watchlist": _json_ready(rows), "stats": _json_ready(runtime["get_watchlist_stats"]())})
+    stats = runtime["get_watchlist_stats"]()
+    try:
+        from src.regime.watchlist_health import annotate_watchlist_signal_health
+
+        rows, health_stats = annotate_watchlist_signal_health(rows)
+        stats = {**stats, "signal_health": health_stats}
+    except Exception as exc:
+        logger.warning("Unable to annotate watchlist signal health.", exc_info=exc)
+    return JSONResponse(content={"watchlist": _json_ready(rows), "stats": _json_ready(stats)})
 
 
 @router.get("/watchlist/{watchlist_id}")
@@ -6553,6 +6932,34 @@ def regime_beta_agent_dashboard(
             int(portfolio_id),
             agents_status=registry.status(),
         )
+    try:
+        from src.regime.agent_candidate_intake import compute_agent_candidate_intake
+
+        payload["candidate_intake"] = compute_agent_candidate_intake(int(portfolio_id), limit=20)
+        agent_intakes: list[dict[str, Any]] = []
+        for agent in payload.get("agents", []):
+            if not isinstance(agent, dict):
+                continue
+            agent_portfolio_id = int(agent.get("portfolio_id") or 0)
+            if agent_portfolio_id <= 0:
+                continue
+            intake = compute_agent_candidate_intake(agent_portfolio_id, limit=20)
+            agent_intakes.append(
+                {
+                    "agent": agent.get("name"),
+                    "label": agent.get("label"),
+                    "portfolio_id": agent_portfolio_id,
+                    "counts": intake.get("counts", {}),
+                    "total_candidates": intake.get("total_candidates", 0),
+                    "returned_candidates": intake.get("returned_candidates", 0),
+                    "candidates": intake.get("candidates", []),
+                }
+            )
+        payload["candidate_intake_by_agent"] = agent_intakes
+    except Exception as exc:
+        logger.warning("Unable to compute agent candidate intake.", exc_info=exc)
+        payload["candidate_intake"] = {"error": str(exc), "candidates": [], "counts": {}}
+        payload["candidate_intake_by_agent"] = []
     return JSONResponse(content=_json_ready(payload))
 
 
@@ -7122,6 +7529,47 @@ def regime_thesis_delete(
         raise HTTPException(status_code=503, detail=runtime_error or "Regime analytics are unavailable.")
     deleted = bool(runtime["delete_thesis"](ticker))
     return JSONResponse(content={"ticker": ticker.upper(), "deleted": deleted})
+
+
+@router.get("/thesis-monitor/hbm")
+def regime_hbm_thesis_monitor_get(
+    limit: int = 10,
+    session: Session = Depends(db_session),
+    actor: str = Depends(require_actor),
+):
+    del session, actor
+    runtime, runtime_error = _load_hmm_runtime()
+    if runtime is None:
+        raise HTTPException(status_code=503, detail=runtime_error or "Regime analytics are unavailable.")
+    history_limit = max(1, min(int(limit), 50))
+    latest = runtime["get_latest_thesis_monitor_run"]("hbm_mu")
+    history = runtime["get_thesis_monitor_runs"]("hbm_mu", limit=history_limit)
+    config = runtime["hbm_thesis_monitor_config"]()
+    return JSONResponse(
+        content=_json_ready(
+            {
+                "monitor_key": "hbm_mu",
+                "primary_ticker": "MU",
+                "config": config,
+                "latest": latest,
+                "history": history,
+                "count": len(history),
+            }
+        )
+    )
+
+
+@router.post("/thesis-monitor/hbm/run")
+def regime_hbm_thesis_monitor_run(
+    session: Session = Depends(db_session),
+    actor: str = Depends(require_actor),
+):
+    del session, actor
+    runtime, runtime_error = _load_hmm_runtime()
+    if runtime is None:
+        raise HTTPException(status_code=503, detail=runtime_error or "Regime analytics are unavailable.")
+    result = runtime["run_hbm_thesis_monitor"](save=True, dispatch=True)
+    return JSONResponse(content=_json_ready(result))
 
 
 @router.post("/run")

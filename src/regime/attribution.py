@@ -34,7 +34,8 @@ def _theme_name_map() -> dict[int, str]:
 
 
 def _open_price_map(rows: list[dict[str, Any]]) -> dict[str, float]:
-    return _batch_current_prices([str(row.get("ticker") or "") for row in rows])
+    prices = _batch_current_prices([str(row.get("ticker") or "") for row in rows])
+    return {str(ticker): float(price) for ticker, price in prices.items()}
 
 
 def _holding_days(row: dict[str, Any]) -> int | None:

@@ -76,8 +76,16 @@ def test_compute_position_size_various_inputs() -> None:
     assert size.suggested_dollars is not None
 
 
-def test_half_kelly_caps_position_size() -> None:
-    size = compute_position_size(regime_probability=0.55, composite_action="Buy", risk_reward_ratio=1.2, atr_value=2.0, current_price=100.0, portfolio_value=100000.0)
+def test_half_kelly_caps_position_size_when_ml_probability_available() -> None:
+    size = compute_position_size(
+        regime_probability=0.95,
+        composite_action="Buy",
+        risk_reward_ratio=1.2,
+        atr_value=2.0,
+        current_price=100.0,
+        portfolio_value=100000.0,
+        meta_labeler_probability=0.55,
+    )
     assert size.kelly_fraction is not None
     assert size.suggested_pct <= size.kelly_fraction * 100.0 + 0.1
 

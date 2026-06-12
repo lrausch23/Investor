@@ -62,7 +62,13 @@ class FundamentalAgent(AgentBase):
             get_setting_fn=runtime["get_setting"] if callable(runtime.get("get_setting")) else lambda _key: None,
         )
         resolved_agent_key = str(agent_config.get("agent_key") or agent_key or "")
-        if event.meta_labeler_score is not None and float(event.meta_labeler_score) < self.META_LABELER_VETO_THRESHOLD:
+        try:
+            from ..meta_labeler import meta_labeler_gate_enabled
+
+            meta_gate_enabled = meta_labeler_gate_enabled(runtime.get("get_setting"))
+        except Exception:
+            meta_gate_enabled = True
+        if meta_gate_enabled and event.meta_labeler_score is not None and float(event.meta_labeler_score) < self.META_LABELER_VETO_THRESHOLD:
             return FundamentalAssessmentEvent(
                 correlation_id=event.correlation_id,
                 ticker=event.ticker,
@@ -170,7 +176,7 @@ class FundamentalAgent(AgentBase):
         qualitative_source = str(getattr(qualitative, "source", "") or "")
         llm_used = bool(getattr(qualitative, "llm_used", False) or qualitative_source == "llm")
         model_display = str(getattr(qualitative, "model_name", "") or agent_config.get("configured_model") or "")
-        llm_payload = {
+        llm_payload: dict[str, Any] = {
             "portfolio_id": portfolio_id,
             "agent_key": resolved_agent_key,
             "llm_used": llm_used,

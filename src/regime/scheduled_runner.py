@@ -56,6 +56,7 @@ from .ib_types import ET, MarketHoursStatus, get_market_hours_status, next_marke
 from src.app.routes.regime_cache import load_payload
 from .persistence import save_alert
 from .beta_agents import parse_portfolio_ids
+from .thesis_monitor import run_hbm_thesis_monitor
 
 
 def _parse_preferred_run_window(raw: str | None) -> tuple[dt.time, dt.time]:
@@ -99,6 +100,13 @@ def _preferred_market_window_status(now: dt.datetime | None = None) -> dict[str,
         "reason": reason,
         "next_market_open": next_market_open(current).isoformat() if not in_window else None,
     }
+
+
+def _setting_enabled(key: str, default: bool = True) -> bool:
+    raw = get_setting(key)
+    if raw in (None, ""):
+        return bool(default)
+    return str(raw).strip().lower() not in {"0", "false", "no", "off"}
 
 
 def _ibkr_adapter_for_portfolio(portfolio_id: int, portfolio: dict[str, Any]) -> tuple[IBKRBrokerAdapter | None, dict[str, Any]]:
@@ -237,6 +245,27 @@ def run_scheduled_discovery(
     }
 
 
+def run_scheduled_thesis_monitors() -> dict[str, Any]:
+    now = dt.datetime.now(dt.timezone.utc)
+    if not _setting_enabled("thesis_monitor_hbm_enabled", True):
+        return {"enabled": False, "runs": [], "checked_at": now.isoformat()}
+    try:
+        result = run_hbm_thesis_monitor(save=True, dispatch=True)
+    except Exception as exc:
+        logger_message = str(exc)
+        save_alert(
+            "execution_error",
+            "HBM thesis monitor failed",
+            severity="warning",
+            ticker="MU",
+            message=logger_message,
+            data={"monitor_key": "hbm_mu"},
+        )
+        return {"enabled": True, "runs": [], "error": logger_message, "checked_at": now.isoformat()}
+    set_setting("last_hbm_thesis_monitor_at", now.isoformat())
+    return {"enabled": True, "runs": [result], "checked_at": now.isoformat()}
+
+
 def run_scheduled_paper_plans() -> dict[str, Any]:
     now = dt.datetime.now(dt.timezone.utc)
     set_setting("watchdog_heartbeat", now.isoformat())
@@ -244,8 +273,13 @@ def run_scheduled_paper_plans() -> dict[str, Any]:
     vix_status = check_vix_freeze()
     cached_payload = load_payload() or {}
     cached_rows = cached_payload.get("rows") if isinstance(cached_payload, dict) else []
+    # Pass full payload rows through (not (regime, probability) tuples) so exit
+    # logic can see composite_signal, signal timestamps, and forward-curve fields.
+    # _cached_regime_map handles both shapes, but the tuple form silently drops
+    # every key except regime/probability, disabling composite-signal exits and
+    # the Neutral partial-reduce in the autonomous scheduler path.
     cached_regime = {
-        str(row.get("ticker") or "").upper(): (str(row.get("regime") or ""), float(row.get("probability") or 0.0))
+        str(row.get("ticker") or "").upper(): row
         for row in (cached_rows or [])
         if isinstance(row, dict) and str(row.get("ticker") or "").strip()
     }
@@ -270,7 +304,9 @@ def run_scheduled_paper_plans() -> dict[str, Any]:
             continue
         monitoring_alerts = sweep_monitoring_alerts(portfolio_id)
         expired = expire_stale_plans(portfolio_id)
-        exec_result = None
+        exec_result: dict[str, Any] | None = None
+        generated: dict[str, Any]
+        auto_result: dict[str, Any]
         polled = 0
         policy_cancel = {"cancelled": [], "failed": [], "checked": 0}
         broker_status: dict[str, Any] = {}
@@ -292,7 +328,8 @@ def run_scheduled_paper_plans() -> dict[str, Any]:
         else:
             generated = generate_daily_plans(portfolio_id, cached_regime=cached_regime, cached_payload=cached_payload)
             auto_result = auto_approve_plans(portfolio_id)
-        if auto_result.get("approved", 0) > 0 and get_operating_mode() == "autonomous" and bool(window_status.get("in_window")):
+        approved_count = int(auto_result.get("approved") or 0)
+        if approved_count > 0 and get_operating_mode() == "autonomous" and bool(window_status.get("in_window")):
             broker_type = str(portfolio.get("broker_type") or "paper").lower()
             if broker_type == "ibkr":
                 execution_mode = str(broker_status.get("execution_mode") or "simulated")
@@ -403,6 +440,7 @@ def run_end_of_day_processing() -> dict[str, Any]:
             message="; ".join(health["issues"][:5]),
             data=health,
         )
+    thesis_monitors = run_scheduled_thesis_monitors()
     backup = run_daily_backup()
     try:
         digest_sent = asyncio.run(flush_digest())
@@ -414,6 +452,7 @@ def run_end_of_day_processing() -> dict[str, Any]:
         "outcomes": outcomes,
         "performance": performance,
         "execution_quality": execution_quality,
+        "thesis_monitors": thesis_monitors,
         "backup": backup,
         "digest_sent": digest_sent,
         "health": health,

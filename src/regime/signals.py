@@ -10,6 +10,7 @@ import numpy as np
 import pandas as pd
 
 from .config import DEFAULT_SIGNAL_THRESHOLDS, SignalThresholds
+from .decision_constants import COMPOSITE_AGREEMENT_BOOST, COMPOSITE_CONFLICT_PENALTY
 from .logging_config import setup_regime_logging
 from .persistence import get_sentiment_history
 
@@ -28,6 +29,7 @@ class SignalResult:
     rationale: str
     transition_risk: float = 0.0
     expected_duration: float = 0.0
+    source: str = "forward_curve"
 
 
 @dataclass
@@ -114,6 +116,9 @@ class PositionSize:
     meta_labeler_probability: float | None = None
     portfolio_adjustment: float = 1.0
     adjustment_rationale: str | None = None
+    risk_budget_anchor_pct: float | None = None
+    ml_sizing_multiplier: float | None = None
+    kelly_cap_pct: float | None = None
 
 
 def forward_regime_curve(transition_matrix: np.ndarray, current_state_vector: np.ndarray, horizon: int = 21) -> pd.DataFrame:
@@ -148,16 +153,25 @@ def signal_from_forward_curve(
     current_probability: float,
     earnings_date: datetime | None = None,
     thresholds: SignalThresholds = DEFAULT_SIGNAL_THRESHOLDS,
+    empirical_duration_quantiles: dict[str, dict[str, float]] | None = None,
 ) -> SignalResult:
     day5 = forward_curve.iloc[min(4, len(forward_curve) - 1)]
     day21 = forward_curve.iloc[min(20, len(forward_curve) - 1)]
     p_bull_day5 = float(day5["p_bull"])
+    p_neutral_day5 = float(day5["p_neutral"])
     p_bear_day5 = float(day5["p_bear"])
     p_bull_day21 = float(day21["p_bull"])
     p_bear_day21 = float(day21["p_bear"])
     strength = max(0.0, min(1.0, abs(p_bull_day5 - p_bear_day5) * current_probability))
+    effective_duration = _effective_expected_duration(
+        current_regime,
+        expected_duration,
+        thresholds=thresholds,
+        empirical_duration_quantiles=empirical_duration_quantiles,
+    )
+    holding_days = max(1, int(round(effective_duration or 1.0)))
 
-    def _with_earnings_adjustment(action: str, timeframe: str, signal_strength: float, holding_days: int, rationale: str) -> SignalResult:
+    def _with_earnings_adjustment(action: str, timeframe: str, signal_strength: float, holding_days: int, rationale: str, source: str) -> SignalResult:
         adjusted_strength = signal_strength
         adjusted_rationale = rationale
         if earnings_date is not None:
@@ -174,28 +188,58 @@ def signal_from_forward_curve(
             holding_days,
             adjusted_rationale,
             transition_risk=float(transition_risk or 0.0),
-            expected_duration=float(expected_duration or 0.0),
+            expected_duration=float(effective_duration or 0.0),
+            source=source,
         )
 
-    if current_regime == "Bull" and transition_risk < thresholds.strong_buy_max_transition_risk and expected_duration > thresholds.strong_buy_min_duration and p_bull_day5 >= thresholds.strong_buy_min_probability:
-        return _with_earnings_adjustment("Strong Buy", "short", strength, int(round(expected_duration)), "Bull regime is persistent with low transition risk.")
-    if current_regime == "Bull" and transition_risk < thresholds.buy_max_transition_risk:
-        return _with_earnings_adjustment("Buy", "short", strength, int(round(expected_duration)), "Bull regime remains dominant over the next week.")
-    if current_regime == "Neutral" and p_bull_day5 > thresholds.neutral_bull_tilt_probability:
-        return _with_earnings_adjustment("Buy", "short", strength, int(round(expected_duration)), "Neutral regime is tilting toward Bull over the next five days.")
-    if current_regime == "Bear" and transition_risk < thresholds.strong_sell_max_transition_risk and expected_duration > thresholds.strong_sell_min_duration and p_bear_day5 >= thresholds.strong_sell_min_probability:
-        return _with_earnings_adjustment("Strong Sell", "short", strength, int(round(expected_duration)), "Bear regime is persistent with high downside continuation probability.")
+    if thresholds.use_forward_curve_gates:
+        strong_buy_gate = p_bull_day5 >= thresholds.strong_buy_min_p_bull_day5
+        buy_gate = p_bull_day5 >= thresholds.buy_min_p_bull_day5
+    else:
+        strong_buy_gate = transition_risk < thresholds.strong_buy_max_transition_risk
+        buy_gate = transition_risk < thresholds.buy_max_transition_risk
+    neutral_tilt_modal = (not thresholds.neutral_tilt_requires_modal) or p_bull_day5 > max(p_neutral_day5, p_bear_day5)
+
+    if current_regime == "Bull" and strong_buy_gate and effective_duration > thresholds.strong_buy_min_duration and p_bull_day5 >= thresholds.strong_buy_min_probability:
+        return _with_earnings_adjustment("Strong Buy", "short", strength, holding_days, "Bull regime is persistent with low transition risk.", "bull_persistent")
+    if current_regime == "Bull" and buy_gate:
+        return _with_earnings_adjustment("Buy", "short", strength, holding_days, "Bull regime remains dominant over the next week.", "bull_dominant")
+    if current_regime == "Neutral" and p_bull_day5 > thresholds.neutral_bull_tilt_probability and neutral_tilt_modal:
+        return _with_earnings_adjustment("Buy", "short", strength, holding_days, "Neutral regime is tilting toward Bull over the next five days.", "neutral_bull_tilt")
+    if current_regime == "Bear" and transition_risk < thresholds.strong_sell_max_transition_risk and effective_duration > thresholds.strong_sell_min_duration and p_bear_day5 >= thresholds.strong_sell_min_probability:
+        return _with_earnings_adjustment("Strong Sell", "short", strength, holding_days, "Bear regime is persistent with high downside continuation probability.", "bear_persistent")
     if current_regime == "Bear" and transition_risk < thresholds.sell_max_transition_risk:
-        return _with_earnings_adjustment("Sell", "short", strength, int(round(expected_duration)), "Bear regime remains established with limited reversal risk.")
+        return _with_earnings_adjustment("Sell", "short", strength, holding_days, "Bear regime remains established with limited reversal risk.", "bear_established")
     if current_regime in {"Bull", "Neutral"} and p_bear_day5 > thresholds.bear_emerging_probability:
-        return _with_earnings_adjustment("Sell", "short", strength, int(round(expected_duration)), "Forward curve shows Bear becoming material within five days.")
+        return _with_earnings_adjustment("Sell", "short", strength, holding_days, "Forward curve shows Bear becoming material within five days.", "bear_emerging")
 
     medium_strength = max(0.0, min(1.0, abs(p_bull_day21 - p_bear_day21) * current_probability))
     if current_regime == "Bull" and transition_risk <= thresholds.hold_bull_max_transition_risk:
-        return _with_earnings_adjustment("Hold", "medium", medium_strength, int(round(expected_duration)), "Bull regime remains intact but short-term persistence has weakened.")
+        return _with_earnings_adjustment("Hold", "medium", medium_strength, holding_days, "Bull regime remains intact but short-term persistence has weakened.", "bull_weakened")
     if current_regime == "Neutral":
-        return _with_earnings_adjustment("Hold", "medium", medium_strength, int(round(expected_duration)), "Neutral regime has no decisive directional edge in the forward curve.")
-    return _with_earnings_adjustment("Hold", "medium", medium_strength, int(round(expected_duration)), "Forward probabilities are mixed despite the current regime.")
+        return _with_earnings_adjustment("Hold", "medium", medium_strength, holding_days, "Neutral regime has no decisive directional edge in the forward curve.", "neutral_mixed")
+    return _with_earnings_adjustment("Hold", "medium", medium_strength, holding_days, "Forward probabilities are mixed despite the current regime.", "mixed_forward_curve")
+
+
+def _effective_expected_duration(
+    current_regime: str,
+    expected_duration: float,
+    *,
+    thresholds: SignalThresholds,
+    empirical_duration_quantiles: dict[str, dict[str, float]] | None,
+) -> float:
+    if not thresholds.use_empirical_durations or not empirical_duration_quantiles:
+        return float(expected_duration or 0.0)
+    regime_quantiles = empirical_duration_quantiles.get(str(current_regime))
+    if not isinstance(regime_quantiles, dict):
+        return float(expected_duration or 0.0)
+    try:
+        median = float(regime_quantiles.get("p50") or 0.0)
+    except Exception:
+        return float(expected_duration or 0.0)
+    if np.isfinite(median) and median > 0:
+        return median
+    return float(expected_duration or 0.0)
 
 
 def compute_technicals(price_series: pd.Series, volume_series: pd.Series, high_series: pd.Series | None = None, low_series: pd.Series | None = None) -> pd.DataFrame:
@@ -285,6 +329,8 @@ def build_composite_signal(
     regime_probability: float,
     forward_signal: SignalResult,
     technical_signal: str,
+    *,
+    adjustments_enabled: bool = True,
 ) -> CompositeSignal:
     directional_map = {
         "Strong Buy": "buy",
@@ -304,15 +350,16 @@ def build_composite_signal(
     short_term_view = f"1-5 day outlook: {forward_signal.rationale}"
     medium_term_view = f"Expected holding period: ~{forward_signal.expected_holding_days} trading days."
 
-    if regime_signal == "Bear" and technical_signal == "Cover short / tactical bounce":
-        composite_action = "Hold"
-    elif regime_signal == "Bull" and technical_signal == "Take partial profits":
-        composite_action = "Hold"
-    elif directional_map.get(forward_signal.action, "hold") == technical_direction:
-        composite_strength = min(1.0, composite_strength + 0.15)
-    elif technical_direction != "hold":
-        composite_strength = max(0.0, composite_strength - 0.20)
-        medium_term_view += " Conflicting signals between forward regime and technical overlay."
+    if adjustments_enabled:
+        if regime_signal == "Bear" and technical_signal == "Cover short / tactical bounce":
+            composite_action = "Hold"
+        elif regime_signal == "Bull" and technical_signal == "Take partial profits":
+            composite_action = "Hold"
+        elif directional_map.get(forward_signal.action, "hold") == technical_direction:
+            composite_strength = min(1.0, composite_strength + COMPOSITE_AGREEMENT_BOOST)
+        elif technical_direction != "hold":
+            composite_strength = max(0.0, composite_strength - COMPOSITE_CONFLICT_PENALTY)
+            medium_term_view += " Conflicting signals between forward regime and technical overlay."
 
     return CompositeSignal(
         regime_signal=regime_signal,
@@ -434,39 +481,69 @@ def compute_position_size(
     correlation_penalty: float = 0.0,
     meta_labeler_probability: float | None = None,
 ) -> PositionSize:
-    """Compute suggested position size based on regime confidence and risk parameters."""
-    base_pct = float(regime_probability or 0.0) * 100.0
-    if composite_action == "Hold":
-        base_pct *= 0.25
-    elif composite_action in {"Sell", "Strong Sell"}:
-        base_pct = 0.0
+    """Compute suggested position size from ATR risk budget and calibrated ML edge."""
 
-    effective_win_prob = float(regime_probability or 0.0)
+    action = str(composite_action or "Hold")
+    actionable_buy = action in {"Buy", "Strong Buy"}
+    effective_win_prob: float | None = None
     if meta_labeler_probability is not None:
         effective_win_prob = max(0.0, min(1.0, float(meta_labeler_probability)))
-        denominator = max(float(regime_probability or 0.0), 0.01)
-        ml_ratio = effective_win_prob / denominator
-        ml_ratio = max(0.25, min(1.5, ml_ratio))
-        base_pct *= ml_ratio
+
+    if not actionable_buy:
+        rationale_action = "Hold" if action == "Hold" else "Sell"
+        return PositionSize(
+            suggested_pct=0.0,
+            suggested_dollars=0.0 if portfolio_value is not None else None,
+            max_loss_dollars=None,
+            kelly_fraction=None,
+            sizing_rationale=f"risk-budget: no new size for {rationale_action}.",
+            meta_labeler_probability=effective_win_prob,
+            portfolio_adjustment=1.0,
+            adjustment_rationale=None,
+            risk_budget_anchor_pct=0.0,
+            ml_sizing_multiplier=None,
+            kelly_cap_pct=None,
+        )
+
+    base_pct = 0.0
+    max_loss_dollars: float | None = None
+    risk_budget_anchor_pct: float | None = None
+    rationale_parts: list[str] = []
+    if atr_value is not None and atr_value > 0 and portfolio_value is not None and portfolio_value > 0 and current_price > 0:
+        stop_distance = 2.0 * float(atr_value)
+        max_risk_dollars = float(portfolio_value) * (float(max_risk_pct) / 100.0)
+        max_shares = max_risk_dollars / stop_distance if stop_distance > 0 else 0.0
+        max_position_value = max_shares * float(current_price)
+        risk_budget_anchor_pct = (max_position_value / float(portfolio_value)) * 100.0
+        base_pct = risk_budget_anchor_pct
+        max_loss_dollars = max_risk_dollars
+        rationale_parts.append(
+            "risk-budget: "
+            f"${max_risk_dollars:,.0f} max loss / ${stop_distance:.2f} stop = "
+            f"{max_shares:.2f} shares ({risk_budget_anchor_pct:.1f}% anchor)"
+        )
+    else:
+        rationale_parts.append("risk-budget: unavailable because ATR, price, or portfolio value is missing")
+
+    ml_multiplier: float | None = None
+    if effective_win_prob is not None:
+        ml_multiplier = 0.5 + (0.5 * effective_win_prob)
+        base_pct *= ml_multiplier
+        rationale_parts.append(f"ML multiplier: {ml_multiplier:.2f}x from calibrated probability {effective_win_prob:.0%}")
 
     kelly_fraction: float | None = None
-    if risk_reward_ratio is not None and risk_reward_ratio > 0:
+    kelly_cap_pct: float | None = None
+    if effective_win_prob is not None and risk_reward_ratio is not None and risk_reward_ratio > 0:
         win_prob = min(0.95, effective_win_prob)
         lose_prob = 1.0 - win_prob
-        kelly_fraction = max(0.0, (win_prob * risk_reward_ratio - lose_prob) / risk_reward_ratio)
+        kelly_fraction = max(0.0, (win_prob * float(risk_reward_ratio) - lose_prob) / float(risk_reward_ratio))
         kelly_fraction *= 0.5
-        base_pct = min(base_pct, kelly_fraction * 100.0)
-
-    max_loss_dollars: float | None = None
-    if atr_value is not None and atr_value > 0 and portfolio_value is not None and portfolio_value > 0:
-        stop_distance = 2.0 * atr_value
-        risk_per_share = stop_distance
-        max_risk_dollars = portfolio_value * (max_risk_pct / 100.0)
-        max_shares = max_risk_dollars / risk_per_share if risk_per_share > 0 else 0.0
-        max_position_value = max_shares * current_price
-        max_position_pct = (max_position_value / portfolio_value) * 100.0
-        base_pct = min(base_pct, max_position_pct)
-        max_loss_dollars = max_risk_dollars
+        kelly_cap_pct = kelly_fraction * 100.0
+        if base_pct > kelly_cap_pct:
+            base_pct = kelly_cap_pct
+            rationale_parts.append(f"Half-Kelly advisory cap applied: {kelly_fraction:.1%}")
+        else:
+            rationale_parts.append(f"Half-Kelly advisory: {kelly_fraction:.1%}")
 
     portfolio_adjustment = 1.0
     adjustment_parts: list[str] = []
@@ -490,28 +567,25 @@ def compute_position_size(
 
     suggested_pct = round(max(0.0, min(100.0, base_pct)), 1)
     suggested_dollars = round(portfolio_value * (suggested_pct / 100.0), 2) if portfolio_value is not None else None
-    rationale_parts = [f"Base sizing: {float(regime_probability or 0.0):.0%} regime confidence"]
-    if meta_labeler_probability is not None:
-        rationale_parts.append(f"ML confidence: {effective_win_prob:.0%}")
-    if kelly_fraction is not None:
-        rationale_parts.append(f"Half-Kelly: {kelly_fraction:.1%}")
-    if max_loss_dollars is not None:
-        rationale_parts.append(f"Max risk: ${max_loss_dollars:,.0f} ({max_risk_pct}% of portfolio)")
     rationale = ". ".join(rationale_parts) + "."
     adjustment_rationale = None
     if portfolio_adjustment < 0.999:
         adjustment_rationale = "Position reduced for portfolio concentration"
         if adjustment_parts:
             adjustment_rationale += f": {', '.join(adjustment_parts)}."
+        rationale = f"{rationale} Concentration modifier: {portfolio_adjustment:.2f}x."
     return PositionSize(
         suggested_pct=suggested_pct,
         suggested_dollars=suggested_dollars,
         max_loss_dollars=max_loss_dollars,
         kelly_fraction=kelly_fraction,
         sizing_rationale=rationale,
-        meta_labeler_probability=effective_win_prob if meta_labeler_probability is not None else None,
+        meta_labeler_probability=effective_win_prob,
         portfolio_adjustment=portfolio_adjustment,
         adjustment_rationale=adjustment_rationale,
+        risk_budget_anchor_pct=risk_budget_anchor_pct,
+        ml_sizing_multiplier=ml_multiplier,
+        kelly_cap_pct=kelly_cap_pct,
     )
 
 
@@ -644,11 +718,17 @@ def compute_unified_confidence(
     calibrated_probability = raw_probability
     if calibrator is not None:
         try:
-            predicted = calibrator.predict([raw_probability])
+            if hasattr(calibrator, "calibrate"):
+                predicted = calibrator.calibrate([raw_probability])
+            else:
+                predicted = calibrator.predict([raw_probability])
             if len(predicted):
                 calibrated_probability = max(0.0, min(1.0, float(predicted[0])))
                 calibrated = True
         except Exception as exc:
+            from .decision_health import record_fallback
+
+            record_fallback("signals.compute_unified_confidence.calibrator", str(exc))
             logger.debug("Unable to apply probability calibrator.", exc_info=exc)
     normalized_strength = max(0.0, min(1.0, float(signal_strength or 0.0)))
     value = ((calibrated_probability * 0.7) + (normalized_strength * 0.3)) * 100.0

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime as dt
 import importlib
 from pathlib import Path
 
@@ -26,6 +27,25 @@ def temp_modules(tmp_path, monkeypatch):
     return store, paper, scheduled, config
 
 
+def _save_buy_signal_snapshot(store, ticker: str, *, price: float, entry: float | None = None) -> None:
+    store.save_signal_snapshot(
+        ticker=ticker,
+        snapshot_date=dt.datetime.now(dt.timezone.utc).date().isoformat(),
+        action="Buy",
+        regime_label="Bull",
+        regime_probability=0.70,
+        composite_strength=0.80,
+        benchmark="SPY",
+        current_price=price,
+        entry_price=entry if entry is not None else price,
+        exit_price=(entry if entry is not None else price) * 1.2,
+        stop_price=(entry if entry is not None else price) * 0.9,
+        risk_reward_ratio=2.0,
+        timeframe_days=21,
+        expected_regime_duration=30.0,
+    )
+
+
 def test_generate_buy_plans_from_entry_signals(temp_modules, monkeypatch) -> None:
     store, paper, _scheduled, _config = temp_modules
     portfolio = store.create_paper_portfolio("Sandbox", 100000.0)
@@ -41,6 +61,7 @@ def test_generate_buy_plans_from_entry_signals(temp_modules, monkeypatch) -> Non
         regime_probability=0.61,
         status="Entry Signal",
     )
+    _save_buy_signal_snapshot(store, "WOLF", price=20.0)
     monkeypatch.setattr(paper, "_batch_current_prices", lambda tickers: {"WOLF": 20.0})
     plans = paper.generate_buy_plans(portfolio["id"])
     assert len(plans) == 1
@@ -135,6 +156,7 @@ def test_generate_daily_plans_wrapper(temp_modules, monkeypatch) -> None:
     portfolio = store.create_paper_portfolio("Sandbox", 100000.0)
     theme = store.create_theme("AI", conviction=4, status="Active")
     store.upsert_watchlist_candidate(theme["id"], "WOLF", suggested_entry_price=20.0, regime_label="Bull", regime_probability=0.7, status="Entry Signal")
+    _save_buy_signal_snapshot(store, "WOLF", price=20.0)
     store.open_paper_position(portfolio["id"], "NVDA", 10, 100.0, "2026-03-01", stop_price=95.0)
     monkeypatch.setattr(paper, "_batch_current_prices", lambda tickers: {"WOLF": 20.0, "NVDA": 90.0})
     payload = paper.generate_daily_plans(portfolio["id"], cached_regime={"NVDA": ("Bear", 0.7)})
@@ -206,6 +228,7 @@ def test_trade_plan_routes(temp_modules, monkeypatch) -> None:
     portfolio = store.create_paper_portfolio("Sandbox", 100000.0)
     theme = store.create_theme("AI", conviction=4, status="Active")
     store.upsert_watchlist_candidate(theme["id"], "WOLF", suggested_entry_price=20.0, regime_label="Bull", regime_probability=0.7, status="Entry Signal")
+    _save_buy_signal_snapshot(store, "WOLF", price=20.0)
     monkeypatch.setattr(paper, "_batch_current_prices", lambda tickers: {"WOLF": 20.0})
     client = _client(monkeypatch, store, paper)
     generated = client.post(f"/regime/paper-portfolio/{portfolio['id']}/plans/generate")
@@ -264,5 +287,8 @@ def test_scheduled_plan_generation(temp_modules, monkeypatch) -> None:
     payload = scheduled.run_scheduled_paper_plans()
     assert payload["portfolios"][0]["portfolio_id"] == portfolio["id"]
     assert calls[0][0] == portfolio["id"]
-    assert calls[0][1]["NVDA"] == ("Bull", 0.7)
+    # Scheduler now passes full payload rows (not (regime, probability) tuples)
+    # so exit logic can see composite_signal and forward-curve fields.
+    assert calls[0][1]["NVDA"]["regime"] == "Bull"
+    assert calls[0][1]["NVDA"]["probability"] == 0.7
     assert calls[0][2]["rows"][0]["ticker"] == "NVDA"

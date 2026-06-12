@@ -120,8 +120,8 @@ def test_meta_labeler_veto_on_low_confidence(temp_modules) -> None:
     frame = _synthetic_labeled_frame(rows=240, positive_until=20)
     engine = meta.MetaLabelerEngine(meta.MetaLabelerConfig(min_training_samples=100))
     engine.train(frame)
-    result = engine.analyze(
-        "NVDA",
+    features = {feature: 0.0 for feature in meta.META_FEATURES}
+    features.update(
         {
             "hmm_state": 0,
             "log_ret": -0.04,
@@ -131,11 +131,28 @@ def test_meta_labeler_veto_on_low_confidence(temp_modules) -> None:
             "vix_change": 0.3,
             "yield_10y_level": 5.0,
             "yield_10y_change": 0.03,
-        },
+            "composite_strength": 0.1,
+            "transition_risk": 0.8,
+            "regime_days": 1.0,
+            "p_bull_day5": 0.1,
+            "p_bear_day5": 0.8,
+            "risk_reward_ratio": 0.5,
+            "atr_distance_to_stop": 0.2,
+            "atr_distance_to_target": 0.4,
+            "rsi_bucket": -1.0,
+            "macd_hist_sign": -1.0,
+            "signal_quality_score": 0.2,
+        }
+    )
+    result = engine.analyze(
+        "NVDA",
+        features,
         None,
     )
-    assert result.signal == "veto"
+    assert result.signal == "neutral"
     assert result.confidence < 0.50
+    assert result.details["threshold_mode"] == "base_rate_relative"
+    assert result.confidence < result.details["confirm_threshold"]
 
 
 def test_meta_labeler_insufficient_data_guard(temp_modules) -> None:
@@ -150,12 +167,13 @@ def test_meta_labeler_insufficient_data_guard(temp_modules) -> None:
 def test_meta_labeler_walk_forward_split(temp_modules) -> None:
     _store, _ensemble, meta = temp_modules
     frame = _synthetic_labeled_frame(rows=240, positive_train_only=True)
-    engine = meta.MetaLabelerEngine(meta.MetaLabelerConfig(min_training_samples=100, walk_forward_gap=5))
+    engine = meta.MetaLabelerEngine(meta.MetaLabelerConfig(min_training_samples=100, walk_forward_gap=5, embargo_bars=0))
     metrics = engine.train(frame)
-    assert metrics["train_samples"] == 187
-    assert metrics["test_samples"] == 48
-    assert metrics["positive_rate_train"] > metrics["positive_rate_test"]
-    assert metrics["positive_rate_test"] == 0.0
+    assert metrics["status"] == "trained"
+    assert metrics["train_samples"] == 240
+    assert metrics["test_samples"] > 0
+    assert metrics["cv_folds"] >= 1
+    assert metrics["folds"] == sorted(metrics["folds"], key=lambda item: item["test_start_idx"])
 
 
 def test_meta_labeler_categorical_hmm_state(temp_modules) -> None:
@@ -182,7 +200,7 @@ def test_extract_meta_features_from_price_frame_row(temp_modules) -> None:
         }
     )
     features = meta.extract_meta_features(row)
-    assert features == {
+    expected = {
         "hmm_state": 2.0,
         "log_ret": 0.01,
         "volatility": 0.25,
@@ -192,6 +210,8 @@ def test_extract_meta_features_from_price_frame_row(temp_modules) -> None:
         "yield_10y_level": 4.2,
         "yield_10y_change": 0.01,
     }
+    assert {key: features[key] for key in expected} == expected
+    assert set(meta.META_FEATURES).issubset(features)
 
 
 def test_extract_meta_features_missing_columns(temp_modules) -> None:

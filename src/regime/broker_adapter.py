@@ -40,6 +40,7 @@ class OrderRequest:
     order_type: str = "limit"
     limit_price: float | None = None
     stop_price: float | None = None
+    target_price: float | None = None
     time_in_force: str = "DAY"
     routing_strategy: str = ""
     algo_strategy: str = ""
@@ -240,6 +241,7 @@ class PaperBrokerAdapter(BrokerAdapter):
                 theme_id=order.theme_id,
                 role=order.role or "Critical-Path",
                 stop_price=order.stop_price,
+                target_price=order.target_price,
             )
             create_tax_lot(
                 portfolio_id=self.portfolio_id,
@@ -481,7 +483,8 @@ def _estimate_order_price(order: OrderRequest, adapter: BrokerAdapter) -> float 
     if isinstance(adapter, PaperBrokerAdapter):
         from .paper_trading import _batch_current_prices
 
-        return _batch_current_prices([ticker]).get(ticker)
+        current_price = _batch_current_prices([ticker]).get(ticker)
+        return float(current_price) if current_price is not None else None
     return None
 
 
@@ -627,12 +630,19 @@ def validate_guardrails(
     if daily_loss_limit_pct > 0 and float(summary.equity or 0.0) > 0:
         effective_daily_loss_limit = min(effective_daily_loss_limit, float(summary.equity) * daily_loss_limit_pct)
 
+    daily_pnl = float(summary.daily_pnl or 0.0)
+    daily_loss_ok = abs(daily_pnl) <= effective_daily_loss_limit or daily_pnl >= 0
+    if action != "buy":
+        daily_loss_ok = True
     checks.append(
         GuardrailCheck(
             name="daily_loss_limit",
-            passed=abs(float(summary.daily_pnl or 0.0)) <= effective_daily_loss_limit or float(summary.daily_pnl or 0.0) >= 0,
-            message=f"Daily P&L ${float(summary.daily_pnl or 0.0):,.2f} vs loss limit ${effective_daily_loss_limit:,.2f}.",
-            actual=float(summary.daily_pnl or 0.0),
+            passed=daily_loss_ok,
+            message=(
+                f"Daily P&L ${daily_pnl:,.2f} vs loss limit ${effective_daily_loss_limit:,.2f}"
+                + ("; sell exits remain allowed." if action != "buy" and daily_pnl < 0 else ".")
+            ),
+            actual=daily_pnl,
             limit=effective_daily_loss_limit,
         )
     )

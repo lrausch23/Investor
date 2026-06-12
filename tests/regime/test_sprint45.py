@@ -176,11 +176,28 @@ def test_auto_approve_blocks_guardrail_failure(temp_modules, monkeypatch) -> Non
     portfolio = store.create_paper_portfolio("Sandbox", 100000.0)
     store.set_operating_mode("semi_auto")
     plan = _make_plan(store, portfolio["id"], "NVDA", score=0.9)
-    monkeypatch.setattr(paper, "validate_guardrails", lambda *args, **kwargs: _allowed_result(False))
+    monkeypatch.setattr(
+        paper,
+        "validate_guardrails",
+        lambda *args, **kwargs: SimpleNamespace(
+            allowed=False,
+            checks=[
+                SimpleNamespace(
+                    name="fresh_quote_limit_price_deviation",
+                    passed=False,
+                    message="NVDA limit is too far from the fresh quote.",
+                )
+            ],
+        ),
+    )
     result = paper.auto_approve_plans(portfolio["id"])
     assert result["blocked"] == 1
     assert result["details"][0]["plan_id"] == plan["id"]
     assert result["details"][0]["result"] == "blocked_guardrail"
+    assert result["details"][0]["reason"] == "NVDA limit is too far from the fresh quote."
+    assert result["details"][0]["guardrail_failures"] == ["NVDA limit is too far from the fresh quote."]
+    assert result["details"][0]["guardrail_checks"][0]["name"] == "fresh_quote_limit_price_deviation"
+    assert _audit_counts(store, portfolio["id"]).get("guardrail_blocked", 0) == 1
 
 
 def test_auto_approve_logs_auto_approved_audit_event(temp_modules, monkeypatch) -> None:

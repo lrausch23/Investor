@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime as dt
 import importlib
 from pathlib import Path
 
@@ -220,7 +221,7 @@ def test_buy_plans_hurdle_filter(temp_modules, monkeypatch: pytest.MonkeyPatch) 
     store.upsert_watchlist_candidate(theme["id"], "NVDA", suggested_entry_price=100.0, crowd_score=30, regime_label="Bull", regime_probability=0.8, status="Entry Signal")
     store.save_signal_snapshot(
         ticker="NVDA",
-        snapshot_date="2026-03-31",
+        snapshot_date=dt.date.today().isoformat(),
         action="Buy",
         regime_label="Bull",
         regime_probability=0.8,
@@ -249,7 +250,7 @@ def test_buy_plans_duration_filter(temp_modules, monkeypatch: pytest.MonkeyPatch
     store.upsert_watchlist_candidate(theme["id"], "NVDA", suggested_entry_price=100.0, crowd_score=30, regime_label="Bull", regime_probability=0.8, status="Entry Signal")
     store.save_signal_snapshot(
         ticker="NVDA",
-        snapshot_date="2026-03-31",
+        snapshot_date=dt.date.today().isoformat(),
         action="Buy",
         regime_label="Bull",
         regime_probability=0.8,
@@ -278,7 +279,7 @@ def test_buy_plans_gates_disabled_passthrough(temp_modules, monkeypatch: pytest.
     store.upsert_watchlist_candidate(theme["id"], "NVDA", suggested_entry_price=100.0, crowd_score=30, regime_label="Bull", regime_probability=0.8, status="Entry Signal")
     store.save_signal_snapshot(
         ticker="NVDA",
-        snapshot_date="2026-03-31",
+        snapshot_date=dt.date.today().isoformat(),
         action="Buy",
         regime_label="Bull",
         regime_probability=0.8,
@@ -361,7 +362,7 @@ def test_get_hurdle_diagnostic_route(temp_modules) -> None:
     store, _hurdle_rate, _paper, _portfolio_agent, _bus, _events = temp_modules
     store.save_signal_snapshot(
         ticker="NVDA",
-        snapshot_date="2026-03-31",
+        snapshot_date=dt.date.today().isoformat(),
         action="Buy",
         regime_label="Bull",
         regime_probability=0.8,
