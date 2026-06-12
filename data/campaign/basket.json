@@ -1,7 +1,7 @@
 {
   "basket_size": 30,
-  "generated_at": "2026-06-12T16:14:26.835499+00:00",
-  "git_sha": "5f3d3f0",
+  "generated_at": "2026-06-12T16:39:00.403660+00:00",
+  "git_sha": "cb4bf3c",
   "min_history_days": 2500,
   "oos_start": "2024-01-01",
   "period": "10y",
@@ -18,9 +18,12 @@
         "selected": [
           "GOOGL",
           "META",
-          "GOOG"
+          "NFLX"
         ],
-        "selected_count": 3
+        "selected_count": 3,
+        "skipped_duplicate_issuers": [
+          "GOOG"
+        ]
       },
       "Consumer Discretionary": {
         "eligible_count": 10,
@@ -29,7 +32,8 @@
           "AMZN",
           "HD"
         ],
-        "selected_count": 3
+        "selected_count": 3,
+        "skipped_duplicate_issuers": []
       },
       "Consumer Staples": {
         "eligible_count": 10,
@@ -38,7 +42,8 @@
           "COST",
           "KO"
         ],
-        "selected_count": 3
+        "selected_count": 3,
+        "skipped_duplicate_issuers": []
       },
       "Energy": {
         "eligible_count": 10,
@@ -47,7 +52,8 @@
           "CVX",
           "COP"
         ],
-        "selected_count": 3
+        "selected_count": 3,
+        "skipped_duplicate_issuers": []
       },
       "Financials": {
         "eligible_count": 10,
@@ -56,7 +62,8 @@
           "V",
           "BRK-B"
         ],
-        "selected_count": 3
+        "selected_count": 3,
+        "skipped_duplicate_issuers": []
       },
       "Health Care": {
         "eligible_count": 10,
@@ -65,7 +72,8 @@
           "UNH",
           "JNJ"
         ],
-        "selected_count": 3
+        "selected_count": 3,
+        "skipped_duplicate_issuers": []
       },
       "Industrials": {
         "eligible_count": 10,
@@ -74,7 +82,8 @@
           "BA",
           "GE"
         ],
-        "selected_count": 3
+        "selected_count": 3,
+        "skipped_duplicate_issuers": []
       },
       "Information Technology": {
         "eligible_count": 10,
@@ -83,7 +92,8 @@
           "AMD",
           "AAPL"
         ],
-        "selected_count": 3
+        "selected_count": 3,
+        "skipped_duplicate_issuers": []
       },
       "Materials": {
         "eligible_count": 9,
@@ -92,7 +102,8 @@
           "FCX",
           "NEM"
         ],
-        "selected_count": 3
+        "selected_count": 3,
+        "skipped_duplicate_issuers": []
       },
       "Utilities": {
         "eligible_count": 9,
@@ -101,7 +112,8 @@
           "AEP",
           "D"
         ],
-        "selected_count": 3
+        "selected_count": 3,
+        "skipped_duplicate_issuers": []
       }
     },
     "selected_count": 30
@@ -1044,13 +1056,13 @@
       "ticker": "META"
     },
     {
-      "dollar_adv": 8510709719.471741,
+      "dollar_adv": 2992652729.0135193,
       "eligible": true,
       "history_days": 2513,
-      "price": 356.55999755859375,
+      "price": 81.2699966430664,
       "reasons": [],
       "sector": "Communication Services",
-      "ticker": "GOOG"
+      "ticker": "NFLX"
     },
     {
       "dollar_adv": 21237783419.76837,
@@ -1296,11 +1308,11 @@
       "ticker": "D"
     }
   ],
-  "selection_rule": "top 3 dollar-ADV screen-passers per 10 GICS-style sectors",
+  "selection_rule": "top 3 dollar-ADV screen-passers per 10 GICS-style sectors, one listing per issuer (dual-class dedupe)",
   "tickers": [
     "GOOGL",
     "META",
-    "GOOG",
+    "NFLX",
     "TSLA",
     "AMZN",
     "HD",
