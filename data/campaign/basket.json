@@ -1,0 +1,1332 @@
+{
+  "basket_size": 30,
+  "generated_at": "2026-06-12T16:14:26.835499+00:00",
+  "git_sha": "5f3d3f0",
+  "min_history_days": 2500,
+  "oos_start": "2024-01-01",
+  "period": "10y",
+  "schema": "regime_alpha_campaign_basket.v1",
+  "screen_stats": {
+    "candidate_count": 100,
+    "eligible_count": 98,
+    "reason_counts": {
+      "campaign_min_10y_history": 2
+    },
+    "sector_status": {
+      "Communication Services": {
+        "eligible_count": 10,
+        "selected": [
+          "GOOGL",
+          "META",
+          "GOOG"
+        ],
+        "selected_count": 3
+      },
+      "Consumer Discretionary": {
+        "eligible_count": 10,
+        "selected": [
+          "TSLA",
+          "AMZN",
+          "HD"
+        ],
+        "selected_count": 3
+      },
+      "Consumer Staples": {
+        "eligible_count": 10,
+        "selected": [
+          "WMT",
+          "COST",
+          "KO"
+        ],
+        "selected_count": 3
+      },
+      "Energy": {
+        "eligible_count": 10,
+        "selected": [
+          "XOM",
+          "CVX",
+          "COP"
+        ],
+        "selected_count": 3
+      },
+      "Financials": {
+        "eligible_count": 10,
+        "selected": [
+          "JPM",
+          "V",
+          "BRK-B"
+        ],
+        "selected_count": 3
+      },
+      "Health Care": {
+        "eligible_count": 10,
+        "selected": [
+          "LLY",
+          "UNH",
+          "JNJ"
+        ],
+        "selected_count": 3
+      },
+      "Industrials": {
+        "eligible_count": 10,
+        "selected": [
+          "CAT",
+          "BA",
+          "GE"
+        ],
+        "selected_count": 3
+      },
+      "Information Technology": {
+        "eligible_count": 10,
+        "selected": [
+          "NVDA",
+          "AMD",
+          "AAPL"
+        ],
+        "selected_count": 3
+      },
+      "Materials": {
+        "eligible_count": 9,
+        "selected": [
+          "LIN",
+          "FCX",
+          "NEM"
+        ],
+        "selected_count": 3
+      },
+      "Utilities": {
+        "eligible_count": 9,
+        "selected": [
+          "NEE",
+          "AEP",
+          "D"
+        ],
+        "selected_count": 3
+      }
+    },
+    "selected_count": 30
+  },
+  "screened": [
+    {
+      "dollar_adv": 15568556153.070068,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 295.6300048828125,
+      "reasons": [],
+      "sector": "Information Technology",
+      "ticker": "AAPL"
+    },
+    {
+      "dollar_adv": 1200491778.3593242,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 224.77000427246097,
+      "reasons": [],
+      "sector": "Health Care",
+      "ticker": "ABBV"
+    },
+    {
+      "dollar_adv": 1118588640.633443,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 89.6500015258789,
+      "reasons": [],
+      "sector": "Health Care",
+      "ticker": "ABT"
+    },
+    {
+      "dollar_adv": 1338306639.7384644,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 218.8000030517578,
+      "reasons": [],
+      "sector": "Information Technology",
+      "ticker": "ADBE"
+    },
+    {
+      "dollar_adv": 630591843.2831064,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 128.47999572753906,
+      "reasons": [],
+      "sector": "Utilities",
+      "ticker": "AEP"
+    },
+    {
+      "dollar_adv": 3780780106.163737,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 552.6400146484375,
+      "reasons": [],
+      "sector": "Information Technology",
+      "ticker": "AMAT"
+    },
+    {
+      "dollar_adv": 16697730362.485556,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 488.4500122070313,
+      "reasons": [],
+      "sector": "Information Technology",
+      "ticker": "AMD"
+    },
+    {
+      "dollar_adv": 11263706590.221457,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 241.5099945068359,
+      "reasons": [],
+      "sector": "Consumer Discretionary",
+      "ticker": "AMZN"
+    },
+    {
+      "dollar_adv": 334118629.8340861,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 278.1199951171875,
+      "reasons": [],
+      "sector": "Materials",
+      "ticker": "APD"
+    },
+    {
+      "dollar_adv": 11414438467.99581,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 385.5700073242187,
+      "reasons": [],
+      "sector": "Information Technology",
+      "ticker": "AVGO"
+    },
+    {
+      "dollar_adv": 957917151.9475302,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 318.489990234375,
+      "reasons": [],
+      "sector": "Financials",
+      "ticker": "AXP"
+    },
+    {
+      "dollar_adv": 1554126906.9878643,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 221.6300048828125,
+      "reasons": [],
+      "sector": "Industrials",
+      "ticker": "BA"
+    },
+    {
+      "dollar_adv": 1908469409.4722748,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 55.15999984741211,
+      "reasons": [],
+      "sector": "Financials",
+      "ticker": "BAC"
+    },
+    {
+      "dollar_adv": 1226462293.7505596,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 163.58999633789062,
+      "reasons": [],
+      "sector": "Consumer Discretionary",
+      "ticker": "BKNG"
+    },
+    {
+      "dollar_adv": 2505387656.0621133,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 485.7900085449219,
+      "reasons": [],
+      "sector": "Financials",
+      "ticker": "BRK-B"
+    },
+    {
+      "dollar_adv": 1470445814.185791,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 138.07000732421875,
+      "reasons": [],
+      "sector": "Financials",
+      "ticker": "C"
+    },
+    {
+      "dollar_adv": 2516460155.5023193,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 897.6300048828125,
+      "reasons": [],
+      "sector": "Industrials",
+      "ticker": "CAT"
+    },
+    {
+      "dollar_adv": 1100364662.9115803,
+      "eligible": false,
+      "history_days": 1103,
+      "price": 246.7100067138672,
+      "reasons": [
+        "campaign_min_10y_history"
+      ],
+      "sector": "Utilities",
+      "ticker": "CEG"
+    },
+    {
+      "dollar_adv": 467717005.1992798,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 139.13999938964844,
+      "reasons": [],
+      "sector": "Communication Services",
+      "ticker": "CHTR"
+    },
+    {
+      "dollar_adv": 479191272.7112325,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 89.38999938964844,
+      "reasons": [],
+      "sector": "Consumer Staples",
+      "ticker": "CL"
+    },
+    {
+      "dollar_adv": 796683554.9038633,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 23.969999313354492,
+      "reasons": [],
+      "sector": "Communication Services",
+      "ticker": "CMCSA"
+    },
+    {
+      "dollar_adv": 851670552.9979452,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 115.36000061035156,
+      "reasons": [],
+      "sector": "Energy",
+      "ticker": "COP"
+    },
+    {
+      "dollar_adv": 2313799475.378418,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 975.6900024414062,
+      "reasons": [],
+      "sector": "Consumer Staples",
+      "ticker": "COST"
+    },
+    {
+      "dollar_adv": 2664368758.3873496,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 166.4499969482422,
+      "reasons": [],
+      "sector": "Information Technology",
+      "ticker": "CRM"
+    },
+    {
+      "dollar_adv": 1784097617.141927,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 185.82000732421875,
+      "reasons": [],
+      "sector": "Energy",
+      "ticker": "CVX"
+    },
+    {
+      "dollar_adv": 563521122.6997248,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 66.69000244140625,
+      "reasons": [],
+      "sector": "Utilities",
+      "ticker": "D"
+    },
+    {
+      "dollar_adv": 186328493.53347778,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 46.84000015258789,
+      "reasons": [],
+      "sector": "Materials",
+      "ticker": "DD"
+    },
+    {
+      "dollar_adv": 782172653.0411783,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 568.6400146484375,
+      "reasons": [],
+      "sector": "Industrials",
+      "ticker": "DE"
+    },
+    {
+      "dollar_adv": 809759586.2078348,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 180.7899932861328,
+      "reasons": [],
+      "sector": "Health Care",
+      "ticker": "DHR"
+    },
+    {
+      "dollar_adv": 940622607.0196533,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 100.33999633789062,
+      "reasons": [],
+      "sector": "Communication Services",
+      "ticker": "DIS"
+    },
+    {
+      "dollar_adv": 410478306.7633565,
+      "eligible": false,
+      "history_days": 1818,
+      "price": 33.630001068115234,
+      "reasons": [
+        "campaign_min_10y_history"
+      ],
+      "sector": "Materials",
+      "ticker": "DOW"
+    },
+    {
+      "dollar_adv": 408659439.25547284,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 124.19000244140624,
+      "reasons": [],
+      "sector": "Utilities",
+      "ticker": "DUK"
+    },
+    {
+      "dollar_adv": 444452373.9674886,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 263.6300048828125,
+      "reasons": [],
+      "sector": "Materials",
+      "ticker": "ECL"
+    },
+    {
+      "dollar_adv": 468255668.7128194,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 136.52999877929688,
+      "reasons": [],
+      "sector": "Energy",
+      "ticker": "EOG"
+    },
+    {
+      "dollar_adv": 1144827402.736613,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 393.6400146484375,
+      "reasons": [],
+      "sector": "Industrials",
+      "ticker": "ETN"
+    },
+    {
+      "dollar_adv": 386865825.10009766,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 45.5099983215332,
+      "reasons": [],
+      "sector": "Utilities",
+      "ticker": "EXC"
+    },
+    {
+      "dollar_adv": 868268356.885058,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 66.33999633789062,
+      "reasons": [],
+      "sector": "Materials",
+      "ticker": "FCX"
+    },
+    {
+      "dollar_adv": 1549015085.9633381,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 332.760009765625,
+      "reasons": [],
+      "sector": "Industrials",
+      "ticker": "GE"
+    },
+    {
+      "dollar_adv": 8510709719.471741,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 356.55999755859375,
+      "reasons": [],
+      "sector": "Communication Services",
+      "ticker": "GOOG"
+    },
+    {
+      "dollar_adv": 12179984097.415466,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 357.7699890136719,
+      "reasons": [],
+      "sector": "Communication Services",
+      "ticker": "GOOGL"
+    },
+    {
+      "dollar_adv": 2138178700.5855305,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 1035.6400146484375,
+      "reasons": [],
+      "sector": "Financials",
+      "ticker": "GS"
+    },
+    {
+      "dollar_adv": 443892447.40355176,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 39.7599983215332,
+      "reasons": [],
+      "sector": "Energy",
+      "ticker": "HAL"
+    },
+    {
+      "dollar_adv": 1632526367.1731567,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 326.010009765625,
+      "reasons": [],
+      "sector": "Consumer Discretionary",
+      "ticker": "HD"
+    },
+    {
+      "dollar_adv": 1001616617.9312643,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 219.1199951171875,
+      "reasons": [],
+      "sector": "Industrials",
+      "ticker": "HON"
+    },
+    {
+      "dollar_adv": 1024069563.7530518,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 412.8999938964844,
+      "reasons": [],
+      "sector": "Health Care",
+      "ticker": "ISRG"
+    },
+    {
+      "dollar_adv": 1744299749.2703755,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 238.3300018310547,
+      "reasons": [],
+      "sector": "Health Care",
+      "ticker": "JNJ"
+    },
+    {
+      "dollar_adv": 2616485752.7065024,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 313.489990234375,
+      "reasons": [],
+      "sector": "Financials",
+      "ticker": "JPM"
+    },
+    {
+      "dollar_adv": 1235826007.4160511,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 82.52999877929688,
+      "reasons": [],
+      "sector": "Consumer Staples",
+      "ticker": "KO"
+    },
+    {
+      "dollar_adv": 1150270572.5408936,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 515.4400024414062,
+      "reasons": [],
+      "sector": "Materials",
+      "ticker": "LIN"
+    },
+    {
+      "dollar_adv": 3619736404.74528,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 1160.949951171875,
+      "reasons": [],
+      "sector": "Health Care",
+      "ticker": "LLY"
+    },
+    {
+      "dollar_adv": 650289207.9436239,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 548.6799926757812,
+      "reasons": [],
+      "sector": "Industrials",
+      "ticker": "LMT"
+    },
+    {
+      "dollar_adv": 660896876.5905253,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 221.0500030517578,
+      "reasons": [],
+      "sector": "Consumer Discretionary",
+      "ticker": "LOW"
+    },
+    {
+      "dollar_adv": 1903468255.543111,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 486.510009765625,
+      "reasons": [],
+      "sector": "Financials",
+      "ticker": "MA"
+    },
+    {
+      "dollar_adv": 1228098701.5114338,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 284.7699890136719,
+      "reasons": [],
+      "sector": "Consumer Discretionary",
+      "ticker": "MCD"
+    },
+    {
+      "dollar_adv": 452261111.03654224,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 63.36000061035156,
+      "reasons": [],
+      "sector": "Consumer Staples",
+      "ticker": "MDLZ"
+    },
+    {
+      "dollar_adv": 11067076568.940023,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 568.4299926757812,
+      "reasons": [],
+      "sector": "Communication Services",
+      "ticker": "META"
+    },
+    {
+      "dollar_adv": 318203846.5740967,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 565.5399780273438,
+      "reasons": [],
+      "sector": "Materials",
+      "ticker": "MLM"
+    },
+    {
+      "dollar_adv": 642818795.8556112,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 71.41000366210938,
+      "reasons": [],
+      "sector": "Consumer Staples",
+      "ticker": "MO"
+    },
+    {
+      "dollar_adv": 604312647.5091044,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 260.80999755859375,
+      "reasons": [],
+      "sector": "Energy",
+      "ticker": "MPC"
+    },
+    {
+      "dollar_adv": 1155452842.7361553,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 120.76000213623048,
+      "reasons": [],
+      "sector": "Health Care",
+      "ticker": "MRK"
+    },
+    {
+      "dollar_adv": 1142922180.8529155,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 212.66000366210935,
+      "reasons": [],
+      "sector": "Financials",
+      "ticker": "MS"
+    },
+    {
+      "dollar_adv": 15489234168.94694,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 390.3399963378906,
+      "reasons": [],
+      "sector": "Information Technology",
+      "ticker": "MSFT"
+    },
+    {
+      "dollar_adv": 1080576300.9886425,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 84.83999633789062,
+      "reasons": [],
+      "sector": "Utilities",
+      "ticker": "NEE"
+    },
+    {
+      "dollar_adv": 809344116.4996592,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 97.58999633789062,
+      "reasons": [],
+      "sector": "Materials",
+      "ticker": "NEM"
+    },
+    {
+      "dollar_adv": 2992652729.0135193,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 81.2699966430664,
+      "reasons": [],
+      "sector": "Communication Services",
+      "ticker": "NFLX"
+    },
+    {
+      "dollar_adv": 933123482.1323267,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 45.959999084472656,
+      "reasons": [],
+      "sector": "Consumer Discretionary",
+      "ticker": "NKE"
+    },
+    {
+      "dollar_adv": 36695915100.65165,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 204.8699951171875,
+      "reasons": [],
+      "sector": "Information Technology",
+      "ticker": "NVDA"
+    },
+    {
+      "dollar_adv": 5032431680.264587,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 184.1000061035156,
+      "reasons": [],
+      "sector": "Information Technology",
+      "ticker": "ORCL"
+    },
+    {
+      "dollar_adv": 624930848.2097117,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 90.0999984741211,
+      "reasons": [],
+      "sector": "Consumer Discretionary",
+      "ticker": "ORLY"
+    },
+    {
+      "dollar_adv": 668840834.4538498,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 55.470001220703125,
+      "reasons": [],
+      "sector": "Energy",
+      "ticker": "OXY"
+    },
+    {
+      "dollar_adv": 238240869.2725118,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 78.77999877929688,
+      "reasons": [],
+      "sector": "Utilities",
+      "ticker": "PEG"
+    },
+    {
+      "dollar_adv": 1115778038.2691448,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 143.72999572753906,
+      "reasons": [],
+      "sector": "Consumer Staples",
+      "ticker": "PEP"
+    },
+    {
+      "dollar_adv": 920741951.8640137,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 26.170000076293945,
+      "reasons": [],
+      "sector": "Health Care",
+      "ticker": "PFE"
+    },
+    {
+      "dollar_adv": 1216742667.516225,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 148.33999633789062,
+      "reasons": [],
+      "sector": "Consumer Staples",
+      "ticker": "PG"
+    },
+    {
+      "dollar_adv": 839594365.0,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 180.77000427246097,
+      "reasons": [],
+      "sector": "Consumer Staples",
+      "ticker": "PM"
+    },
+    {
+      "dollar_adv": 404704984.07282513,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 178.10000610351562,
+      "reasons": [],
+      "sector": "Energy",
+      "ticker": "PSX"
+    },
+    {
+      "dollar_adv": 5829839840.485992,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 202.9600067138672,
+      "reasons": [],
+      "sector": "Information Technology",
+      "ticker": "QCOM"
+    },
+    {
+      "dollar_adv": 1010956409.7192383,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 184.2100067138672,
+      "reasons": [],
+      "sector": "Industrials",
+      "ticker": "RTX"
+    },
+    {
+      "dollar_adv": 797492161.4561716,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 102.27999877929688,
+      "reasons": [],
+      "sector": "Consumer Discretionary",
+      "ticker": "SBUX"
+    },
+    {
+      "dollar_adv": 682017701.6858927,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 316.8900146484375,
+      "reasons": [],
+      "sector": "Materials",
+      "ticker": "SHW"
+    },
+    {
+      "dollar_adv": 692939151.9460297,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 56.0,
+      "reasons": [],
+      "sector": "Energy",
+      "ticker": "SLB"
+    },
+    {
+      "dollar_adv": 543600621.6952769,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 93.2699966430664,
+      "reasons": [],
+      "sector": "Utilities",
+      "ticker": "SO"
+    },
+    {
+      "dollar_adv": 331038634.9844869,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 91.54000091552734,
+      "reasons": [],
+      "sector": "Utilities",
+      "ticker": "SRE"
+    },
+    {
+      "dollar_adv": 1001999425.088679,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 23.0,
+      "reasons": [],
+      "sector": "Communication Services",
+      "ticker": "T"
+    },
+    {
+      "dollar_adv": 684754682.3042043,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 132.63999938964844,
+      "reasons": [],
+      "sector": "Consumer Staples",
+      "ticker": "TGT"
+    },
+    {
+      "dollar_adv": 987706097.527771,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 168.33999633789062,
+      "reasons": [],
+      "sector": "Consumer Discretionary",
+      "ticker": "TJX"
+    },
+    {
+      "dollar_adv": 1159412579.785258,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 475.6600036621094,
+      "reasons": [],
+      "sector": "Health Care",
+      "ticker": "TMO"
+    },
+    {
+      "dollar_adv": 904052434.4052633,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 185.82000732421875,
+      "reasons": [],
+      "sector": "Communication Services",
+      "ticker": "TMUS"
+    },
+    {
+      "dollar_adv": 21237783419.76837,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 399.1499938964844,
+      "reasons": [],
+      "sector": "Consumer Discretionary",
+      "ticker": "TSLA"
+    },
+    {
+      "dollar_adv": 2667979792.386373,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 405.5499877929687,
+      "reasons": [],
+      "sector": "Health Care",
+      "ticker": "UNH"
+    },
+    {
+      "dollar_adv": 775893110.4103597,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 268.2799987792969,
+      "reasons": [],
+      "sector": "Industrials",
+      "ticker": "UNP"
+    },
+    {
+      "dollar_adv": 622724278.6994171,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 108.6500015258789,
+      "reasons": [],
+      "sector": "Industrials",
+      "ticker": "UPS"
+    },
+    {
+      "dollar_adv": 2513157665.3627524,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 319.04998779296875,
+      "reasons": [],
+      "sector": "Financials",
+      "ticker": "V"
+    },
+    {
+      "dollar_adv": 738883810.3836569,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 255.6000061035156,
+      "reasons": [],
+      "sector": "Energy",
+      "ticker": "VLO"
+    },
+    {
+      "dollar_adv": 327026763.64023846,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 280.19000244140625,
+      "reasons": [],
+      "sector": "Materials",
+      "ticker": "VMC"
+    },
+    {
+      "dollar_adv": 1022999234.6928915,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 46.939998626708984,
+      "reasons": [],
+      "sector": "Communication Services",
+      "ticker": "VZ"
+    },
+    {
+      "dollar_adv": 1275193973.2180023,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 82.4000015258789,
+      "reasons": [],
+      "sector": "Financials",
+      "ticker": "WFC"
+    },
+    {
+      "dollar_adv": 2798351762.0614624,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 120.5,
+      "reasons": [],
+      "sector": "Consumer Staples",
+      "ticker": "WMT"
+    },
+    {
+      "dollar_adv": 472244146.1007182,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 78.2699966430664,
+      "reasons": [],
+      "sector": "Utilities",
+      "ticker": "XEL"
+    },
+    {
+      "dollar_adv": 2564088243.6675515,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 146.60000610351562,
+      "reasons": [],
+      "sector": "Energy",
+      "ticker": "XOM"
+    }
+  ],
+  "sectors": [
+    "Communication Services",
+    "Consumer Discretionary",
+    "Consumer Staples",
+    "Energy",
+    "Financials",
+    "Health Care",
+    "Industrials",
+    "Information Technology",
+    "Materials",
+    "Utilities"
+  ],
+  "selected": [
+    {
+      "dollar_adv": 12179984097.415466,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 357.7699890136719,
+      "reasons": [],
+      "sector": "Communication Services",
+      "ticker": "GOOGL"
+    },
+    {
+      "dollar_adv": 11067076568.940023,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 568.4299926757812,
+      "reasons": [],
+      "sector": "Communication Services",
+      "ticker": "META"
+    },
+    {
+      "dollar_adv": 8510709719.471741,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 356.55999755859375,
+      "reasons": [],
+      "sector": "Communication Services",
+      "ticker": "GOOG"
+    },
+    {
+      "dollar_adv": 21237783419.76837,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 399.1499938964844,
+      "reasons": [],
+      "sector": "Consumer Discretionary",
+      "ticker": "TSLA"
+    },
+    {
+      "dollar_adv": 11263706590.221457,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 241.5099945068359,
+      "reasons": [],
+      "sector": "Consumer Discretionary",
+      "ticker": "AMZN"
+    },
+    {
+      "dollar_adv": 1632526367.1731567,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 326.010009765625,
+      "reasons": [],
+      "sector": "Consumer Discretionary",
+      "ticker": "HD"
+    },
+    {
+      "dollar_adv": 2798351762.0614624,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 120.5,
+      "reasons": [],
+      "sector": "Consumer Staples",
+      "ticker": "WMT"
+    },
+    {
+      "dollar_adv": 2313799475.378418,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 975.6900024414062,
+      "reasons": [],
+      "sector": "Consumer Staples",
+      "ticker": "COST"
+    },
+    {
+      "dollar_adv": 1235826007.4160511,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 82.52999877929688,
+      "reasons": [],
+      "sector": "Consumer Staples",
+      "ticker": "KO"
+    },
+    {
+      "dollar_adv": 2564088243.6675515,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 146.60000610351562,
+      "reasons": [],
+      "sector": "Energy",
+      "ticker": "XOM"
+    },
+    {
+      "dollar_adv": 1784097617.141927,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 185.82000732421875,
+      "reasons": [],
+      "sector": "Energy",
+      "ticker": "CVX"
+    },
+    {
+      "dollar_adv": 851670552.9979452,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 115.36000061035156,
+      "reasons": [],
+      "sector": "Energy",
+      "ticker": "COP"
+    },
+    {
+      "dollar_adv": 2616485752.7065024,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 313.489990234375,
+      "reasons": [],
+      "sector": "Financials",
+      "ticker": "JPM"
+    },
+    {
+      "dollar_adv": 2513157665.3627524,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 319.04998779296875,
+      "reasons": [],
+      "sector": "Financials",
+      "ticker": "V"
+    },
+    {
+      "dollar_adv": 2505387656.0621133,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 485.7900085449219,
+      "reasons": [],
+      "sector": "Financials",
+      "ticker": "BRK-B"
+    },
+    {
+      "dollar_adv": 3619736404.74528,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 1160.949951171875,
+      "reasons": [],
+      "sector": "Health Care",
+      "ticker": "LLY"
+    },
+    {
+      "dollar_adv": 2667979792.386373,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 405.5499877929687,
+      "reasons": [],
+      "sector": "Health Care",
+      "ticker": "UNH"
+    },
+    {
+      "dollar_adv": 1744299749.2703755,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 238.3300018310547,
+      "reasons": [],
+      "sector": "Health Care",
+      "ticker": "JNJ"
+    },
+    {
+      "dollar_adv": 2516460155.5023193,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 897.6300048828125,
+      "reasons": [],
+      "sector": "Industrials",
+      "ticker": "CAT"
+    },
+    {
+      "dollar_adv": 1554126906.9878643,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 221.6300048828125,
+      "reasons": [],
+      "sector": "Industrials",
+      "ticker": "BA"
+    },
+    {
+      "dollar_adv": 1549015085.9633381,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 332.760009765625,
+      "reasons": [],
+      "sector": "Industrials",
+      "ticker": "GE"
+    },
+    {
+      "dollar_adv": 36695915100.65165,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 204.8699951171875,
+      "reasons": [],
+      "sector": "Information Technology",
+      "ticker": "NVDA"
+    },
+    {
+      "dollar_adv": 16697730362.485556,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 488.4500122070313,
+      "reasons": [],
+      "sector": "Information Technology",
+      "ticker": "AMD"
+    },
+    {
+      "dollar_adv": 15568556153.070068,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 295.6300048828125,
+      "reasons": [],
+      "sector": "Information Technology",
+      "ticker": "AAPL"
+    },
+    {
+      "dollar_adv": 1150270572.5408936,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 515.4400024414062,
+      "reasons": [],
+      "sector": "Materials",
+      "ticker": "LIN"
+    },
+    {
+      "dollar_adv": 868268356.885058,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 66.33999633789062,
+      "reasons": [],
+      "sector": "Materials",
+      "ticker": "FCX"
+    },
+    {
+      "dollar_adv": 809344116.4996592,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 97.58999633789062,
+      "reasons": [],
+      "sector": "Materials",
+      "ticker": "NEM"
+    },
+    {
+      "dollar_adv": 1080576300.9886425,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 84.83999633789062,
+      "reasons": [],
+      "sector": "Utilities",
+      "ticker": "NEE"
+    },
+    {
+      "dollar_adv": 630591843.2831064,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 128.47999572753906,
+      "reasons": [],
+      "sector": "Utilities",
+      "ticker": "AEP"
+    },
+    {
+      "dollar_adv": 563521122.6997248,
+      "eligible": true,
+      "history_days": 2513,
+      "price": 66.69000244140625,
+      "reasons": [],
+      "sector": "Utilities",
+      "ticker": "D"
+    }
+  ],
+  "selection_rule": "top 3 dollar-ADV screen-passers per 10 GICS-style sectors",
+  "tickers": [
+    "GOOGL",
+    "META",
+    "GOOG",
+    "TSLA",
+    "AMZN",
+    "HD",
+    "WMT",
+    "COST",
+    "KO",
+    "XOM",
+    "CVX",
+    "COP",
+    "JPM",
+    "V",
+    "BRK-B",
+    "LLY",
+    "UNH",
+    "JNJ",
+    "CAT",
+    "BA",
+    "GE",
+    "NVDA",
+    "AMD",
+    "AAPL",
+    "LIN",
+    "FCX",
+    "NEM",
+    "NEE",
+    "AEP",
+    "D"
+  ]
+}
