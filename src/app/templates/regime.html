@@ -1,4 +1,5 @@
 {% extends "layout.html" %}
+{% block main_class %}container--regime{% endblock %}
 {% block content %}
   {% from "partials/ui/components.html" import kpi_card %}
   <script src="{{ url_for('static', path='vendor/plotly-2.35.0.min.js') }}"></script>

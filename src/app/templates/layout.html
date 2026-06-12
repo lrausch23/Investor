@@ -50,7 +50,7 @@
       {% if auth_banner %}
         <div class="banner banner--warn">{{ auth_banner }}</div>
       {% endif %}
-      <main class="container">
+      <main class="container {% block main_class %}{% endblock %}">
         {% block content %}{% endblock %}
       </main>
     </div>
