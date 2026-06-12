@@ -16,6 +16,8 @@ data/*
 !data/campaign/
 data/campaign/*
 !data/campaign/basket.json
+!data/campaign/cache_manifest.json
+!data/campaign/run_log.md
 src/data/
 tests/regime/data/
 .env

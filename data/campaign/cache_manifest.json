@@ -1,0 +1,607 @@
+{
+  "basket_generated_at": "2026-06-12T16:39:00.403660+00:00",
+  "basket_git_sha": "cb4bf3c",
+  "completed_at": "2026-06-12T16:51:46.661950+00:00",
+  "entries": [
+    {
+      "cache_file": "/Volumes/T9/Projects/Dev/Investor/data/regime/price_cache/GOOGL_1d.csv",
+      "cache_sha256": "71a9a2df5031978725c62073394842292bf1e9a899fae3ae33fdb129b626c011",
+      "columns": [
+        "price",
+        "volume",
+        "high",
+        "low",
+        "open",
+        "vix",
+        "yield_10y"
+      ],
+      "elapsed_seconds": 0.006,
+      "first_date": "2016-06-14",
+      "last_date": "2026-06-11",
+      "rows": 2513,
+      "ticker": "GOOGL"
+    },
+    {
+      "cache_file": "/Volumes/T9/Projects/Dev/Investor/data/regime/price_cache/META_1d.csv",
+      "cache_sha256": "4b4da6647f9d01e05ac14255ec458731af3921de373f076c6b14009f93b6c14f",
+      "columns": [
+        "price",
+        "volume",
+        "high",
+        "low",
+        "open",
+        "vix",
+        "yield_10y"
+      ],
+      "elapsed_seconds": 0.006,
+      "first_date": "2016-06-14",
+      "last_date": "2026-06-11",
+      "rows": 2513,
+      "ticker": "META"
+    },
+    {
+      "cache_file": "/Volumes/T9/Projects/Dev/Investor/data/regime/price_cache/NFLX_1d.csv",
+      "cache_sha256": "f5195699415fa9a4a5d3863bd3ef4bf58ce7d8ed45e7c8bc180235083ccc0d78",
+      "columns": [
+        "price",
+        "volume",
+        "high",
+        "low",
+        "open",
+        "vix",
+        "yield_10y"
+      ],
+      "elapsed_seconds": 0.005,
+      "first_date": "2016-06-14",
+      "last_date": "2026-06-11",
+      "rows": 2513,
+      "ticker": "NFLX"
+    },
+    {
+      "cache_file": "/Volumes/T9/Projects/Dev/Investor/data/regime/price_cache/TSLA_1d.csv",
+      "cache_sha256": "05a66b7fa517aa399adc75ffd8bec108b8eeea0af5bc9a83f4726a199cff7427",
+      "columns": [
+        "price",
+        "volume",
+        "high",
+        "low",
+        "open",
+        "vix",
+        "yield_10y"
+      ],
+      "elapsed_seconds": 0.007,
+      "first_date": "2016-06-14",
+      "last_date": "2026-06-11",
+      "rows": 2513,
+      "ticker": "TSLA"
+    },
+    {
+      "cache_file": "/Volumes/T9/Projects/Dev/Investor/data/regime/price_cache/AMZN_1d.csv",
+      "cache_sha256": "2f08cdc2acc4f7457196940b9e0bf5ceaaf303c3b4c7b9fdd59642ba68a2e65d",
+      "columns": [
+        "price",
+        "volume",
+        "high",
+        "low",
+        "open",
+        "vix",
+        "yield_10y"
+      ],
+      "elapsed_seconds": 0.005,
+      "first_date": "2016-06-14",
+      "last_date": "2026-06-11",
+      "rows": 2513,
+      "ticker": "AMZN"
+    },
+    {
+      "cache_file": "/Volumes/T9/Projects/Dev/Investor/data/regime/price_cache/HD_1d.csv",
+      "cache_sha256": "40af86b62b0979fe1a4557a1c6a94c13319b2408cc2a41837be00c465709cf93",
+      "columns": [
+        "price",
+        "volume",
+        "high",
+        "low",
+        "open",
+        "vix",
+        "yield_10y"
+      ],
+      "elapsed_seconds": 0.005,
+      "first_date": "2016-06-14",
+      "last_date": "2026-06-11",
+      "rows": 2513,
+      "ticker": "HD"
+    },
+    {
+      "cache_file": "/Volumes/T9/Projects/Dev/Investor/data/regime/price_cache/WMT_1d.csv",
+      "cache_sha256": "245d4fbeefd4491a5d60bc2885176676a2643ea282d0c8dac746dc8d825dc7c7",
+      "columns": [
+        "price",
+        "volume",
+        "high",
+        "low",
+        "open",
+        "vix",
+        "yield_10y"
+      ],
+      "elapsed_seconds": 0.005,
+      "first_date": "2016-06-14",
+      "last_date": "2026-06-11",
+      "rows": 2513,
+      "ticker": "WMT"
+    },
+    {
+      "cache_file": "/Volumes/T9/Projects/Dev/Investor/data/regime/price_cache/COST_1d.csv",
+      "cache_sha256": "a7e65218619d9f8d6a186d0c1de2ca8b57b6e3f4b4825457bbfcdc99b026026b",
+      "columns": [
+        "price",
+        "volume",
+        "high",
+        "low",
+        "open",
+        "vix",
+        "yield_10y"
+      ],
+      "elapsed_seconds": 0.005,
+      "first_date": "2016-06-14",
+      "last_date": "2026-06-11",
+      "rows": 2513,
+      "ticker": "COST"
+    },
+    {
+      "cache_file": "/Volumes/T9/Projects/Dev/Investor/data/regime/price_cache/KO_1d.csv",
+      "cache_sha256": "605739b8e8c9ce93073789168aa30febb3a1963c2b219e20e412a2a5f30eb58c",
+      "columns": [
+        "price",
+        "volume",
+        "high",
+        "low",
+        "open",
+        "vix",
+        "yield_10y"
+      ],
+      "elapsed_seconds": 0.004,
+      "first_date": "2016-06-14",
+      "last_date": "2026-06-11",
+      "rows": 2513,
+      "ticker": "KO"
+    },
+    {
+      "cache_file": "/Volumes/T9/Projects/Dev/Investor/data/regime/price_cache/XOM_1d.csv",
+      "cache_sha256": "bec8ab23afba34eff3acf36fa9e44ff3ff0d5b884fdd471beed62aa8511d4257",
+      "columns": [
+        "price",
+        "volume",
+        "high",
+        "low",
+        "open",
+        "vix",
+        "yield_10y"
+      ],
+      "elapsed_seconds": 0.004,
+      "first_date": "2016-06-14",
+      "last_date": "2026-06-11",
+      "rows": 2513,
+      "ticker": "XOM"
+    },
+    {
+      "cache_file": "/Volumes/T9/Projects/Dev/Investor/data/regime/price_cache/CVX_1d.csv",
+      "cache_sha256": "94002a499528444a04c0a304983d6d64b007836a1823c91d0e6944ea7bc17e35",
+      "columns": [
+        "price",
+        "volume",
+        "high",
+        "low",
+        "open",
+        "vix",
+        "yield_10y"
+      ],
+      "elapsed_seconds": 0.005,
+      "first_date": "2016-06-14",
+      "last_date": "2026-06-11",
+      "rows": 2513,
+      "ticker": "CVX"
+    },
+    {
+      "cache_file": "/Volumes/T9/Projects/Dev/Investor/data/regime/price_cache/COP_1d.csv",
+      "cache_sha256": "3ec9b8dadc67bad7025d528e5a83c92fdcab25d7e0ae9e1096111669330f8e33",
+      "columns": [
+        "price",
+        "volume",
+        "high",
+        "low",
+        "open",
+        "vix",
+        "yield_10y"
+      ],
+      "elapsed_seconds": 0.004,
+      "first_date": "2016-06-14",
+      "last_date": "2026-06-11",
+      "rows": 2513,
+      "ticker": "COP"
+    },
+    {
+      "cache_file": "/Volumes/T9/Projects/Dev/Investor/data/regime/price_cache/JPM_1d.csv",
+      "cache_sha256": "022591c6b93db37d8b47eaa97795b1e78097826f84b699db36c641d5bd9b3a2c",
+      "columns": [
+        "price",
+        "volume",
+        "high",
+        "low",
+        "open",
+        "vix",
+        "yield_10y"
+      ],
+      "elapsed_seconds": 0.005,
+      "first_date": "2016-06-14",
+      "last_date": "2026-06-11",
+      "rows": 2513,
+      "ticker": "JPM"
+    },
+    {
+      "cache_file": "/Volumes/T9/Projects/Dev/Investor/data/regime/price_cache/V_1d.csv",
+      "cache_sha256": "9db0bfa3fd5e9dc3d684e57b54fad730696d5a536960c2e0732734a1c36cb9d0",
+      "columns": [
+        "price",
+        "volume",
+        "high",
+        "low",
+        "open",
+        "vix",
+        "yield_10y"
+      ],
+      "elapsed_seconds": 0.005,
+      "first_date": "2016-06-14",
+      "last_date": "2026-06-11",
+      "rows": 2513,
+      "ticker": "V"
+    },
+    {
+      "cache_file": "/Volumes/T9/Projects/Dev/Investor/data/regime/price_cache/BRK_B_1d.csv",
+      "cache_sha256": "9031cb099a2072f67464a90a307ff0674d02090533664f7f2c3df8db68da63c5",
+      "columns": [
+        "price",
+        "volume",
+        "high",
+        "low",
+        "open",
+        "vix",
+        "yield_10y"
+      ],
+      "elapsed_seconds": 0.005,
+      "first_date": "2016-06-14",
+      "last_date": "2026-06-11",
+      "rows": 2513,
+      "ticker": "BRK-B"
+    },
+    {
+      "cache_file": "/Volumes/T9/Projects/Dev/Investor/data/regime/price_cache/LLY_1d.csv",
+      "cache_sha256": "552954a9597c3ca5384730a08edb412a17ae8c10fcd2f8eeee26c4be44e2435d",
+      "columns": [
+        "price",
+        "volume",
+        "high",
+        "low",
+        "open",
+        "vix",
+        "yield_10y"
+      ],
+      "elapsed_seconds": 0.005,
+      "first_date": "2016-06-14",
+      "last_date": "2026-06-11",
+      "rows": 2513,
+      "ticker": "LLY"
+    },
+    {
+      "cache_file": "/Volumes/T9/Projects/Dev/Investor/data/regime/price_cache/UNH_1d.csv",
+      "cache_sha256": "701d0b87e0b47d8d26c00f79ad710eae9b52e0f98a21d1ae48cb13803da22010",
+      "columns": [
+        "price",
+        "volume",
+        "high",
+        "low",
+        "open",
+        "vix",
+        "yield_10y"
+      ],
+      "elapsed_seconds": 0.005,
+      "first_date": "2016-06-14",
+      "last_date": "2026-06-11",
+      "rows": 2513,
+      "ticker": "UNH"
+    },
+    {
+      "cache_file": "/Volumes/T9/Projects/Dev/Investor/data/regime/price_cache/JNJ_1d.csv",
+      "cache_sha256": "477b7b1e53f618f2e847f894eb9a63514a9d84221a063d428b71be153e05dde2",
+      "columns": [
+        "price",
+        "volume",
+        "high",
+        "low",
+        "open",
+        "vix",
+        "yield_10y"
+      ],
+      "elapsed_seconds": 0.005,
+      "first_date": "2016-06-14",
+      "last_date": "2026-06-11",
+      "rows": 2513,
+      "ticker": "JNJ"
+    },
+    {
+      "cache_file": "/Volumes/T9/Projects/Dev/Investor/data/regime/price_cache/CAT_1d.csv",
+      "cache_sha256": "00350b65737fe399b19f60ec11fffa0cdbd112cf152785fe9c798dd36ae174e3",
+      "columns": [
+        "price",
+        "volume",
+        "high",
+        "low",
+        "open",
+        "vix",
+        "yield_10y"
+      ],
+      "elapsed_seconds": 0.005,
+      "first_date": "2016-06-14",
+      "last_date": "2026-06-11",
+      "rows": 2513,
+      "ticker": "CAT"
+    },
+    {
+      "cache_file": "/Volumes/T9/Projects/Dev/Investor/data/regime/price_cache/BA_1d.csv",
+      "cache_sha256": "3c1744411eb7647b0fdccb56d85155ff90371bf5280df2253085d51555d1651b",
+      "columns": [
+        "price",
+        "volume",
+        "high",
+        "low",
+        "open",
+        "vix",
+        "yield_10y"
+      ],
+      "elapsed_seconds": 0.004,
+      "first_date": "2016-06-14",
+      "last_date": "2026-06-11",
+      "rows": 2513,
+      "ticker": "BA"
+    },
+    {
+      "cache_file": "/Volumes/T9/Projects/Dev/Investor/data/regime/price_cache/GE_1d.csv",
+      "cache_sha256": "e84d0ddd906d27ed85e01f475b4482a2fd150d6dd43bffbe81823eaa403d93ed",
+      "columns": [
+        "price",
+        "volume",
+        "high",
+        "low",
+        "open",
+        "vix",
+        "yield_10y"
+      ],
+      "elapsed_seconds": 0.004,
+      "first_date": "2016-06-14",
+      "last_date": "2026-06-11",
+      "rows": 2513,
+      "ticker": "GE"
+    },
+    {
+      "cache_file": "/Volumes/T9/Projects/Dev/Investor/data/regime/price_cache/NVDA_1d.csv",
+      "cache_sha256": "abaa197e0b8cba7923e167ddae0c7fed4df0e13a9531b99f90a70bd3179c654f",
+      "columns": [
+        "price",
+        "volume",
+        "high",
+        "low",
+        "open",
+        "vix",
+        "yield_10y"
+      ],
+      "elapsed_seconds": 0.005,
+      "first_date": "2016-06-14",
+      "last_date": "2026-06-11",
+      "rows": 2513,
+      "ticker": "NVDA"
+    },
+    {
+      "cache_file": "/Volumes/T9/Projects/Dev/Investor/data/regime/price_cache/AMD_1d.csv",
+      "cache_sha256": "2eee85ea5dce1a77436b53b1b7f4e3669fa30fd0e2fd8535b61f7d3736b3a7c1",
+      "columns": [
+        "price",
+        "volume",
+        "high",
+        "low",
+        "open",
+        "vix",
+        "yield_10y"
+      ],
+      "elapsed_seconds": 0.005,
+      "first_date": "2016-06-14",
+      "last_date": "2026-06-11",
+      "rows": 2513,
+      "ticker": "AMD"
+    },
+    {
+      "cache_file": "/Volumes/T9/Projects/Dev/Investor/data/regime/price_cache/AAPL_1d.csv",
+      "cache_sha256": "cd48e7f05f92d96171e32b2bcfcd7c2554a80848757d10938c4eb91ce6bc6b29",
+      "columns": [
+        "price",
+        "volume",
+        "high",
+        "low",
+        "open",
+        "vix",
+        "yield_10y"
+      ],
+      "elapsed_seconds": 0.004,
+      "first_date": "2016-06-14",
+      "last_date": "2026-06-11",
+      "rows": 2513,
+      "ticker": "AAPL"
+    },
+    {
+      "cache_file": "/Volumes/T9/Projects/Dev/Investor/data/regime/price_cache/LIN_1d.csv",
+      "cache_sha256": "cc77acd926292ecd5427926a0ab61416cbc964111f61b77df5689b7af7dd01d2",
+      "columns": [
+        "price",
+        "volume",
+        "high",
+        "low",
+        "open",
+        "vix",
+        "yield_10y"
+      ],
+      "elapsed_seconds": 0.005,
+      "first_date": "2016-06-14",
+      "last_date": "2026-06-11",
+      "rows": 2513,
+      "ticker": "LIN"
+    },
+    {
+      "cache_file": "/Volumes/T9/Projects/Dev/Investor/data/regime/price_cache/FCX_1d.csv",
+      "cache_sha256": "ffd9f165bfeb3a05be9bfa976d920d8b7223a76f942a5cb32a2147135caaf90e",
+      "columns": [
+        "price",
+        "volume",
+        "high",
+        "low",
+        "open",
+        "vix",
+        "yield_10y"
+      ],
+      "elapsed_seconds": 0.005,
+      "first_date": "2016-06-14",
+      "last_date": "2026-06-11",
+      "rows": 2513,
+      "ticker": "FCX"
+    },
+    {
+      "cache_file": "/Volumes/T9/Projects/Dev/Investor/data/regime/price_cache/NEM_1d.csv",
+      "cache_sha256": "e7d84c470b7afb904e4bed3ff98e732ec811447539087f9ebc69c121206d8f90",
+      "columns": [
+        "price",
+        "volume",
+        "high",
+        "low",
+        "open",
+        "vix",
+        "yield_10y"
+      ],
+      "elapsed_seconds": 0.005,
+      "first_date": "2016-06-14",
+      "last_date": "2026-06-11",
+      "rows": 2513,
+      "ticker": "NEM"
+    },
+    {
+      "cache_file": "/Volumes/T9/Projects/Dev/Investor/data/regime/price_cache/NEE_1d.csv",
+      "cache_sha256": "1e6eef82f4430e3a63e25baf44b46bf2536a1f463bfc245a06cf15056fda343d",
+      "columns": [
+        "price",
+        "volume",
+        "high",
+        "low",
+        "open",
+        "vix",
+        "yield_10y"
+      ],
+      "elapsed_seconds": 0.005,
+      "first_date": "2016-06-14",
+      "last_date": "2026-06-11",
+      "rows": 2513,
+      "ticker": "NEE"
+    },
+    {
+      "cache_file": "/Volumes/T9/Projects/Dev/Investor/data/regime/price_cache/AEP_1d.csv",
+      "cache_sha256": "b2177a4fc6fc84c9242470f1d34b9f1d21f662da4601eb06f5c0aa1de3c163be",
+      "columns": [
+        "price",
+        "volume",
+        "high",
+        "low",
+        "open",
+        "vix",
+        "yield_10y"
+      ],
+      "elapsed_seconds": 0.005,
+      "first_date": "2016-06-14",
+      "last_date": "2026-06-11",
+      "rows": 2513,
+      "ticker": "AEP"
+    },
+    {
+      "cache_file": "/Volumes/T9/Projects/Dev/Investor/data/regime/price_cache/D_1d.csv",
+      "cache_sha256": "dffa7c2dbc6cf4f707c85be18b27a63c8f45f07956746f9a6219ac1b04627263",
+      "columns": [
+        "price",
+        "volume",
+        "high",
+        "low",
+        "open",
+        "vix",
+        "yield_10y"
+      ],
+      "elapsed_seconds": 0.005,
+      "first_date": "2016-06-14",
+      "last_date": "2026-06-11",
+      "rows": 2513,
+      "ticker": "D"
+    },
+    {
+      "cache_file": "/Volumes/T9/Projects/Dev/Investor/data/regime/price_cache/SPY_1d.csv",
+      "cache_sha256": "03370b46a7637a14aae7c9ca052cc2514db72266ff226c552f802aa10288139b",
+      "columns": [
+        "price",
+        "volume",
+        "high",
+        "low",
+        "open",
+        "vix",
+        "yield_10y"
+      ],
+      "elapsed_seconds": 0.003,
+      "first_date": "2016-06-14",
+      "last_date": "2026-06-11",
+      "rows": 2513,
+      "ticker": "SPY"
+    }
+  ],
+  "entry_count": 31,
+  "failure_count": 0,
+  "failures": [],
+  "generated_at": "2026-06-12T16:51:46.651118+00:00",
+  "git_sha": "a24271c",
+  "interval": "1d",
+  "period": "10y",
+  "schema": "regime_alpha_campaign_cache_manifest.v1",
+  "started_at": "2026-06-12T16:51:46.501066+00:00",
+  "tickers": [
+    "GOOGL",
+    "META",
+    "NFLX",
+    "TSLA",
+    "AMZN",
+    "HD",
+    "WMT",
+    "COST",
+    "KO",
+    "XOM",
+    "CVX",
+    "COP",
+    "JPM",
+    "V",
+    "BRK-B",
+    "LLY",
+    "UNH",
+    "JNJ",
+    "CAT",
+    "BA",
+    "GE",
+    "NVDA",
+    "AMD",
+    "AAPL",
+    "LIN",
+    "FCX",
+    "NEM",
+    "NEE",
+    "AEP",
+    "D",
+    "SPY"
+  ]
+}
