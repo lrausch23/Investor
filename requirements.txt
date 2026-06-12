@@ -18,6 +18,7 @@ ib_insync==0.9.86
 python-dotenv==1.2.1
 typer==0.20.1
 pytest==9.0.2
+pytest-timeout==2.4.0
 python-multipart==0.0.21
 cryptography==43.0.3
 PyYAML==6.0.3

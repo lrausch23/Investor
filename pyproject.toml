@@ -1,5 +1,7 @@
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+timeout = 300
+timeout_method = "thread"
 markers = [
     "integration: integration tests that require network or external services",
 ]

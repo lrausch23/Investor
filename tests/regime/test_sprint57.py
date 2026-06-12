@@ -3,7 +3,11 @@ from __future__ import annotations
 import datetime as dt
 import importlib
 import json
+import os
 from pathlib import Path
+import subprocess
+import sys
+import textwrap
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -16,6 +20,8 @@ from src.regime import ensemble as ensemble_module
 from src.regime.analysts import lstm_analyst as lstm_module
 from src.regime.analysts import KalmanFilterAnalyst, LSTMConfig, LSTMSequenceAnalyst
 from src.regime.ensemble import get_registry
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _labeled_frame(rows: int = 260) -> pd.DataFrame:
@@ -45,18 +51,72 @@ def _labeled_frame(rows: int = 260) -> pd.DataFrame:
 
 
 def test_lstm_train_save_load_and_analyze(tmp_path: Path) -> None:
-    analyst = LSTMSequenceAnalyst()
-    metrics = analyst.train(_labeled_frame())
-    assert metrics["status"] == "trained"
-    assert analyst.is_ready() is True
-    model_path = tmp_path / "lstm.json"
-    analyst.save_model(model_path)
-    loaded = LSTMSequenceAnalyst()
-    loaded.load_model(model_path)
-    regime_result = type("RegimeResult", (), {"price_frame": _labeled_frame(40)[lstm_module.META_FEATURES]})()
-    result = loaded.analyze("NVDA", {}, regime_result)
-    assert result.signal in {"confirm", "neutral", "veto"}
-    assert 0.0 <= result.confidence <= 1.0
+    # PyTorch's macOS thread runtime has stalled this test only after hundreds
+    # of predecessor tests. Keep the coverage, but isolate and bound the runtime
+    # so the full suite fails loudly instead of wedging the pytest process.
+    script = textwrap.dedent(
+        """
+        import json
+        import sys
+        from pathlib import Path
+
+        from tests.regime.test_sprint57 import _labeled_frame
+        from src.regime.analysts import LSTMConfig, LSTMSequenceAnalyst
+        from src.regime.analysts import lstm_analyst as lstm_module
+
+        if lstm_module.torch is not None:
+            try:
+                lstm_module.torch.set_num_threads(1)
+                lstm_module.torch.set_num_interop_threads(1)
+            except RuntimeError:
+                pass
+
+        model_path = Path(sys.argv[1]) / "lstm.json"
+        config = LSTMConfig(
+            sequence_length=5,
+            prediction_horizon=5,
+            epochs=2,
+            min_training_samples=20,
+            hidden_size=8,
+            num_layers=1,
+            dropout=0.0,
+            batch_size=16,
+        )
+        analyst = LSTMSequenceAnalyst(config)
+        metrics = analyst.train(_labeled_frame(100))
+        analyst.save_model(model_path)
+        loaded = LSTMSequenceAnalyst()
+        loaded.load_model(model_path)
+        regime_result = type("RegimeResult", (), {"price_frame": _labeled_frame(40)[lstm_module.META_FEATURES]})()
+        result = loaded.analyze("NVDA", {}, regime_result)
+        print(json.dumps({
+            "status": metrics.get("status"),
+            "ready": loaded.is_ready(),
+            "signal": result.signal,
+            "confidence": result.confidence,
+        }))
+        """
+    )
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(PROJECT_ROOT) + os.pathsep + env.get("PYTHONPATH", "")
+    env["OMP_NUM_THREADS"] = "1"
+    env["MKL_NUM_THREADS"] = "1"
+    env["TORCH_NUM_THREADS"] = "1"
+    completed = subprocess.run(
+        [sys.executable, "-c", script, str(tmp_path)],
+        cwd=PROJECT_ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+    payload = json.loads(completed.stdout)
+    assert payload["status"] == "trained"
+    assert payload["ready"] is True
+    assert payload["signal"] in {"confirm", "neutral", "veto"}
+    assert 0.0 <= payload["confidence"] <= 1.0
 
 
 def test_kalman_ready_after_min_observations_and_reset() -> None:
@@ -89,7 +149,20 @@ def test_lstm_training_route(monkeypatch, tmp_path: Path) -> None:
     app.dependency_overrides[regime_route.db_session] = lambda: iter([None])
     client = TestClient(app)
 
-    response = client.post("/regime/ensemble/lstm/train", json={"tickers": ["NVDA", "MSFT"], "epochs": 5})
+    response = client.post(
+        "/regime/ensemble/lstm/train",
+        json={
+            "tickers": ["NVDA", "MSFT"],
+            "epochs": 1,
+            "sequence_length": 5,
+            "prediction_horizon": 5,
+            "min_training_samples": 20,
+            "hidden_size": 8,
+            "num_layers": 1,
+            "dropout": 0.0,
+            "batch_size": 16,
+        },
+    )
     assert response.status_code == 200
     payload = response.json()
     assert payload["ready"] is True
@@ -128,7 +201,18 @@ def test_registry_auto_loads_latest_lstm_model(tmp_path: Path, monkeypatch) -> N
     monkeypatch.setenv("HMM_DATA_DIR", str(tmp_path))
     model_dir = tmp_path / "models"
     model_dir.mkdir(parents=True, exist_ok=True)
-    trainer = LSTMSequenceAnalyst(LSTMConfig(sequence_length=5, prediction_horizon=5, epochs=1, min_training_samples=10))
+    trainer = LSTMSequenceAnalyst(
+        LSTMConfig(
+            sequence_length=5,
+            prediction_horizon=5,
+            epochs=1,
+            min_training_samples=10,
+            hidden_size=8,
+            num_layers=1,
+            dropout=0.0,
+            batch_size=16,
+        )
+    )
     trainer.train(_labeled_frame(80))
     trainer.save_model(model_dir / "lstm_analyst_v2.json")
     ensemble = importlib.reload(ensemble_module)
