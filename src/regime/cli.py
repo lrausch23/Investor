@@ -56,6 +56,13 @@ from .alpha_campaign import (
     run_campaign_phase,
     select_basket,
 )
+from .portfolio_campaign import (
+    DEFAULT_CAMPAIGN2_DIR,
+    DEFAULT_CAMPAIGN2_REPORT_PATH,
+    campaign2_status,
+    render_campaign2_report,
+    run_campaign2,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -111,6 +118,17 @@ def parse_args() -> argparse.Namespace:
     report_parser.add_argument("--output", default=str(DEFAULT_REPORT_PATH))
     status_parser = campaign_subparsers.add_parser("status", help="Show campaign artifact status.")
     status_parser.add_argument("--campaign-dir", default=str(DEFAULT_CAMPAIGN_DIR))
+    portfolio_campaign_parser = subparsers.add_parser("portfolio-campaign", help="Run the pre-registered portfolio layer-ablation campaign.")
+    portfolio_subparsers = portfolio_campaign_parser.add_subparsers(dest="portfolio_campaign_command")
+    portfolio_run_parser = portfolio_subparsers.add_parser("run", help="Run Campaign 2 portfolio layer ablation.")
+    portfolio_run_parser.add_argument("--resume", action="store_true")
+    portfolio_run_parser.add_argument("--basket", default=str(DEFAULT_BASKET_PATH))
+    portfolio_run_parser.add_argument("--campaign-dir", default=str(DEFAULT_CAMPAIGN2_DIR))
+    portfolio_report_parser = portfolio_subparsers.add_parser("report", help="Render ALPHA_CAMPAIGN_2_REPORT.md.")
+    portfolio_report_parser.add_argument("--campaign-dir", default=str(DEFAULT_CAMPAIGN2_DIR))
+    portfolio_report_parser.add_argument("--output", default=str(DEFAULT_CAMPAIGN2_REPORT_PATH))
+    portfolio_status_parser = portfolio_subparsers.add_parser("status", help="Show Campaign 2 artifact status.")
+    portfolio_status_parser.add_argument("--campaign-dir", default=str(DEFAULT_CAMPAIGN2_DIR))
     parser.add_argument("--tickers", nargs="+", help="Tickers to analyze.")
     parser.add_argument("--benchmark", default="SOXX", help="Benchmark ticker. Default: SOXX")
     parser.add_argument("--period", default="3y", help="yfinance period string. Default: 3y")
@@ -534,6 +552,29 @@ def main() -> None:
             print(json.dumps(campaign_status(getattr(args, "campaign_dir", str(DEFAULT_CAMPAIGN_DIR))), indent=2))
             return
         raise SystemExit("alpha-campaign requires one of: select-basket, run, report, status")
+    if getattr(args, "command", None) == "portfolio-campaign":
+        portfolio_command = getattr(args, "portfolio_campaign_command", None)
+        if portfolio_command == "run":
+            payload = run_campaign2(
+                basket_path=getattr(args, "basket", str(DEFAULT_BASKET_PATH)),
+                campaign_dir=getattr(args, "campaign_dir", str(DEFAULT_CAMPAIGN2_DIR)),
+                resume=bool(getattr(args, "resume", False)),
+            )
+            print(json.dumps(payload, indent=2))
+            return
+        if portfolio_command == "report":
+            campaign2_report = render_campaign2_report(
+                campaign_dir=getattr(args, "campaign_dir", str(DEFAULT_CAMPAIGN2_DIR)),
+                output_path=getattr(args, "output", str(DEFAULT_CAMPAIGN2_REPORT_PATH)),
+            )
+            print(getattr(args, "output", str(DEFAULT_CAMPAIGN2_REPORT_PATH)))
+            if not campaign2_report.strip():
+                raise SystemExit("empty campaign 2 report")
+            return
+        if portfolio_command == "status":
+            print(json.dumps(campaign2_status(getattr(args, "campaign_dir", str(DEFAULT_CAMPAIGN2_DIR))), indent=2))
+            return
+        raise SystemExit("portfolio-campaign requires one of: run, report, status")
     if getattr(args, "command", None) == "threshold-sweep":
         tickers = [str(ticker).strip().upper() for ticker in getattr(args, "tickers", []) if str(ticker).strip()]
         if not tickers:
