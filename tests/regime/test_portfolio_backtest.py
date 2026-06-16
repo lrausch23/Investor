@@ -41,6 +41,28 @@ def test_costs_reconcile_against_hand_computed_fixture() -> None:
     assert math.isclose(float(buy["costs_paid"]), 0.99, abs_tol=1e-9)
 
 
+def test_panel_availability_admits_late_ticker_without_lookahead() -> None:
+    early = _frame([10, 10, 11, 11, 12, 12])
+    late = _frame([20, 21, 22]).copy()
+    late.index = early.index[3:]
+    frames = {"AAA": early, "BBB": late}
+
+    common = run_portfolio_backtest(frames, StrategySpec(name="common"), PortfolioBacktestConfig(starting_cash=1_000))
+    panel = run_portfolio_backtest(
+        frames,
+        StrategySpec(name="panel"),
+        PortfolioBacktestConfig(starting_cash=1_000, availability_mode="panel"),
+    )
+
+    assert common.equity_curve[0]["date"] == "2024-01-04"
+    assert panel.equity_curve[0]["date"] == "2024-01-01"
+    bbb_buys = [row for row in panel.trades if row["ticker"] == "BBB" and row["side"] == "Buy"]
+    assert bbb_buys
+    assert all(pd.Timestamp(row["date"]) >= late.index.min() for row in bbb_buys)
+    assert any(int(row["active_ticker_count"]) == 1 for row in panel.equity_curve)
+    assert any(int(row["active_ticker_count"]) == 2 for row in panel.equity_curve)
+
+
 def test_no_lookahead_future_poison_column_does_not_enter_results() -> None:
     frame = _frame([10, 11, 12, 13, 14, 15])
     frame["future_poison"] = float("nan")
@@ -69,3 +91,18 @@ def test_spy_200dma_control_is_normal_spec_with_confirmation() -> None:
     assert buys
     # Confirmation happens at decision day T and fills at T+1 open.
     assert pd.Timestamp(buys[0]["date"]) > pd.Timestamp("2024-10-21")
+
+
+def test_market_timing_brake_uses_shared_signal_without_spy_holding() -> None:
+    frame = _frame([10.0] * 45)
+    frame["market_timing_confirmed"] = False
+    frame.loc[frame.index >= pd.Timestamp("2024-02-01"), "market_timing_confirmed"] = True
+    spec = StrategySpec(name="spy-brake", override_policy="market_timing_brake", override_params={"cap": 0.0})
+
+    result = run_portfolio_backtest({"AAA": frame}, spec, PortfolioBacktestConfig(starting_cash=1_000))
+
+    assert result.brake_log
+    buys = [row for row in result.trades if row["side"] == "Buy"]
+    assert buys
+    assert all(row["ticker"] == "AAA" for row in buys)
+    assert pd.Timestamp(buys[0]["date"]) >= pd.Timestamp("2024-02-01")

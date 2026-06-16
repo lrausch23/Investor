@@ -1,0 +1,241 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Management Overview: Alpha Campaign Results</title>
+  <style>
+    :root {
+      --surface: #FCFCFD;
+      --panel: #FFFFFF;
+      --ink: #1F2430;
+      --muted: #6F768A;
+      --grid: #E6E8F0;
+      --axis: #D7DBE7;
+      --blue: #5477C4;
+      --gold: #B8A037;
+      --orange: #CC6F47;
+      --olive: #71B436;
+      --pink: #BD569B;
+    }
+    body {
+      margin: 0;
+      background: var(--surface);
+      color: var(--ink);
+      font-family: Inter, Aptos, "Segoe UI", Arial, sans-serif;
+    }
+    main {
+      max-width: 1040px;
+      margin: 0 auto;
+      padding: 44px 22px 72px;
+    }
+    header, section {
+      margin-bottom: 34px;
+    }
+    h1 {
+      margin: 0 0 10px;
+      font-size: clamp(2rem, 4vw, 3.5rem);
+      line-height: 1.05;
+      letter-spacing: 0;
+    }
+    h2 {
+      margin: 0 0 12px;
+      font-size: 1.55rem;
+      line-height: 1.18;
+      letter-spacing: 0;
+    }
+    h3 {
+      margin: 24px 0 8px;
+      font-size: 1.05rem;
+      letter-spacing: 0;
+    }
+    p, li {
+      line-height: 1.58;
+      font-size: 1rem;
+    }
+    a { color: var(--blue); }
+    .meta {
+      color: var(--muted);
+      font-size: 0.95rem;
+      margin: 0;
+    }
+    .summary {
+      background: #F4F7FE;
+      border: 1px solid #D8E2FA;
+      border-radius: 16px;
+      padding: 20px 22px;
+    }
+    .summary ul {
+      margin: 0;
+      padding-left: 22px;
+    }
+    .summary li + li {
+      margin-top: 10px;
+    }
+    .kpis {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 12px;
+      margin-top: 18px;
+    }
+    .kpi {
+      background: var(--panel);
+      border: 1px solid var(--grid);
+      border-radius: 10px;
+      padding: 14px;
+      box-shadow: 0 8px 20px rgba(31, 36, 48, 0.04);
+    }
+    .kpi .value {
+      display: block;
+      font-size: 1.55rem;
+      font-weight: 750;
+      margin-bottom: 4px;
+    }
+    .kpi .label {
+      color: var(--muted);
+      font-size: 0.86rem;
+      line-height: 1.35;
+    }
+    figure {
+      margin: 20px 0 10px;
+      background: var(--panel);
+      border: 1px solid var(--grid);
+      border-radius: 12px;
+      padding: 12px;
+    }
+    figure img {
+      display: block;
+      width: 100%;
+      height: auto;
+    }
+    figcaption {
+      color: var(--muted);
+      font-size: 0.9rem;
+      margin: 8px 4px 0;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 16px 0;
+      background: var(--panel);
+      border: 1px solid var(--grid);
+      border-radius: 10px;
+      overflow: hidden;
+      display: table;
+    }
+    th, td {
+      border-bottom: 1px solid var(--grid);
+      padding: 10px 12px;
+      text-align: left;
+      vertical-align: top;
+      font-size: 0.94rem;
+    }
+    th {
+      background: #F4F5F7;
+      font-weight: 700;
+    }
+    tr:last-child td {
+      border-bottom: 0;
+    }
+    .callout {
+      background: #FFF7E6;
+      border: 1px solid #F0D99A;
+      border-radius: 12px;
+      padding: 16px 18px;
+    }
+    .recommendations li + li {
+      margin-top: 8px;
+    }
+    @media (max-width: 760px) {
+      main { padding: 28px 16px 52px; }
+      .kpis { grid-template-columns: 1fr 1fr; }
+      th, td { font-size: 0.86rem; padding: 8px; }
+    }
+  </style>
+</head>
+<body>
+  <main data-report-audience="product stakeholders">
+    <header data-contract-section="title">
+      <h1>Management Overview: Alpha Campaign Results</h1>
+      <p class="meta">Comparison of Alpha Campaign 1 and Alpha Campaign 2 using reports generated June 12-13, 2026. OOS boundary: January 1, 2024.</p>
+    </header>
+
+    <section class="summary" data-contract-section="executive-summary">
+      <h2>Executive Summary</h2>
+      <ul>
+        <li><strong>Campaign 2 is the clear strategic winner.</strong> The first campaign's per-name HMM regime strategy produced only 1.8% OOS return and 0.161 Sharpe, while Campaign 2's portfolio framework produced 79.2% OOS return and 1.987 Sharpe for the best supported arm, L1.</li>
+        <li><strong>The improvement comes from architecture, not from the HMM brake.</strong> Campaign 2's base posture owns the basket by default and uses volatility targeting as a portfolio overlay. The HMM brake, L2, reduced full-period drawdown but failed promotion because OOS return, Sharpe, and Calmar all deteriorated versus L1.</li>
+        <li><strong>Management should approve L1 for controlled paper validation, not production deployment.</strong> L1 passed the pre-registered support rules and was not cost-fragile at 2x costs, but the evidence still comes from a single OOS window with strong market participation and no live execution history.</li>
+      </ul>
+      <div class="kpis">
+        <div class="kpi"><span class="value">1.8%</span><span class="label">Campaign 1 baseline OOS return</span></div>
+        <div class="kpi"><span class="value">79.2%</span><span class="label">Campaign 2 L1 OOS return</span></div>
+        <div class="kpi"><span class="value">1.99</span><span class="label">Campaign 2 L1 OOS Sharpe</span></div>
+        <div class="kpi"><span class="value">-14.6%</span><span class="label">Campaign 2 L1 OOS max drawdown</span></div>
+      </div>
+    </section>
+
+    <section data-contract-section="key-findings">
+      <h2>Campaign 1 failed because it under-participated in upside</h2>
+      <p><strong>The first campaign should remain a research negative.</strong> The baseline strategy generated 1.8% OOS return versus roughly 60.4% for SPY buy-and-hold in the report. Its main positive was stress drawdown containment, but that came with too much opportunity cost in the OOS period.</p>
+      <p><strong>The reported Phase 1 improvement should not be used as promotion evidence.</strong> The markdown table labeled the promoted family as if it improved OOS performance, but the supporting JSON shows true OOS return of 1.6% and OOS Sharpe of 0.144. The apparent stronger return came from full-sample metrics, not true OOS evidence.</p>
+      <figure>
+        <img src="assets/headline_oos_return.png" alt="Out-of-sample return comparison across Campaign 1, Campaign 2, and SPY controls">
+        <figcaption>Campaign 2 changes the investment case from a weak per-name trading strategy to a credible portfolio-level candidate.</figcaption>
+      </figure>
+      <table><thead><tr><th>Arm</th><th>OOS return</th><th>OOS Sharpe</th><th>OOS max DD</th><th>Management read</th></tr></thead><tbody><tr><td>Campaign 1 baseline</td><td>1.8%</td><td>0.161</td><td>-8.1%</td><td>Not investable</td></tr><tr><td>Campaign 1 Phase 1, corrected OOS</td><td>1.6%</td><td>0.144</td><td>-8.1%</td><td>Reject</td></tr><tr><td>Campaign 2 L0</td><td>87.8%</td><td>1.898</td><td>-16.0%</td><td>Best raw OOS return</td></tr><tr><td>Campaign 2 L1</td><td>79.2%</td><td>1.987</td><td>-14.6%</td><td>Best supported arm</td></tr><tr><td>Campaign 2 L2</td><td>58.7%</td><td>1.712</td><td>-16.1%</td><td>Reject HMM brake</td></tr><tr><td>SPY buy-hold control</td><td>60.3%</td><td>1.298</td><td>-18.7%</td><td>Benchmark</td></tr></tbody></table>
+    </section>
+
+    <section data-contract-section="key-findings">
+      <h2>Campaign 2 validates the portfolio-layer direction, with L1 as the only promoted layer</h2>
+      <p><strong>The redesign answers the first campaign's main failure mode.</strong> Campaign 2 starts from full ownership of the 30-name basket, then tests whether overlays improve risk-adjusted return. L0 delivered the best raw OOS return at 87.8%, while L1 gave up less than 10% relative OOS return and improved both Sharpe and Calmar.</p>
+      <p><strong>The best management read is L1, not the highest-return arm.</strong> L1 is less aggressive than L0, has much lower full-period drawdown (-21.7% versus -33.8%), beats SPY buy-and-hold on OOS return and Sharpe, and passes the pre-registered control hurdle against SPY 200dma on OOS Sharpe.</p>
+      <figure>
+        <img src="assets/campaign2_layer_ablation.png" alt="Campaign 2 layer ablation showing OOS return and OOS Sharpe by arm">
+        <figcaption>L1 is the only layer that earns promotion support; the HMM brake and momentum tilt fail the layer-ablation test.</figcaption>
+      </figure>
+      <table><thead><tr><th>Test</th><th>Result</th><th>Evidence</th></tr></thead><tbody><tr><td>L1 vs L0</td><td>Supported</td><td>OOS return degradation 9.8% with higher Sharpe and Calmar</td></tr><tr><td>L2 vs L1</td><td>Not supported</td><td>OOS return falls to 58.7%; turnover rises to 25.4x</td></tr><tr><td>L3 vs L2</td><td>Not supported</td><td>OOS Sharpe falls to 1.334 and max drawdown worsens</td></tr><tr><td>L1 vs SPY 200dma</td><td>Passes control hurdle</td><td>OOS Sharpe 1.987 versus 1.183</td></tr><tr><td>L1 at 2x costs</td><td>not_cost_fragile</td><td>OOS return 79.3%; OOS Sharpe 1.987</td></tr></tbody></table>
+    </section>
+
+    <section data-contract-section="key-findings">
+      <h2>The HMM brake helps in stress but does not pay for its complexity</h2>
+      <p><strong>L2's problem is not that it never reduces risk; it is that the cost of that protection is too high.</strong> The HMM brake improves some stress-window drawdowns, but it cuts OOS return from 79.2% to 58.7%, lowers OOS Sharpe from 1.987 to 1.712, and increases annualized turnover from 1.55x to 25.43x.</p>
+      <p><strong>L3 compounds the issue.</strong> Momentum tilt increases turnover to 41.24x and lowers OOS Sharpe to 1.334. These layers should stay out of defaults until they clear an independent OOS or paper-trading gate.</p>
+      <figure>
+        <img src="assets/campaign2_complexity_cost.png" alt="Campaign 2 turnover and cost comparison for L0 through L3">
+        <figcaption>Complexity accelerates after L1 while return quality deteriorates, which argues against promoting L2 or L3.</figcaption>
+      </figure>
+    </section>
+
+    <section data-contract-section="recommended-next-steps">
+      <h2>Recommended Next Steps</h2>
+      <ol class="recommendations">
+        <li><strong>Approve L1 for a limited paper-trading pilot.</strong> Run L1 side-by-side against L0, SPY buy-hold, SPY 200dma, and the current live/paper agent behavior using identical data, fill, cost, and rebalance assumptions.</li>
+        <li><strong>Do not change production defaults yet.</strong> No live capital or default agent behavior should change until L1 survives a live paper window and a fresh walk-forward rerun.</li>
+        <li><strong>Retire Campaign 1's per-name HMM strategy as a capital candidate.</strong> Keep it only as a research input or diagnostic stress filter; it failed the economic OOS test.</li>
+        <li><strong>Do not promote the HMM brake or momentum tilt.</strong> L2 and L3 should remain research arms because they fail the pre-registered layer support rules and add substantial turnover.</li>
+        <li><strong>Fix and lock the Campaign 1 reporting correction.</strong> The Phase 1 table should distinguish full-sample metrics from true OOS metrics before the report is reused in any approval package.</li>
+      </ol>
+    </section>
+
+    <section data-contract-section="further-questions">
+      <h2>Further Questions Before Any Production Decision</h2>
+      <ul>
+        <li>Does L1 still beat L0 and SPY controls after a fresh walk-forward rerun with a later OOS boundary or rolling OOS windows?</li>
+        <li>How does L1 behave under current paper execution, including actual broker fills, residual cash, tax/friction assumptions, and rebalance timing?</li>
+        <li>What is the minimum monitoring framework for L1: volatility breach, drawdown trigger, correlation spike, exposure cap, and monthly review cadence?</li>
+        <li>Can a simpler non-HMM drawdown control replicate the stress benefit of L2 without the turnover penalty?</li>
+      </ul>
+    </section>
+
+    <section data-contract-section="caveats-and-assumptions">
+      <h2>Caveats and Assumptions</h2>
+      <div class="callout">
+        <p><strong>Campaigns are not perfectly like-for-like.</strong> Campaign 1 tested per-name HMM trading; Campaign 2 tested a portfolio-level layer stack. The comparison is decision-useful because both target the same 30-name basket and OOS boundary, but the performance jump should be attributed to the portfolio architecture rather than HMM forecast quality.</p>
+        <p><strong>The OOS window is still limited.</strong> Campaign 2's strongest OOS evidence starts January 1, 2024, a market period favorable to equity participation. Treat L1 as paper-ready, not production-ready.</p>
+        <p><strong>Sources reviewed.</strong> Primary inputs were ALPHA_CAMPAIGN_REPORT.md, ALPHA_CAMPAIGN_2_REPORT.md, data/campaign/phase0/summary.json, Campaign 1 Phase 1 supporting JSON, and data/campaign/portfolio_campaign2/summary.json.</p>
+      </div>
+    </section>
+  </main>
+</body>
+</html>

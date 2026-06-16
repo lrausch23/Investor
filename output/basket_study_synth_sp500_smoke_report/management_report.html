@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Basket Construction Study</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #111827; margin: 28px; line-height: 1.45; }
+    table { border-collapse: collapse; width: 100%; max-width: 1200px; margin: 12px 0 24px; font-size: 13px; }
+    th, td { border: 1px solid #e5e7eb; padding: 7px 9px; text-align: right; vertical-align: top; }
+    th:first-child, td:first-child, td.text, th.text { text-align: left; }
+    th { background: #f3f4f6; }
+    .banner { max-width: 1200px; border: 1px solid #f59e0b; background: #fffbeb; border-radius: 8px; padding: 12px 14px; }
+    .cards { display: grid; grid-template-columns: repeat(4, minmax(180px, 1fr)); gap: 12px; max-width: 1200px; margin: 16px 0; }
+    .card { border: 1px solid #d1d5db; border-radius: 8px; padding: 12px; }
+    .label { color: #6b7280; font-size: 12px; }
+    .value { font-size: 20px; font-weight: 700; }
+  </style>
+</head>
+<body>
+  <h1>Basket Construction Study</h1>
+  <p>Window <code>2020-01-01</code> to <code>2020-03-31</code>; OOS starts <code>2020-03-01</code>. Snapshot <code>a1339731b6add0b2750493395f5a5f4e6d48622927db47e31d27ff47505f098e</code>.</p>
+  <div class="banner">Research-only. Gate status: <strong>research_only_not_certifiable</strong>. Verdict: <strong>kill_switch_fail</strong>. Production defaults changed: <strong>No</strong>.</div>
+  <section class="cards">
+    <div class="card"><div class="label">Best rule</div><div class="value">A1_pure_momentum</div></div>
+    <div class="card"><div class="label">Data readiness</div><div class="value">partial_pit</div></div>
+    <div class="card"><div class="label">EDGAR validation</div><div class="value">MISSING</div></div>
+    <div class="card"><div class="label">Survivorship delta</div><div class="value">$492</div></div>
+  </section>
+  <h2>Results</h2>
+  <table><thead><tr><th class="text">Arm</th><th class="">After-tax Wealth</th><th class="">Pre-tax Wealth</th><th class="">Return</th><th class="">CAGR</th><th class="">Sharpe</th><th class="">Sortino</th><th class="">Max DD</th><th class="">Calmar</th><th class="">Ulcer</th><th class="">Turnover</th><th class="">Costs</th><th class="">Trades</th><th class="">Skew</th><th class="">Win Rate</th></tr></thead><tbody><tr><td class="text">C0_static_basket</td><td>$556</td><td>$556</td><td>0.00%</td><td>0.00%</td><td>n/a</td><td>n/a</td><td>0.00%</td><td>n/a</td><td>0.00%</td><td>403.99%</td><td>$50</td><td>12</td><td>0.87</td><td>0.00%</td></tr><tr><td class="text">C0b_static_pit</td><td>$64</td><td>$64</td><td>0.00%</td><td>0.00%</td><td>n/a</td><td>n/a</td><td>0.00%</td><td>n/a</td><td>0.00%</td><td>405.99%</td><td>$50</td><td>5</td><td>1.86</td><td>0.00%</td></tr><tr><td class="text">A1_pure_momentum</td><td>$64</td><td>$64</td><td>0.00%</td><td>0.00%</td><td>n/a</td><td>n/a</td><td>0.00%</td><td>n/a</td><td>0.00%</td><td>405.99%</td><td>$50</td><td>5</td><td>1.86</td><td>0.00%</td></tr><tr><td class="text">A2_quality_momentum</td><td>$64</td><td>$64</td><td>0.00%</td><td>0.00%</td><td>n/a</td><td>n/a</td><td>0.00%</td><td>n/a</td><td>0.00%</td><td>405.99%</td><td>$50</td><td>5</td><td>1.86</td><td>0.00%</td></tr><tr><td class="text">A3_momentum_valuation_cap</td><td>$64</td><td>$64</td><td>0.00%</td><td>0.00%</td><td>n/a</td><td>n/a</td><td>0.00%</td><td>n/a</td><td>0.00%</td><td>405.99%</td><td>$50</td><td>5</td><td>1.86</td><td>0.00%</td></tr><tr><td class="text">A4_quality_momentum_valuation</td><td>$64</td><td>$64</td><td>0.00%</td><td>0.00%</td><td>n/a</td><td>n/a</td><td>0.00%</td><td>n/a</td><td>0.00%</td><td>405.99%</td><td>$50</td><td>5</td><td>1.86</td><td>0.00%</td></tr><tr><td class="text">static_basket_equal_weight</td><td>$556</td><td>$556</td><td>0.00%</td><td>0.00%</td><td>n/a</td><td>n/a</td><td>0.00%</td><td>n/a</td><td>0.00%</td><td>403.99%</td><td>$50</td><td>12</td><td>0.87</td><td>0.00%</td></tr><tr><td class="text">SPY_buy_hold</td><td>$80,405</td><td>$80,405</td><td>-19.55%</td><td>-59.30%</td><td>-1.25</td><td>-1.57</td><td>-33.66%</td><td>-1.76</td><td>13.79%</td><td>406.05%</td><td>$50</td><td>1</td><td>n/a</td><td>n/a</td></tr><tr><td class="text">L1_vol_target</td><td>$88,208</td><td>$88,208</td><td>-11.79%</td><td>-40.45%</td><td>-1.96</td><td>-2.61</td><td>-18.77%</td><td>-2.15</td><td>9.20%</td><td>0.00%</td><td>$0</td><td>0</td><td>n/a</td><td>n/a</td></tr></tbody></table>
+  <h2>Survivorship Bias Delta</h2>
+  <pre>{
+  &quot;after_tax_terminal_wealth_delta&quot;: 492.00839302616623,
+  &quot;cagr_delta&quot;: 0.0,
+  &quot;definition&quot;: &quot;C0_static_basket minus C0b_static_pit&quot;,
+  &quot;total_return_delta&quot;: 0.0
+}</pre>
+  <h2>Performance By Year</h2>
+  <table><thead><tr><th class="text">Year</th><th class="">C0_static_basket</th><th class="">C0b_static_pit</th><th class="">A1_pure_momentum</th><th class="">A2_quality_momentum</th><th class="">A3_momentum_valuation_cap</th><th class="">A4_quality_momentum_valuation</th><th class="">static_basket_equal_weight</th><th class="">SPY_buy_hold</th><th class="">L1_vol_target</th></tr></thead><tbody></tbody></table>
+  <h2>Verdict</h2>
+  <p>No PIT selection rule beat the passive index after tax on risk-adjusted terms; recommend the passive index and stop basket-engine promotion.</p>
+  <h2>Reproduction</h2>
+  <pre>python -m src.regime.cli basket-study run --start 2020-01-01 --end 2020-03-31 --oos-start 2020-03-01 --store-dir data/sharadar --basket data/campaign/basket.json --campaign-dir data/campaign/basket_study_synth_sp500_smoke --report-dir output/basket_study_synth_sp500_smoke_report</pre>
+  <h2>Limitations</h2>
+  <ul><li>Research-only. No production trading defaults changed.</li><li>Certifiable status requires survivorship_free readiness and a PASSING EDGAR validation artifact tied to the same data snapshot hash.</li><li>The passive index benchmark is a synthesized cap-weighted S&amp;P 500 total-return proxy built from Sharadar SP500 membership, SEP adjusted prices, and DAILY market caps.</li><li>Selection uses local Sharadar PIT data only; no yfinance fallback is allowed.</li></ul>
+</body>
+</html>

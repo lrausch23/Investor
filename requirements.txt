@@ -35,3 +35,4 @@ streamlit==1.55.0
 torch==2.8.0
 vaderSentiment==3.3.2
 yfinance==0.2.66
+nasdaq-data-link==1.0.4

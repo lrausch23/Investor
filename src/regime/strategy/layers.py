@@ -52,7 +52,14 @@ class PriceHistorySignalProvider:
             },
             index=normalized.index,
         )
-        for column in ("regime_label", "regime", "p_bull_day5", "p_bear_day5", "p_neutral_day5"):
+        for column in (
+            "regime_label",
+            "regime",
+            "p_bull_day5",
+            "p_bear_day5",
+            "p_neutral_day5",
+            "market_timing_confirmed",
+        ):
             if column in normalized.columns:
                 signals[column] = normalized[column]
         self._signals[str(ticker).upper()] = signals
@@ -67,7 +74,7 @@ class PriceHistorySignalProvider:
             return {}
         row = rows.iloc[-1]
         regime = str(row.get("regime_label") or row.get("regime") or "Bull")
-        return {
+        output = {
             "price": _as_float(row.get("price")),
             "open": _as_float(row.get("open")),
             "daily_return": _as_float(row.get("daily_return"), 0.0),
@@ -81,6 +88,9 @@ class PriceHistorySignalProvider:
             "p_bear_day5": _as_float(row.get("p_bear_day5")),
             "p_neutral_day5": _as_float(row.get("p_neutral_day5")),
         }
+        if "market_timing_confirmed" in row:
+            output["market_timing_confirmed"] = bool(row.get("market_timing_confirmed", False))
+        return output
 
     def prepared_frame(self, ticker: str) -> pd.DataFrame:
         frame = self._signals.get(str(ticker).upper())
@@ -119,7 +129,13 @@ class RegimeHMMSignalProvider(PriceHistorySignalProvider):
         )
         previous_regime: str | None = None
         rows: dict[pd.Timestamp, dict[str, SignalValue]] = {}
-        for date in normalized.index:
+        last_refit_idx: int | None = None
+        min_history = max(90, self.lookback_window + 10)
+        for idx, date in enumerate(normalized.index):
+            if idx + 1 < min_history:
+                continue
+            if last_refit_idx is not None and idx - last_refit_idx < max(1, self.refit_step):
+                continue
             history = normalized.loc[:date]
             signal = provider(str(ticker).upper(), pd.Timestamp(date), history, config, previous_regime)
             if signal is None:
@@ -137,6 +153,7 @@ class RegimeHMMSignalProvider(PriceHistorySignalProvider):
                 "composite_strength": signal.composite_strength,
             }
             previous_regime = signal.regime
+            last_refit_idx = idx
         if not rows:
             return
         base = self._signals[str(ticker).upper()].copy()
@@ -251,6 +268,32 @@ class RegimeBrakeOverride:
             reasons=reasons,
             reason=", ".join(portfolio_reasons) if portfolio_reasons else "per_name_regime_exclusion",
         )
+
+
+@register_layer("override", "market_timing_brake")
+class MarketTimingBrakeOverride:
+    """Portfolio-level brake driven by a precomputed market timing signal.
+
+    Campaign runners can copy a benchmark timing state onto each investable
+    row. The override then caps exposure without making the benchmark an
+    eligible portfolio holding.
+    """
+
+    def __init__(self, cap: float = 0.0, signal_column: str = "market_timing_confirmed", missing_is_safe: bool = True) -> None:
+        self.cap = float(cap)
+        self.signal_column = str(signal_column)
+        self.missing_is_safe = bool(missing_is_safe)
+
+    def override(self, date: pd.Timestamp, portfolio_state: dict[str, Any], signal_map: SignalMap) -> ExposureOverride | None:
+        del date, portfolio_state
+        values = [bool(row.get(self.signal_column)) for row in signal_map.values() if self.signal_column in row]
+        if not values:
+            if self.missing_is_safe:
+                return None
+            return ExposureOverride(exposure_cap=_clip(self.cap, 0.0, 1.0), reason=f"{self.signal_column}_missing")
+        if any(values):
+            return None
+        return ExposureOverride(exposure_cap=_clip(self.cap, 0.0, 1.0), reason=f"{self.signal_column}_false")
 
 
 @register_layer("allocation", "equal_weight")

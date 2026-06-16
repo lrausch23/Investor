@@ -853,6 +853,12 @@ def compute_equity_metrics(
     sharpe = None
     if std_daily > 0:
         sharpe = ((mean_daily - daily_rf) * 252.0) / (std_daily * math.sqrt(252.0))
+    downside = daily_returns - daily_rf
+    downside = downside.loc[downside < 0]
+    downside_std = float(downside.std(ddof=1)) if len(downside) > 1 else 0.0
+    sortino = None
+    if downside_std > 0:
+        sortino = ((mean_daily - daily_rf) * 252.0) / (downside_std * math.sqrt(252.0))
     total_return = float(equity.iloc[-1] / equity.iloc[0] - 1.0) if equity.iloc[0] else 0.0
     periods = max(1, len(equity) - 1)
     annualized_return = (1.0 + total_return) ** (252.0 / periods) - 1.0 if total_return > -1.0 else -1.0
@@ -886,6 +892,7 @@ def compute_equity_metrics(
         "annualized_return": annualized_return,
         "annualized_volatility": annualized_volatility,
         "sharpe_ratio": sharpe,
+        "sortino_ratio": sortino,
         "max_drawdown": float(drawdown.min()) if not drawdown.empty else 0.0,
         "win_rate": (len(wins) / len(trade_rows)) if trade_rows else None,
         "profit_factor": (gross_profit / gross_loss) if gross_loss > 0 else (None if gross_profit == 0 else math.inf),

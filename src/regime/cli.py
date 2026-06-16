@@ -63,6 +63,69 @@ from .portfolio_campaign import (
     render_campaign2_report,
     run_campaign2,
 )
+from .portfolio_historical_campaign import (
+    DEFAULT_HISTORICAL_CAMPAIGN_DIR,
+    DEFAULT_HISTORICAL_END,
+    DEFAULT_HISTORICAL_REPORT_DIR,
+    DEFAULT_HISTORICAL_REPORT_PATH,
+    DEFAULT_HISTORICAL_START,
+    historical_campaign_status,
+    render_historical_campaign_report,
+    run_historical_campaign,
+)
+from .portfolio_campaign3 import (
+    DEFAULT_CAMPAIGN3_DIR,
+    DEFAULT_CAMPAIGN3_END,
+    DEFAULT_CAMPAIGN3_REPORT_DIR,
+    DEFAULT_CAMPAIGN3_REPORT_PATH,
+    DEFAULT_CAMPAIGN3_START,
+    campaign3_status,
+    render_campaign3_report,
+    run_campaign3,
+)
+from .ccel_campaign import (
+    DEFAULT_CCEL_CAMPAIGN_DIR,
+    DEFAULT_CCEL_END,
+    DEFAULT_CCEL_OOS_START,
+    DEFAULT_CCEL_REPORT_DIR,
+    DEFAULT_CCEL_REPORT_PATH,
+    DEFAULT_CCEL_START,
+    ccel_campaign_status,
+    render_ccel_report,
+    run_ccel_campaign,
+)
+from .thematic_sleeve import (
+    DEFAULT_TCS_CAMPAIGN_DIR,
+    DEFAULT_TCS_END,
+    DEFAULT_TCS_OOS_START,
+    DEFAULT_TCS_REPORT_DIR,
+    DEFAULT_TCS_REPORT_PATH,
+    DEFAULT_TCS_START,
+    render_thematic_sleeve_report,
+    run_thematic_sleeve_campaign,
+    thematic_sleeve_campaign_status,
+)
+from .sharadar import DEFAULT_SHARADAR_DIR
+from .sharadar.ingest import DEFAULT_TABLES, ingest_sharadar, sharadar_status
+from .basket_study import (
+    DEFAULT_BASKET_STUDY_DIR,
+    DEFAULT_BASKET_STUDY_END,
+    DEFAULT_BASKET_STUDY_OOS_START,
+    DEFAULT_BASKET_STUDY_REPORT_DIR,
+    DEFAULT_BASKET_STUDY_REPORT_PATH,
+    DEFAULT_BASKET_STUDY_START,
+    basket_study_status,
+    render_basket_study_report,
+    run_basket_study,
+    validate_edgar_sample,
+)
+from .agent_research_loop import (
+    DEFAULT_AGENT_RESEARCH_DIR,
+    DEFAULT_AGENT_RESEARCH_LEDGER,
+    SNAPSHOT_D2CC,
+    run_h001_walk_forward_rescore,
+    run_stage2_go_live,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -101,6 +164,20 @@ def parse_args() -> argparse.Namespace:
     sweep_parser.add_argument("--hmm-covariance", choices=["diag", "full", "spherical", "tied"], default="diag")
     sweep_parser.add_argument("--hmm-n-seeds", type=int, default=1)
     sweep_parser.add_argument("--seed-agreement-min", type=float, default=0.8)
+    sharadar_parser = subparsers.add_parser("sharadar", help="Manage the local Sharadar point-in-time data snapshot.")
+    sharadar_subparsers = sharadar_parser.add_subparsers(dest="sharadar_command")
+    sharadar_ingest_parser = sharadar_subparsers.add_parser("ingest", help="Bulk-download Sharadar tables into the local store.")
+    sharadar_ingest_parser.add_argument("--store-dir", default=str(DEFAULT_SHARADAR_DIR))
+    sharadar_ingest_parser.add_argument("--tables", nargs="+", default=list(DEFAULT_TABLES))
+    sharadar_ingest_parser.add_argument("--with-sfp", action="store_true", help="Also ingest Sharadar SFP when separately entitled.")
+    sharadar_ingest_parser.add_argument("--refresh", action="store_true")
+    sharadar_status_parser = sharadar_subparsers.add_parser("status", help="Show the local Sharadar snapshot status.")
+    sharadar_status_parser.add_argument("--store-dir", default=str(DEFAULT_SHARADAR_DIR))
+    sharadar_validate_parser = sharadar_subparsers.add_parser("validate-sample", help="Write the EDGAR/SF1 validation artifact for the current Sharadar snapshot.")
+    sharadar_validate_parser.add_argument("--store-dir", default=str(DEFAULT_SHARADAR_DIR))
+    sharadar_validate_parser.add_argument("--output", default=None)
+    sharadar_validate_parser.add_argument("--sample-size", type=int, default=20)
+    sharadar_validate_parser.add_argument("--no-network", action="store_true", help="Write a fail-closed artifact without calling SEC EDGAR.")
     campaign_parser = subparsers.add_parser("alpha-campaign", help="Run the pre-registered regime alpha campaign.")
     campaign_subparsers = campaign_parser.add_subparsers(dest="campaign_command")
     select_parser = campaign_subparsers.add_parser("select-basket", help="Select and pin the campaign basket.")
@@ -129,6 +206,108 @@ def parse_args() -> argparse.Namespace:
     portfolio_report_parser.add_argument("--output", default=str(DEFAULT_CAMPAIGN2_REPORT_PATH))
     portfolio_status_parser = portfolio_subparsers.add_parser("status", help="Show Campaign 2 artifact status.")
     portfolio_status_parser.add_argument("--campaign-dir", default=str(DEFAULT_CAMPAIGN2_DIR))
+    historical_campaign_parser = subparsers.add_parser("portfolio-history-campaign", help="Run the expanded historical portfolio validation campaign.")
+    historical_subparsers = historical_campaign_parser.add_subparsers(dest="portfolio_history_command")
+    historical_run_parser = historical_subparsers.add_parser("run", help="Run the expanded historical portfolio campaign.")
+    historical_run_parser.add_argument("--resume", action="store_true")
+    historical_run_parser.add_argument("--basket", default=str(DEFAULT_BASKET_PATH))
+    historical_run_parser.add_argument("--campaign-dir", default=str(DEFAULT_HISTORICAL_CAMPAIGN_DIR))
+    historical_run_parser.add_argument("--report-dir", default=str(DEFAULT_HISTORICAL_REPORT_DIR))
+    historical_run_parser.add_argument("--start", default=DEFAULT_HISTORICAL_START)
+    historical_run_parser.add_argument("--end", default=DEFAULT_HISTORICAL_END)
+    historical_run_parser.add_argument("--skip-campaign1-baseline", action="store_true")
+    historical_report_parser = historical_subparsers.add_parser("report", help="Render the historical campaign management report.")
+    historical_report_parser.add_argument("--campaign-dir", default=str(DEFAULT_HISTORICAL_CAMPAIGN_DIR))
+    historical_report_parser.add_argument("--report-dir", default=str(DEFAULT_HISTORICAL_REPORT_DIR))
+    historical_report_parser.add_argument("--output", default=str(DEFAULT_HISTORICAL_REPORT_PATH))
+    historical_status_parser = historical_subparsers.add_parser("status", help="Show historical campaign artifact status.")
+    historical_status_parser.add_argument("--campaign-dir", default=str(DEFAULT_HISTORICAL_CAMPAIGN_DIR))
+    campaign3_parser = subparsers.add_parser("portfolio-campaign3", help="Run the L1 deep-validation campaign.")
+    campaign3_subparsers = campaign3_parser.add_subparsers(dest="portfolio_campaign3_command")
+    campaign3_run_parser = campaign3_subparsers.add_parser("run", help="Run Campaign 3 L1 deep validation.")
+    campaign3_run_parser.add_argument("--resume", action="store_true")
+    campaign3_run_parser.add_argument("--basket", default=str(DEFAULT_BASKET_PATH))
+    campaign3_run_parser.add_argument("--campaign-dir", default=str(DEFAULT_CAMPAIGN3_DIR))
+    campaign3_run_parser.add_argument("--report-dir", default=str(DEFAULT_CAMPAIGN3_REPORT_DIR))
+    campaign3_run_parser.add_argument("--start", default=DEFAULT_CAMPAIGN3_START)
+    campaign3_run_parser.add_argument("--end", default=DEFAULT_CAMPAIGN3_END)
+    campaign3_report_parser = campaign3_subparsers.add_parser("report", help="Render the Campaign 3 management report.")
+    campaign3_report_parser.add_argument("--campaign-dir", default=str(DEFAULT_CAMPAIGN3_DIR))
+    campaign3_report_parser.add_argument("--report-dir", default=str(DEFAULT_CAMPAIGN3_REPORT_DIR))
+    campaign3_report_parser.add_argument("--output", default=str(DEFAULT_CAMPAIGN3_REPORT_PATH))
+    campaign3_status_parser = campaign3_subparsers.add_parser("status", help="Show Campaign 3 artifact status.")
+    campaign3_status_parser.add_argument("--campaign-dir", default=str(DEFAULT_CAMPAIGN3_DIR))
+    ccel_parser = subparsers.add_parser("ccel-campaign", help="Run the research-only CCEL v1a proxy campaign.")
+    ccel_subparsers = ccel_parser.add_subparsers(dest="ccel_campaign_command")
+    ccel_run_parser = ccel_subparsers.add_parser("run", help="Run CCEL v1a research proxy.")
+    ccel_run_parser.add_argument("--resume", action="store_true")
+    ccel_run_parser.add_argument("--basket", default=str(DEFAULT_BASKET_PATH))
+    ccel_run_parser.add_argument("--campaign-dir", default=str(DEFAULT_CCEL_CAMPAIGN_DIR))
+    ccel_run_parser.add_argument("--report-dir", default=str(DEFAULT_CCEL_REPORT_DIR))
+    ccel_run_parser.add_argument("--start", default=DEFAULT_CCEL_START)
+    ccel_run_parser.add_argument("--end", default=DEFAULT_CCEL_END)
+    ccel_run_parser.add_argument("--oos-start", default=DEFAULT_CCEL_OOS_START)
+    ccel_run_parser.add_argument("--data-source", choices=["proxy", "sharadar"], default="proxy")
+    ccel_run_parser.add_argument("--sharadar-store-dir", default=str(DEFAULT_SHARADAR_DIR))
+    ccel_report_parser = ccel_subparsers.add_parser("report", help="Render the CCEL management report.")
+    ccel_report_parser.add_argument("--campaign-dir", default=str(DEFAULT_CCEL_CAMPAIGN_DIR))
+    ccel_report_parser.add_argument("--report-dir", default=str(DEFAULT_CCEL_REPORT_DIR))
+    ccel_report_parser.add_argument("--output", default=str(DEFAULT_CCEL_REPORT_PATH))
+    ccel_status_parser = ccel_subparsers.add_parser("status", help="Show CCEL campaign artifact status.")
+    ccel_status_parser.add_argument("--campaign-dir", default=str(DEFAULT_CCEL_CAMPAIGN_DIR))
+    tcs_parser = subparsers.add_parser("thematic-sleeve-campaign", help="Run the research-only TCS static-theme proxy campaign.")
+    tcs_subparsers = tcs_parser.add_subparsers(dest="thematic_sleeve_campaign_command")
+    tcs_run_parser = tcs_subparsers.add_parser("run", help="Run TCS static-theme proxy.")
+    tcs_run_parser.add_argument("--resume", action="store_true")
+    tcs_run_parser.add_argument("--basket", default=str(DEFAULT_BASKET_PATH))
+    tcs_run_parser.add_argument("--campaign-dir", default=str(DEFAULT_TCS_CAMPAIGN_DIR))
+    tcs_run_parser.add_argument("--report-dir", default=str(DEFAULT_TCS_REPORT_DIR))
+    tcs_run_parser.add_argument("--start", default=DEFAULT_TCS_START)
+    tcs_run_parser.add_argument("--end", default=DEFAULT_TCS_END)
+    tcs_run_parser.add_argument("--oos-start", default=DEFAULT_TCS_OOS_START)
+    tcs_run_parser.add_argument("--data-source", choices=["proxy", "sharadar"], default="proxy")
+    tcs_run_parser.add_argument("--sharadar-store-dir", default=str(DEFAULT_SHARADAR_DIR))
+    tcs_report_parser = tcs_subparsers.add_parser("report", help="Render the TCS management report.")
+    tcs_report_parser.add_argument("--campaign-dir", default=str(DEFAULT_TCS_CAMPAIGN_DIR))
+    tcs_report_parser.add_argument("--report-dir", default=str(DEFAULT_TCS_REPORT_DIR))
+    tcs_report_parser.add_argument("--output", default=str(DEFAULT_TCS_REPORT_PATH))
+    tcs_status_parser = tcs_subparsers.add_parser("status", help="Show TCS campaign artifact status.")
+    tcs_status_parser.add_argument("--campaign-dir", default=str(DEFAULT_TCS_CAMPAIGN_DIR))
+    basket_study_parser = subparsers.add_parser("basket-study", help="Run the PIT basket construction study.")
+    basket_study_subparsers = basket_study_parser.add_subparsers(dest="basket_study_command")
+    basket_study_run_parser = basket_study_subparsers.add_parser("run", help="Run the PIT basket construction study.")
+    basket_study_run_parser.add_argument("--resume", action="store_true")
+    basket_study_run_parser.add_argument("--basket", default=str(DEFAULT_BASKET_PATH))
+    basket_study_run_parser.add_argument("--campaign-dir", default=str(DEFAULT_BASKET_STUDY_DIR))
+    basket_study_run_parser.add_argument("--report-dir", default=str(DEFAULT_BASKET_STUDY_REPORT_DIR))
+    basket_study_run_parser.add_argument("--store-dir", default=str(DEFAULT_SHARADAR_DIR))
+    basket_study_run_parser.add_argument("--start", default=DEFAULT_BASKET_STUDY_START)
+    basket_study_run_parser.add_argument("--end", default=DEFAULT_BASKET_STUDY_END)
+    basket_study_run_parser.add_argument("--oos-start", default=DEFAULT_BASKET_STUDY_OOS_START)
+    basket_study_report_parser = basket_study_subparsers.add_parser("report", help="Render the basket study management report.")
+    basket_study_report_parser.add_argument("--campaign-dir", default=str(DEFAULT_BASKET_STUDY_DIR))
+    basket_study_report_parser.add_argument("--report-dir", default=str(DEFAULT_BASKET_STUDY_REPORT_DIR))
+    basket_study_report_parser.add_argument("--output", default=str(DEFAULT_BASKET_STUDY_REPORT_PATH))
+    basket_study_status_parser = basket_study_subparsers.add_parser("status", help="Show basket study artifact status.")
+    basket_study_status_parser.add_argument("--campaign-dir", default=str(DEFAULT_BASKET_STUDY_DIR))
+    research_loop_parser = subparsers.add_parser("agent-research-loop", help="Run the research-only agent strategy loop.")
+    research_loop_subparsers = research_loop_parser.add_subparsers(dest="agent_research_loop_command")
+    research_loop_go_live = research_loop_subparsers.add_parser("go-live", help="Confirm readiness, seed the ARL ledger, and run the first supervised DEV-only hypothesis.")
+    research_loop_go_live.add_argument("--snapshot", default=SNAPSHOT_D2CC)
+    research_loop_go_live.add_argument("--research-dir", default=str(DEFAULT_AGENT_RESEARCH_DIR))
+    research_loop_go_live.add_argument("--ledger", default=str(DEFAULT_AGENT_RESEARCH_LEDGER))
+    research_loop_go_live.add_argument("--store-dir", default=str(DEFAULT_SHARADAR_DIR))
+    research_loop_go_live.add_argument("--basket", default=str(DEFAULT_BASKET_PATH))
+    research_loop_go_live.add_argument("--readiness-only", action="store_true", help="Stop after readiness confirmation and ledger seeding.")
+    research_loop_rescore = research_loop_subparsers.add_parser(
+        "rescore-h001-walkforward",
+        help="Append a walk-forward DEV OOS corrective re-score for H001 without touching the holdout.",
+    )
+    research_loop_rescore.add_argument("--snapshot", default=SNAPSHOT_D2CC)
+    research_loop_rescore.add_argument("--research-dir", default=str(DEFAULT_AGENT_RESEARCH_DIR))
+    research_loop_rescore.add_argument("--ledger", default=str(DEFAULT_AGENT_RESEARCH_LEDGER))
+    research_loop_rescore.add_argument("--store-dir", default=str(DEFAULT_SHARADAR_DIR))
+    research_loop_rescore.add_argument("--basket", default=str(DEFAULT_BASKET_PATH))
     parser.add_argument("--tickers", nargs="+", help="Tickers to analyze.")
     parser.add_argument("--benchmark", default="SOXX", help="Benchmark ticker. Default: SOXX")
     parser.add_argument("--period", default="3y", help="yfinance period string. Default: 3y")
@@ -519,6 +698,31 @@ def _build_report(
 
 def main() -> None:
     args = parse_args()
+    if getattr(args, "command", None) == "sharadar":
+        sharadar_command = getattr(args, "sharadar_command", None)
+        if sharadar_command == "ingest":
+            tables = list(getattr(args, "tables", list(DEFAULT_TABLES)))
+            if bool(getattr(args, "with_sfp", False)) and "SFP" not in {str(table).upper() for table in tables}:
+                tables.append("SFP")
+            payload = ingest_sharadar(
+                root=getattr(args, "store_dir", str(DEFAULT_SHARADAR_DIR)),
+                tables=tables,
+                refresh=bool(getattr(args, "refresh", False)),
+            )
+            print(json.dumps(payload, indent=2))
+            return
+        if sharadar_command == "status":
+            print(json.dumps(sharadar_status(getattr(args, "store_dir", str(DEFAULT_SHARADAR_DIR))), indent=2))
+            return
+        if sharadar_command == "validate-sample":
+            print(json.dumps(validate_edgar_sample(
+                store_dir=getattr(args, "store_dir", str(DEFAULT_SHARADAR_DIR)),
+                output_path=getattr(args, "output", None),
+                sample_size=int(getattr(args, "sample_size", 20)),
+                allow_network=not bool(getattr(args, "no_network", False)),
+            ), indent=2))
+            return
+        raise SystemExit("sharadar requires one of: ingest, status, validate-sample")
     if getattr(args, "command", None) == "alpha-campaign":
         campaign_command = getattr(args, "campaign_command", None)
         if campaign_command == "select-basket":
@@ -575,6 +779,164 @@ def main() -> None:
             print(json.dumps(campaign2_status(getattr(args, "campaign_dir", str(DEFAULT_CAMPAIGN2_DIR))), indent=2))
             return
         raise SystemExit("portfolio-campaign requires one of: run, report, status")
+    if getattr(args, "command", None) == "portfolio-history-campaign":
+        history_command = getattr(args, "portfolio_history_command", None)
+        if history_command == "run":
+            payload = run_historical_campaign(
+                basket_path=getattr(args, "basket", str(DEFAULT_BASKET_PATH)),
+                campaign_dir=getattr(args, "campaign_dir", str(DEFAULT_HISTORICAL_CAMPAIGN_DIR)),
+                report_dir=getattr(args, "report_dir", str(DEFAULT_HISTORICAL_REPORT_DIR)),
+                start=getattr(args, "start", DEFAULT_HISTORICAL_START),
+                end=getattr(args, "end", DEFAULT_HISTORICAL_END),
+                resume=bool(getattr(args, "resume", False)),
+                include_campaign1_baseline=not bool(getattr(args, "skip_campaign1_baseline", False)),
+            )
+            print(json.dumps(payload, indent=2))
+            return
+        if history_command == "report":
+            report_path = render_historical_campaign_report(
+                campaign_dir=getattr(args, "campaign_dir", str(DEFAULT_HISTORICAL_CAMPAIGN_DIR)),
+                output_dir=getattr(args, "report_dir", str(DEFAULT_HISTORICAL_REPORT_DIR)),
+                output_path=getattr(args, "output", str(DEFAULT_HISTORICAL_REPORT_PATH)),
+            )
+            print(str(report_path))
+            return
+        if history_command == "status":
+            print(json.dumps(historical_campaign_status(getattr(args, "campaign_dir", str(DEFAULT_HISTORICAL_CAMPAIGN_DIR))), indent=2))
+            return
+        raise SystemExit("portfolio-history-campaign requires one of: run, report, status")
+    if getattr(args, "command", None) == "portfolio-campaign3":
+        campaign3_command = getattr(args, "portfolio_campaign3_command", None)
+        if campaign3_command == "run":
+            payload = run_campaign3(
+                basket_path=getattr(args, "basket", str(DEFAULT_BASKET_PATH)),
+                campaign_dir=getattr(args, "campaign_dir", str(DEFAULT_CAMPAIGN3_DIR)),
+                report_dir=getattr(args, "report_dir", str(DEFAULT_CAMPAIGN3_REPORT_DIR)),
+                start=getattr(args, "start", DEFAULT_CAMPAIGN3_START),
+                end=getattr(args, "end", DEFAULT_CAMPAIGN3_END),
+                resume=bool(getattr(args, "resume", False)),
+            )
+            print(json.dumps(payload, indent=2))
+            return
+        if campaign3_command == "report":
+            report_path = render_campaign3_report(
+                campaign_dir=getattr(args, "campaign_dir", str(DEFAULT_CAMPAIGN3_DIR)),
+                output_dir=getattr(args, "report_dir", str(DEFAULT_CAMPAIGN3_REPORT_DIR)),
+                output_path=getattr(args, "output", str(DEFAULT_CAMPAIGN3_REPORT_PATH)),
+            )
+            print(str(report_path))
+            return
+        if campaign3_command == "status":
+            print(json.dumps(campaign3_status(getattr(args, "campaign_dir", str(DEFAULT_CAMPAIGN3_DIR))), indent=2))
+            return
+        raise SystemExit("portfolio-campaign3 requires one of: run, report, status")
+    if getattr(args, "command", None) == "ccel-campaign":
+        ccel_command = getattr(args, "ccel_campaign_command", None)
+        if ccel_command == "run":
+            payload = run_ccel_campaign(
+                basket_path=getattr(args, "basket", str(DEFAULT_BASKET_PATH)),
+                campaign_dir=getattr(args, "campaign_dir", str(DEFAULT_CCEL_CAMPAIGN_DIR)),
+                report_dir=getattr(args, "report_dir", str(DEFAULT_CCEL_REPORT_DIR)),
+                start=getattr(args, "start", DEFAULT_CCEL_START),
+                end=getattr(args, "end", DEFAULT_CCEL_END),
+                oos_start=getattr(args, "oos_start", DEFAULT_CCEL_OOS_START),
+                resume=bool(getattr(args, "resume", False)),
+                data_source=getattr(args, "data_source", "proxy"),
+                sharadar_store_dir=getattr(args, "sharadar_store_dir", str(DEFAULT_SHARADAR_DIR)),
+            )
+            print(json.dumps(payload, indent=2))
+            return
+        if ccel_command == "report":
+            report_path = render_ccel_report(
+                campaign_dir=getattr(args, "campaign_dir", str(DEFAULT_CCEL_CAMPAIGN_DIR)),
+                output_dir=getattr(args, "report_dir", str(DEFAULT_CCEL_REPORT_DIR)),
+                output_path=getattr(args, "output", str(DEFAULT_CCEL_REPORT_PATH)),
+            )
+            print(str(report_path))
+            return
+        if ccel_command == "status":
+            print(json.dumps(ccel_campaign_status(getattr(args, "campaign_dir", str(DEFAULT_CCEL_CAMPAIGN_DIR))), indent=2))
+            return
+        raise SystemExit("ccel-campaign requires one of: run, report, status")
+    if getattr(args, "command", None) == "thematic-sleeve-campaign":
+        tcs_command = getattr(args, "thematic_sleeve_campaign_command", None)
+        if tcs_command == "run":
+            payload = run_thematic_sleeve_campaign(
+                basket_path=getattr(args, "basket", str(DEFAULT_BASKET_PATH)),
+                campaign_dir=getattr(args, "campaign_dir", str(DEFAULT_TCS_CAMPAIGN_DIR)),
+                report_dir=getattr(args, "report_dir", str(DEFAULT_TCS_REPORT_DIR)),
+                start=getattr(args, "start", DEFAULT_TCS_START),
+                end=getattr(args, "end", DEFAULT_TCS_END),
+                oos_start=getattr(args, "oos_start", DEFAULT_TCS_OOS_START),
+                resume=bool(getattr(args, "resume", False)),
+                data_source=getattr(args, "data_source", "proxy"),
+                sharadar_store_dir=getattr(args, "sharadar_store_dir", str(DEFAULT_SHARADAR_DIR)),
+            )
+            print(json.dumps(payload, indent=2))
+            return
+        if tcs_command == "report":
+            report_path = render_thematic_sleeve_report(
+                campaign_dir=getattr(args, "campaign_dir", str(DEFAULT_TCS_CAMPAIGN_DIR)),
+                output_dir=getattr(args, "report_dir", str(DEFAULT_TCS_REPORT_DIR)),
+                output_path=getattr(args, "output", str(DEFAULT_TCS_REPORT_PATH)),
+            )
+            print(str(report_path))
+            return
+        if tcs_command == "status":
+            print(json.dumps(thematic_sleeve_campaign_status(getattr(args, "campaign_dir", str(DEFAULT_TCS_CAMPAIGN_DIR))), indent=2))
+            return
+        raise SystemExit("thematic-sleeve-campaign requires one of: run, report, status")
+    if getattr(args, "command", None) == "basket-study":
+        basket_command = getattr(args, "basket_study_command", None)
+        if basket_command == "run":
+            payload = run_basket_study(
+                basket_path=getattr(args, "basket", str(DEFAULT_BASKET_PATH)),
+                campaign_dir=getattr(args, "campaign_dir", str(DEFAULT_BASKET_STUDY_DIR)),
+                report_dir=getattr(args, "report_dir", str(DEFAULT_BASKET_STUDY_REPORT_DIR)),
+                store_dir=getattr(args, "store_dir", str(DEFAULT_SHARADAR_DIR)),
+                start=getattr(args, "start", DEFAULT_BASKET_STUDY_START),
+                end=getattr(args, "end", DEFAULT_BASKET_STUDY_END),
+                oos_start=getattr(args, "oos_start", DEFAULT_BASKET_STUDY_OOS_START),
+                resume=bool(getattr(args, "resume", False)),
+            )
+            print(json.dumps(payload, indent=2))
+            return
+        if basket_command == "report":
+            report_path = render_basket_study_report(
+                campaign_dir=getattr(args, "campaign_dir", str(DEFAULT_BASKET_STUDY_DIR)),
+                output_dir=getattr(args, "report_dir", str(DEFAULT_BASKET_STUDY_REPORT_DIR)),
+                output_path=getattr(args, "output", str(DEFAULT_BASKET_STUDY_REPORT_PATH)),
+            )
+            print(str(report_path))
+            return
+        if basket_command == "status":
+            print(json.dumps(basket_study_status(getattr(args, "campaign_dir", str(DEFAULT_BASKET_STUDY_DIR))), indent=2))
+            return
+        raise SystemExit("basket-study requires one of: run, report, status")
+    if getattr(args, "command", None) == "agent-research-loop":
+        loop_command = getattr(args, "agent_research_loop_command", None)
+        if loop_command == "go-live":
+            payload = run_stage2_go_live(
+                expected_snapshot_hash=getattr(args, "snapshot", SNAPSHOT_D2CC),
+                research_dir=getattr(args, "research_dir", str(DEFAULT_AGENT_RESEARCH_DIR)),
+                ledger_path=getattr(args, "ledger", str(DEFAULT_AGENT_RESEARCH_LEDGER)),
+                store_dir=getattr(args, "store_dir", str(DEFAULT_SHARADAR_DIR)),
+                basket_path=getattr(args, "basket", str(DEFAULT_BASKET_PATH)),
+                run_hypothesis=not bool(getattr(args, "readiness_only", False)),
+            )
+            print(json.dumps(payload, indent=2))
+            return
+        if loop_command == "rescore-h001-walkforward":
+            payload = run_h001_walk_forward_rescore(
+                ledger_path=getattr(args, "ledger", str(DEFAULT_AGENT_RESEARCH_LEDGER)),
+                data_snapshot_hash=getattr(args, "snapshot", SNAPSHOT_D2CC),
+                research_dir=getattr(args, "research_dir", str(DEFAULT_AGENT_RESEARCH_DIR)),
+                store_dir=getattr(args, "store_dir", str(DEFAULT_SHARADAR_DIR)),
+                basket_path=getattr(args, "basket", str(DEFAULT_BASKET_PATH)),
+            )
+            print(json.dumps(payload, indent=2))
+            return
+        raise SystemExit("agent-research-loop requires one of: go-live, rescore-h001-walkforward")
     if getattr(args, "command", None) == "threshold-sweep":
         tickers = [str(ticker).strip().upper() for ticker in getattr(args, "tickers", []) if str(ticker).strip()]
         if not tickers:

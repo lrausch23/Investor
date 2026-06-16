@@ -12,6 +12,7 @@ scripts/com.investor.regime-beta.plist
 .DS_Store
 *.swp
 data/*
+data/sharadar/
 !data/.gitkeep
 !data/campaign/
 data/campaign/*

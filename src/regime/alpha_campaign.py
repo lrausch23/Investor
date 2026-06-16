@@ -4,7 +4,7 @@ import datetime as dt
 import json
 import logging
 import subprocess
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass, is_dataclass, replace
 from pathlib import Path
 from typing import Any, Callable
 
@@ -95,6 +95,8 @@ def _read_json(path: str | Path) -> Any:
 
 
 def _json_safe(value: Any) -> Any:
+    if is_dataclass(value) and not isinstance(value, type):
+        return _json_safe(asdict(value))
     if isinstance(value, dict):
         return {str(key): _json_safe(item) for key, item in value.items()}
     if isinstance(value, (list, tuple)):

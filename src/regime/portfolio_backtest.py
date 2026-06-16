@@ -25,6 +25,7 @@ class PortfolioBacktestConfig:
     oos_start: str | None = None
     integer_shares: bool = True
     risk_free_rate: float = 0.0
+    availability_mode: str = "common"
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -117,9 +118,9 @@ def run_portfolio_backtest(
     for ticker, frame in frames.items():
         signal_provider.prepare(ticker, frame)
 
-    common_dates = _common_dates(frames)
-    if len(common_dates) < 2:
-        raise ValueError("Portfolio backtest requires at least two shared trading dates.")
+    backtest_dates = _backtest_dates(frames, cfg.availability_mode)
+    if len(backtest_dates) < 2:
+        raise ValueError("Portfolio backtest requires at least two trading dates.")
 
     cash = float(cfg.starting_cash)
     positions: dict[str, PortfolioPosition] = {ticker: PortfolioPosition() for ticker in frames}
@@ -135,9 +136,17 @@ def run_portfolio_backtest(
     expected_costs = 0.0
     total_turnover = 0.0
     current_targets: dict[str, float] = {}
+    last_close_prices: dict[str, float] = {}
 
-    for idx, date in enumerate(common_dates):
-        open_prices = {ticker: float(frames[ticker].loc[date, "open"]) for ticker in frames}
+    for idx, date in enumerate(backtest_dates):
+        active_tickers = sorted(ticker for ticker, frame in frames.items() if date in frame.index)
+        if not active_tickers:
+            continue
+        open_prices = {ticker: float(frames[ticker].loc[date, "open"]) for ticker in active_tickers}
+        valuation_open_prices = {
+            ticker: open_prices.get(ticker, last_close_prices.get(ticker, 0.0))
+            for ticker in frames
+        }
         day_turnover = 0.0
         day_costs = 0.0
         if pending is not None:
@@ -146,8 +155,9 @@ def run_portfolio_backtest(
                 instruction=pending,
                 positions=positions,
                 cash=cash,
-                open_prices=open_prices,
+                open_prices=valuation_open_prices,
                 config=cfg,
+                tradable_tickers=set(active_tickers),
             )
             cash = cash_delta
             day_turnover += turnover_delta
@@ -158,7 +168,10 @@ def run_portfolio_backtest(
             current_targets = dict(pending.target_weights)
             pending = None
 
-        close_prices = {ticker: float(frames[ticker].loc[date, "price"]) for ticker in frames}
+        close_prices = dict(last_close_prices)
+        for ticker in active_tickers:
+            close_prices[ticker] = float(frames[ticker].loc[date, "price"])
+        last_close_prices.update({ticker: close_prices[ticker] for ticker in active_tickers})
         position_value = _position_value(positions, close_prices)
         equity = cash + position_value
         _assert_accounting(cash, position_value, equity)
@@ -178,14 +191,15 @@ def run_portfolio_backtest(
             "exposure": exposure,
             "turnover": turnover_pct,
             "costs_paid": day_costs,
+            "active_ticker_count": len(active_tickers),
         }
         equity_curve.append(row)
         daily_exposure.append({"date": row["date"], "exposure": exposure})
 
-        if idx >= len(common_dates) - 1:
+        if idx >= len(backtest_dates) - 1:
             continue
 
-        signal_map = {ticker: signal_provider.signals(ticker, pd.Timestamp(date)) for ticker in frames}
+        signal_map = {ticker: signal_provider.signals(ticker, pd.Timestamp(date)) for ticker in active_tickers}
         state = {
             "equity": equity,
             "cash": cash,
@@ -198,15 +212,18 @@ def run_portfolio_backtest(
         if override is not None:
             brake_log.append({"date": _date_text(date), **override.to_dict()})
         excluded = set(override.exclude_tickers if override is not None else ())
-        eligible = [ticker for ticker in sorted(frames) if ticker not in excluded]
+        eligible = [ticker for ticker in active_tickers if ticker not in excluded]
         target_exposure = _clip01(float(exposure_policy.target_exposure(pd.Timestamp(date), state, signal_map)))
         if override is not None and override.exposure_cap is not None:
             target_exposure = min(target_exposure, _clip01(float(override.exposure_cap)))
         target_weights = allocation_policy.weights(pd.Timestamp(date), eligible, signal_map) if target_exposure > 0 and eligible else {}
         target_weights = _normalize_weights(target_weights)
-        current_weights = {ticker: (positions[ticker].quantity * close_prices[ticker] / equity if equity > 0 else 0.0) for ticker in frames}
+        current_weights = {
+            ticker: (positions[ticker].quantity * float(close_prices.get(ticker, 0.0)) / equity if equity > 0 else 0.0)
+            for ticker in frames
+        }
         drift_state = {
-            "is_first_trading_day_month": idx == 0 or pd.Timestamp(date).month != pd.Timestamp(common_dates[idx - 1]).month,
+            "is_first_trading_day_month": idx == 0 or pd.Timestamp(date).month != pd.Timestamp(backtest_dates[idx - 1]).month,
             "relative_drifts": _relative_drifts(current_weights, target_weights, target_exposure),
             "current_weights": current_weights,
             "target_weights": target_weights,
@@ -302,13 +319,18 @@ def _execute_instruction(
     cash: float,
     open_prices: dict[str, float],
     config: PortfolioBacktestConfig,
+    tradable_tickers: set[str] | None = None,
 ) -> tuple[float, float, float, float, list[dict[str, Any]]]:
     equity_at_open = cash + _position_value(positions, open_prices)
     target_quantities: dict[str, float] = {}
+    tradable = set(open_prices) if tradable_tickers is None else {str(ticker).upper() for ticker in tradable_tickers}
     for ticker, position in positions.items():
+        if ticker not in tradable:
+            target_quantities[ticker] = position.quantity
+            continue
         weight = float(instruction.target_weights.get(ticker, 0.0)) * float(instruction.target_exposure)
         target_value = max(0.0, equity_at_open * weight)
-        price = float(open_prices[ticker])
+        price = float(open_prices.get(ticker, 0.0))
         if price <= 0:
             target_quantities[ticker] = position.quantity
             continue
@@ -326,7 +348,9 @@ def _execute_instruction(
         if delta >= -1e-9:
             continue
         quantity = min(position.quantity, abs(delta))
-        price = float(open_prices[ticker])
+        price = float(open_prices.get(ticker, 0.0))
+        if price <= 0 or ticker not in tradable:
+            continue
         notional = quantity * price
         cost = notional * max(0.0, float(config.exit_cost_bps)) / 10_000.0
         cash += notional - cost
@@ -344,7 +368,9 @@ def _execute_instruction(
         delta = target_qty - position.quantity
         if delta <= 1e-9:
             continue
-        price = float(open_prices[ticker])
+        price = float(open_prices.get(ticker, 0.0))
+        if price <= 0 or ticker not in tradable:
+            continue
         unit_cost = price * (1.0 + max(0.0, float(config.entry_cost_bps)) / 10_000.0)
         quantity = delta
         if config.integer_shares:
@@ -393,6 +419,18 @@ def _common_dates(frames: dict[str, pd.DataFrame]) -> list[pd.Timestamp]:
         dates = {pd.Timestamp(value).normalize() for value in frame.index}
         common = dates if common is None else common & dates
     return sorted(common or set())
+
+
+def _backtest_dates(frames: dict[str, pd.DataFrame], availability_mode: str) -> list[pd.Timestamp]:
+    mode = str(availability_mode or "common").strip().lower()
+    if mode == "common":
+        return _common_dates(frames)
+    if mode == "panel":
+        dates: set[pd.Timestamp] = set()
+        for frame in frames.values():
+            dates.update(pd.Timestamp(value).normalize() for value in frame.index)
+        return sorted(dates)
+    raise ValueError("availability_mode must be 'common' or 'panel'.")
 
 
 def _position_value(positions: dict[str, PortfolioPosition], prices: dict[str, float]) -> float:

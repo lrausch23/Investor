@@ -91,6 +91,7 @@ def test_scheduled_runner_formats_alert_summary(monkeypatch) -> None:
         "src.regime.scheduled_runner.check_signal_changes",
         lambda tickers: [SignalAlert("NVDA", "Hold", "Buy", "2026-03-24T12:00:00+00:00")],
     )
+    monkeypatch.setattr("src.regime.scheduled_runner.check_stop_proximity", lambda tickers, db_path: [])
     monkeypatch.setattr("src.regime.scheduled_runner.get_pending_transition_outcomes", lambda: [])
     monkeypatch.setattr("src.regime.scheduled_runner.get_latest_prices", lambda db_path, tickers: {})
     result = run_scheduled_regime_checks()

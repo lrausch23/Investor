@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Regime agent decision flow</title>
+<style>
+  body { font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; max-width: 780px; margin: 2rem auto; padding: 0 1rem; color: #1a1a1a; background: #fff; }
+  h1 { font-size: 22px; font-weight: 500; }
+  h2 { font-size: 17px; font-weight: 500; margin-top: 1.6em; }
+  p, li { font-size: 14.5px; line-height: 1.65; }
+  code { font-family: ui-monospace, Menlo, monospace; font-size: 12.5px; background: #f4f2ec; padding: 1px 5px; border-radius: 4px; }
+  .t  { font-size: 14px; fill: #1a1a1a; }
+  .ts { font-size: 12px; fill: #5f5e5a; }
+  .th { font-size: 14px; font-weight: 500; fill: #1a1a1a; }
+  .box { fill: #faf9f5; stroke: #d3d1c7; stroke-width: 0.5; }
+  .arr { stroke: #888780; stroke-width: 1.5; fill: none; }
+  .c-gray rect   { fill: #F1EFE8; stroke: #5F5E5A; stroke-width: 0.5; }
+  .c-gray .th    { fill: #444441; } .c-gray .ts { fill: #5F5E5A; }
+  .c-purple rect { fill: #EEEDFE; stroke: #534AB7; stroke-width: 0.5; }
+  .c-purple .th  { fill: #3C3489; } .c-purple .ts { fill: #534AB7; }
+  .c-teal rect   { fill: #E1F5EE; stroke: #0F6E56; stroke-width: 0.5; }
+  .c-teal .th    { fill: #085041; } .c-teal .ts { fill: #0F6E56; }
+  .c-coral rect  { fill: #FAECE7; stroke: #993C1D; stroke-width: 0.5; }
+  .c-coral .th   { fill: #712B13; } .c-coral .ts { fill: #993C1D; }
+  table { border-collapse: collapse; width: 100%; font-size: 13.5px; }
+  th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid #e6e4dd; vertical-align: top; }
+  th { font-weight: 500; }
+</style>
+</head>
+<body>
+<h1>Regime agent decision flow — how agents buy, sell, and hold</h1>
+<p>Annotated map of the production decision path. Stage numbers in the diagram correspond to the module annotations in the table below.</p>
+
+<svg width="100%" viewBox="0 0 680 1150" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Regime agent buy, sell, hold decision flow">
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M2 1L8 5L2 9" fill="none" stroke="#888780" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker></defs>
+
+<text x="40" y="30" class="ts">purple = signal models · teal = agents &amp; actions · coral = gates &amp; exits · gray = data / state</text>
+
+<text x="40" y="58" class="th">1 · How stocks are found</text>
+<g class="c-gray"><rect x="40" y="70" width="176" height="46" rx="4"/><text x="52" y="89" class="th">US stock universe</text><text x="52" y="104" class="ts">≥$5 · 3y history · liquid</text></g>
+<g class="c-purple"><rect x="232" y="70" width="176" height="46" rx="4"/><text x="244" y="89" class="th">Discovery scan</text><text x="244" y="104" class="ts">bull + low crowding</text></g>
+<g class="c-gray"><rect x="424" y="70" width="176" height="46" rx="4"/><text x="436" y="89" class="th">Watchlist</text><text x="436" y="104" class="ts">status: entry signal</text></g>
+<line x1="216" y1="93" x2="230" y2="93" class="arr" marker-end="url(#arrow)"/>
+<line x1="408" y1="93" x2="422" y2="93" class="arr" marker-end="url(#arrow)"/>
+
+<line x1="512" y1="116" x2="512" y2="144" class="arr"/>
+<line x1="110" y1="144" x2="569" y2="144" class="arr"/>
+<line x1="110" y1="144" x2="110" y2="158" class="arr" marker-end="url(#arrow)"/>
+<line x1="263" y1="144" x2="263" y2="158" class="arr" marker-end="url(#arrow)"/>
+<line x1="416" y1="144" x2="416" y2="158" class="arr" marker-end="url(#arrow)"/>
+<line x1="569" y1="144" x2="569" y2="158" class="arr" marker-end="url(#arrow)"/>
+
+<g class="c-teal"><rect x="40" y="162" width="138" height="46" rx="4"/><text x="50" y="181" class="th">Quant</text><text x="50" y="196" class="ts">regime + ML edge</text></g>
+<g class="c-teal"><rect x="193" y="162" width="138" height="46" rx="4"/><text x="203" y="181" class="th">Fundamental</text><text x="203" y="196" class="ts">quality and moat</text></g>
+<g class="c-teal"><rect x="346" y="162" width="138" height="46" rx="4"/><text x="356" y="181" class="th">Portfolio/tax</text><text x="356" y="196" class="ts">tax-aware sizing</text></g>
+<g class="c-teal"><rect x="499" y="162" width="138" height="46" rx="4"/><text x="509" y="181" class="th">Execution</text><text x="509" y="196" class="ts">liquidity + fills</text></g>
+
+<text x="40" y="250" class="th">2 · Daily signal engine</text>
+<line x1="340" y1="216" x2="340" y2="254" class="arr" marker-end="url(#arrow)"/>
+<g class="c-gray"><rect x="40" y="262" width="176" height="46" rx="4"/><text x="52" y="281" class="th">Market data</text><text x="52" y="296" class="ts">price, volume, VIX, 10y</text></g>
+<g class="c-purple"><rect x="232" y="262" width="176" height="46" rx="4"/><text x="244" y="281" class="th">HMM regime model</text><text x="244" y="296" class="ts">bull / neutral / bear</text></g>
+<g class="c-purple"><rect x="424" y="262" width="176" height="46" rx="4"/><text x="436" y="281" class="th">Forward curve</text><text x="436" y="296" class="ts">21-day probabilities</text></g>
+<line x1="216" y1="285" x2="230" y2="285" class="arr" marker-end="url(#arrow)"/>
+<line x1="408" y1="285" x2="422" y2="285" class="arr" marker-end="url(#arrow)"/>
+
+<g class="c-purple"><rect x="40" y="340" width="176" height="46" rx="4"/><text x="52" y="359" class="th">Technicals</text><text x="52" y="374" class="ts">RSI, MACD, Bollinger</text></g>
+<g class="c-teal"><rect x="232" y="340" width="176" height="46" rx="4"/><text x="244" y="359" class="th">Composite signal</text><text x="244" y="374" class="ts">buy / hold / sell</text></g>
+<g class="c-purple"><rect x="424" y="340" width="176" height="46" rx="4"/><text x="436" y="359" class="th">Meta-labeler</text><text x="436" y="374" class="ts">P(success), skill-gated</text></g>
+<line x1="320" y1="308" x2="320" y2="336" class="arr" marker-end="url(#arrow)"/>
+<line x1="216" y1="363" x2="228" y2="363" class="arr" marker-end="url(#arrow)"/>
+<path d="M512 308 V324 H400 V336" class="arr" marker-end="url(#arrow)"/>
+<line x1="320" y1="386" x2="320" y2="432" class="arr" marker-end="url(#arrow)"/>
+<line x1="512" y1="386" x2="512" y2="432" class="arr" marker-end="url(#arrow)"/>
+
+<rect x="40" y="436" width="600" height="124" rx="4" fill="none" stroke="#D85A30" stroke-width="0.5" stroke-dasharray="4 3"/>
+<text x="52" y="454" class="ts">3 · Entry gate stack — a buy must pass every gate</text>
+<g class="c-coral"><rect x="52" y="464" width="134" height="38" rx="4"/><text x="62" y="480" class="th">VIX freeze</text><text x="62" y="494" class="ts">halts new buys</text></g>
+<g class="c-coral"><rect x="198" y="464" width="134" height="38" rx="4"/><text x="208" y="480" class="th">Signal check</text><text x="208" y="494" class="ts">fresh ≤3 days</text></g>
+<g class="c-coral"><rect x="344" y="464" width="134" height="38" rx="4"/><text x="354" y="480" class="th">Anti-churn</text><text x="354" y="494" class="ts">round-trip cap</text></g>
+<g class="c-coral"><rect x="490" y="464" width="134" height="38" rx="4"/><text x="500" y="480" class="th">Hurdle rate</text><text x="500" y="494" class="ts">beats cost + tax</text></g>
+<g class="c-coral"><rect x="52" y="510" width="134" height="38" rx="4"/><text x="62" y="526" class="th">Duration gate</text><text x="62" y="540" class="ts">regime persists</text></g>
+<g class="c-coral"><rect x="198" y="510" width="134" height="38" rx="4"/><text x="208" y="526" class="th">Earnings</text><text x="208" y="540" class="ts">no buys ≤2 days</text></g>
+<g class="c-coral"><rect x="344" y="510" width="134" height="38" rx="4"/><text x="354" y="526" class="th">Drawdown halt</text><text x="354" y="540" class="ts">−5% stops buys</text></g>
+<g class="c-coral"><rect x="490" y="510" width="134" height="38" rx="4"/><text x="500" y="526" class="th">Seed check</text><text x="500" y="540" class="ts">HMM seeds agree</text></g>
+
+<line x1="560" y1="560" x2="560" y2="580" class="arr" marker-end="url(#arrow)"/>
+<g class="c-coral"><rect x="480" y="584" width="160" height="40" rx="4"/><text x="492" y="601" class="th">No entry</text><text x="492" y="616" class="ts">agent holds cash</text></g>
+<path d="M320 560 V586 H110 V614" class="arr" marker-end="url(#arrow)"/>
+<text x="240" y="606" class="th">4 · Size, approve, execute</text>
+
+<g class="c-teal"><rect x="40" y="620" width="138" height="46" rx="4"/><text x="50" y="639" class="th">Position size</text><text x="50" y="654" class="ts">2×ATR risk × ML</text></g>
+<g class="c-gray"><rect x="193" y="620" width="138" height="46" rx="4"/><text x="203" y="639" class="th">Trade plan</text><text x="203" y="654" class="ts">auto-approval</text></g>
+<g class="c-coral"><rect x="346" y="620" width="138" height="46" rx="4"/><text x="356" y="639" class="th">Guardrails</text><text x="356" y="654" class="ts">price + loss caps</text></g>
+<g class="c-teal"><rect x="499" y="620" width="138" height="46" rx="4"/><text x="509" y="639" class="th">Buy order</text><text x="509" y="654" class="ts">IBKR, limit price</text></g>
+<line x1="178" y1="643" x2="191" y2="643" class="arr" marker-end="url(#arrow)"/>
+<line x1="331" y1="643" x2="344" y2="643" class="arr" marker-end="url(#arrow)"/>
+<line x1="484" y1="643" x2="497" y2="643" class="arr" marker-end="url(#arrow)"/>
+
+<path d="M568 666 V686 H320 V710" class="arr" marker-end="url(#arrow)"/>
+<text x="40" y="708" class="th">5 · Manage the position daily</text>
+<g class="c-gray"><rect x="232" y="714" width="176" height="46" rx="4"/><text x="244" y="733" class="th">Open position</text><text x="244" y="748" class="ts">stop + target attached</text></g>
+<line x1="320" y1="760" x2="320" y2="780" class="arr" marker-end="url(#arrow)"/>
+
+<rect x="40" y="784" width="572" height="268" rx="4" fill="none" stroke="#888780" stroke-width="0.5" stroke-dasharray="4 3"/>
+<text x="52" y="802" class="ts">Exit ladder — checked in order, first match wins</text>
+
+<rect x="52" y="812" width="290" height="30" rx="4" class="box"/><text x="64" y="832" class="th">Profit target touched</text>
+<line x1="342" y1="827" x2="456" y2="827" class="arr" marker-end="url(#arrow)"/>
+<g class="c-coral"><rect x="460" y="812" width="130" height="30" rx="4"/><text x="525" y="832" class="th" text-anchor="middle">Sell all</text></g>
+
+<rect x="52" y="850" width="290" height="30" rx="4" class="box"/><text x="64" y="870" class="th">Stop or trailing stop hit</text>
+<line x1="342" y1="865" x2="456" y2="865" class="arr" marker-end="url(#arrow)"/>
+<g class="c-coral"><rect x="460" y="850" width="130" height="30" rx="4"/><text x="525" y="870" class="th" text-anchor="middle">Sell all</text></g>
+
+<rect x="52" y="888" width="290" height="30" rx="4" class="box"/><text x="64" y="908" class="th">Time stop — 21 calendar days</text>
+<line x1="342" y1="903" x2="456" y2="903" class="arr" marker-end="url(#arrow)"/>
+<g class="c-coral"><rect x="460" y="888" width="130" height="30" rx="4"/><text x="525" y="908" class="th" text-anchor="middle">Sell all</text></g>
+
+<rect x="52" y="926" width="290" height="30" rx="4" class="box"/><text x="64" y="946" class="th">Regime flips bear / sell signal</text>
+<line x1="342" y1="941" x2="456" y2="941" class="arr" marker-end="url(#arrow)"/>
+<g class="c-coral"><rect x="460" y="926" width="130" height="30" rx="4"/><text x="525" y="946" class="th" text-anchor="middle">Sell all</text></g>
+
+<rect x="52" y="964" width="290" height="30" rx="4" class="box"/><text x="64" y="984" class="th">Bull fades to neutral</text>
+<line x1="342" y1="979" x2="456" y2="979" class="arr" marker-end="url(#arrow)"/>
+<g class="c-coral"><rect x="460" y="964" width="130" height="30" rx="4"/><text x="525" y="984" class="th" text-anchor="middle">Sell half</text></g>
+
+<rect x="52" y="1002" width="290" height="30" rx="4" class="box"/><text x="64" y="1022" class="th">Nothing triggered</text>
+<line x1="342" y1="1017" x2="456" y2="1017" class="arr" marker-end="url(#arrow)"/>
+<g class="c-teal"><rect x="460" y="1002" width="130" height="30" rx="4"/><text x="525" y="1022" class="th" text-anchor="middle">Hold</text></g>
+
+<text x="52" y="1044" class="ts">LTCG tax override may trim or defer sell quantities</text>
+
+<path d="M590 1017 H630 V737 H414" fill="none" stroke="#1D9E75" stroke-width="1" stroke-dasharray="5 4" marker-end="url(#arrow)"/>
+
+<line x1="320" y1="1052" x2="320" y2="1068" class="arr" marker-end="url(#arrow)"/>
+<g class="c-gray"><rect x="210" y="1072" width="220" height="46" rx="4"/><text x="222" y="1091" class="th">Position closed</text><text x="222" y="1106" class="ts">logged, retrains the model</text></g>
+</svg>
+
+<h2>Stage annotations — where each step lives in the code</h2>
+<table>
+<tr><th>Stage</th><th>What happens</th><th>Code</th></tr>
+<tr><td>1 · Stock identification</td><td>Universe screen (≥$5, ≥756 trading days history, dollar-ADV floor, no leveraged/FX/bond funds) feeds discovery, which flags Bull-regime candidates with probability ≥ 0.55 and crowd score ≤ 40 onto the watchlist as "Entry Signal". Candidates route to all four agents; each applies its mandate filter.</td><td><code>universe.py</code> · <code>discovery.py</code> · <code>agent_candidate_intake.py</code> · <code>agent_policy.agent_candidate_policy</code></td></tr>
+<tr><td>2 · Signal engine</td><td>Per ticker daily: walk-forward 3-state HMM (504-day window, refit every 21 days, multi-seed agreement scoring) labels the regime; the transition matrix projects 21-day forward probabilities; technicals overlay; the composite signal emits buy/hold/sell with strength. The meta-labeler scores P(success) on managed-exit labels — calibrated, and only allowed to influence decisions if its out-of-fold AUC ≥ 0.55.</td><td><code>hmm_engine.fit_regime_model</code> · <code>signals.signal_from_forward_curve</code> · <code>signals.build_composite_signal</code> · <code>meta_labeler.MetaLabelerEngine.analyze</code></td></tr>
+<tr><td>3 · Entry gates</td><td>A buy candidate must pass every gate: VIX freeze (≥35 halts buys), signal freshness ≤ 3 days and price-drift check, anti-churn round-trip cap, hurdle rate net of execution cost and short-term tax, regime-duration minimum, earnings blackout ≤ 2 days, portfolio drawdown pause at −5%, and HMM seed agreement. Any failure → no entry; the agent holds cash.</td><td><code>paper_trading/planning.generate_buy_plans</code> · <code>signal_quality.py</code> · <code>anti_churn.py</code> · <code>hurdle_rate.py</code> · <code>vix_freeze.py</code> · <code>agent_policy.buy_pause_status</code></td></tr>
+<tr><td>4 · Size &amp; execute</td><td>Size = how many shares a 2×ATR stop can lose within the risk budget (2% of portfolio), scaled 0.5–1.0× by the meta-labeler's calibrated probability, dampened by beta and concentration. The plan is auto-approved by threshold, then broker guardrails (price collars, max position 10%, daily loss limits, trades/day) validate before the IBKR limit order. Stop/target geometry is recomputed from the actual routed fill price.</td><td><code>paper_trading/sizing._risk_adjusted_quantity</code> · <code>paper_trading/planning._actual_fill_trade_geometry</code> · <code>broker_adapter.validate_guardrails</code> · <code>order_routing.decide_routing</code></td></tr>
+<tr><td>5 · Daily management</td><td>The exit ladder runs daily in strict priority: profit target → stop/trailing stop (close-based ratchet: activates 1 ATR above entry, trails at 2×ATR, never moves down) → 21-calendar-day time stop → regime flip to Bear or composite Sell → Bull-to-Neutral deterioration sells half. If nothing triggers, the agent holds and ratchets the stop. The LTCG tax override may trim sells protecting lots near long-term status. Closed positions are logged and feed meta-labeler retraining.</td><td><code>paper_trading/planning.generate_exit_plans</code> · <code>paper_trading/planning.trailing_stop_level</code> · <code>ltcg_override.py</code> · <code>paper_trading/performance.record_trade_outcome</code></td></tr>
+</table>
+
+<p style="color:#5f5e5a; font-size: 13px;">Generated June 2026 from the post-review codebase (Tasks 1–8). The same pipeline is replayed by <code>pipeline_backtest.py</code> for validation, so this diagram also describes what the backtest simulates.</p>
+</body>
+</html>
