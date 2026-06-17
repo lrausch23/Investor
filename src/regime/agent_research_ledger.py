@@ -3,6 +3,7 @@ from __future__ import annotations
 import datetime as dt
 import hashlib
 import json
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -48,8 +49,12 @@ def append_trial(
         "trial": dict(trial),
     }
     record["record_hash"] = _record_hash(record)
-    with path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n")
+    existing = path.read_text(encoding="utf-8") if path.exists() else ""
+    payload = existing
+    if payload and not payload.endswith("\n"):
+        payload += "\n"
+    payload += json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n"
+    _atomic_write_text(path, payload)
     _write_state(path, sequence, str(record["record_hash"]))
     return record
 
@@ -118,7 +123,8 @@ def _read_state(path: Path) -> dict[str, Any]:
 
 def _write_state(path: Path, trial_count: int, last_hash: str) -> None:
     state_path = _state_path(path)
-    state_path.write_text(
+    _atomic_write_text(
+        state_path,
         json.dumps(
             {
                 "trial_count": int(trial_count),
@@ -128,5 +134,14 @@ def _write_state(path: Path, trial_count: int, last_hash: str) -> None:
             indent=2,
         )
         + "\n",
-        encoding="utf-8",
     )
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    with tmp.open("w", encoding="utf-8") as handle:
+        handle.write(text)
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(tmp, path)

@@ -123,9 +123,17 @@ from .agent_research_loop import (
     DEFAULT_AGENT_RESEARCH_DIR,
     DEFAULT_AGENT_RESEARCH_LEDGER,
     SNAPSHOT_D2CC,
+    agent_research_loop_status,
+    request_agent_research_loop_pause,
+    run_agent_research_loop,
+    run_agent_research_loop_resume,
     run_h001_walk_forward_rescore,
+    run_h002_quality_value_walk_forward,
     run_stage2_go_live,
 )
+from .rl_explore import DEFAULT_RL_EXPLORE_DIR, RLExploreConfig, pause_rl_explore, rl_explore_status, run_rl_explore
+from .rl_explore.agent import RLAgentConfig
+from .rl_explore.env import DEFAULT_SNAPSHOT_HASH, RLMarketEnvConfig
 
 
 def parse_args() -> argparse.Namespace:
@@ -308,6 +316,83 @@ def parse_args() -> argparse.Namespace:
     research_loop_rescore.add_argument("--ledger", default=str(DEFAULT_AGENT_RESEARCH_LEDGER))
     research_loop_rescore.add_argument("--store-dir", default=str(DEFAULT_SHARADAR_DIR))
     research_loop_rescore.add_argument("--basket", default=str(DEFAULT_BASKET_PATH))
+    research_loop_h002 = research_loop_subparsers.add_parser(
+        "run-h002-quality-value",
+        help="Append one DEV-only quality-value walk-forward ARL trial.",
+    )
+    research_loop_h002.add_argument("--snapshot", default=SNAPSHOT_D2CC)
+    research_loop_h002.add_argument("--research-dir", default=str(DEFAULT_AGENT_RESEARCH_DIR))
+    research_loop_h002.add_argument("--ledger", default=str(DEFAULT_AGENT_RESEARCH_LEDGER))
+    research_loop_h002.add_argument("--store-dir", default=str(DEFAULT_SHARADAR_DIR))
+    research_loop_h002.add_argument("--basket", default=str(DEFAULT_BASKET_PATH))
+    research_loop_run = research_loop_subparsers.add_parser(
+        "run",
+        help="Run the canonical bounded ARL falsification loop from the cumulative ledger.",
+    )
+    research_loop_run.add_argument("--snapshot", default=SNAPSHOT_D2CC)
+    research_loop_run.add_argument("--research-dir", default=str(DEFAULT_AGENT_RESEARCH_DIR))
+    research_loop_run.add_argument("--ledger", default=str(DEFAULT_AGENT_RESEARCH_LEDGER))
+    research_loop_run.add_argument("--store-dir", default=str(DEFAULT_SHARADAR_DIR))
+    research_loop_run.add_argument("--basket", default=str(DEFAULT_BASKET_PATH))
+    research_loop_run.add_argument("--max-trials", type=int, required=True)
+    research_loop_run.add_argument("--max-wall-clock", default=None)
+    research_loop_run.add_argument("--stop-after-no-promising", type=int, required=True)
+    research_loop_resume = research_loop_subparsers.add_parser(
+        "resume",
+        help="Resume the bounded ARL falsification loop from the cumulative ledger.",
+    )
+    research_loop_resume.add_argument("--snapshot", default=SNAPSHOT_D2CC)
+    research_loop_resume.add_argument("--research-dir", default=str(DEFAULT_AGENT_RESEARCH_DIR))
+    research_loop_resume.add_argument("--ledger", default=str(DEFAULT_AGENT_RESEARCH_LEDGER))
+    research_loop_resume.add_argument("--store-dir", default=str(DEFAULT_SHARADAR_DIR))
+    research_loop_resume.add_argument("--basket", default=str(DEFAULT_BASKET_PATH))
+    research_loop_resume.add_argument("--max-trials", type=int, required=True)
+    research_loop_resume.add_argument("--max-wall-clock", default=None)
+    research_loop_resume.add_argument("--stop-after-no-promising", type=int, required=True)
+    research_loop_pause = research_loop_subparsers.add_parser(
+        "pause",
+        help="Request graceful ARL pause between iterations.",
+    )
+    research_loop_pause.add_argument("--research-dir", default=str(DEFAULT_AGENT_RESEARCH_DIR))
+    research_loop_pause.add_argument("--ledger", default=str(DEFAULT_AGENT_RESEARCH_LEDGER))
+    research_loop_status = research_loop_subparsers.add_parser(
+        "status",
+        help="Show canonical ARL ledger, budget, pause, and candidate status.",
+    )
+    research_loop_status.add_argument("--snapshot", default=SNAPSHOT_D2CC)
+    research_loop_status.add_argument("--research-dir", default=str(DEFAULT_AGENT_RESEARCH_DIR))
+    research_loop_status.add_argument("--ledger", default=str(DEFAULT_AGENT_RESEARCH_LEDGER))
+    rl_parser = subparsers.add_parser("rl-explore", help="Run unvalidated raw-terminal-wealth RL exploration.")
+    rl_subparsers = rl_parser.add_subparsers(dest="rl_explore_command")
+    rl_run = rl_subparsers.add_parser("run", help="Start a clean-slate RL exploration session.")
+    rl_resume = rl_subparsers.add_parser("resume", help="Resume RL exploration from the latest valid checkpoint.")
+    for rl_cmd in (rl_run, rl_resume):
+        rl_cmd.add_argument("--output-dir", default=str(DEFAULT_RL_EXPLORE_DIR))
+        rl_cmd.add_argument("--snapshot", default=DEFAULT_SNAPSHOT_HASH)
+        rl_cmd.add_argument("--seed", type=int, default=17)
+        rl_cmd.add_argument("--max-steps", type=int, default=None)
+        rl_cmd.add_argument("--max-episodes", type=int, default=None)
+        rl_cmd.add_argument("--max-wall-clock", default=None)
+        rl_cmd.add_argument("--checkpoint-every-episodes", type=int, default=5)
+        rl_cmd.add_argument("--checkpoint-every-steps", type=int, default=1000)
+        rl_cmd.add_argument("--checkpoint-every-minutes", type=float, default=5.0)
+        rl_cmd.add_argument("--keep-checkpoints", type=int, default=5)
+        rl_cmd.add_argument("--validation-every-episodes", type=int, default=5)
+        rl_cmd.add_argument("--success-margin", type=float, default=0.05)
+        rl_cmd.add_argument("--top-k", type=int, default=12)
+        rl_cmd.add_argument("--universe-top-n", type=int, default=120)
+        rl_cmd.add_argument("--episode-days", type=int, default=252)
+        rl_cmd.add_argument("--rebalance-every-days", type=int, default=21)
+        rl_cmd.add_argument("--lookback-days", type=int, default=63)
+        rl_cmd.add_argument("--train-start", default="1998-01-01")
+        rl_cmd.add_argument("--train-end", default="2020-12-31")
+        rl_cmd.add_argument("--validation-start", default="2021-01-01")
+        rl_cmd.add_argument("--validation-end", default="2023-12-31")
+    rl_run.add_argument("--force-new", action="store_true")
+    rl_pause = rl_subparsers.add_parser("pause", help="Request graceful RL exploration pause.")
+    rl_pause.add_argument("--output-dir", default=str(DEFAULT_RL_EXPLORE_DIR))
+    rl_status = rl_subparsers.add_parser("status", help="Show RL exploration checkpoint and progress status.")
+    rl_status.add_argument("--output-dir", default=str(DEFAULT_RL_EXPLORE_DIR))
     parser.add_argument("--tickers", nargs="+", help="Tickers to analyze.")
     parser.add_argument("--benchmark", default="SOXX", help="Benchmark ticker. Default: SOXX")
     parser.add_argument("--period", default="3y", help="yfinance period string. Default: 3y")
@@ -341,6 +426,38 @@ def _load_meta_labeler_for_ab() -> MetaLabelerEngine:
         if engine.is_ready():
             return engine
     raise RuntimeError("No trained meta-labeler model is available for --meta-labeler-ab.")
+
+
+def _rl_explore_config_from_args(args: argparse.Namespace) -> RLExploreConfig:
+    env_cfg = RLMarketEnvConfig(
+        train_start=getattr(args, "train_start", "1998-01-01"),
+        train_end=getattr(args, "train_end", "2020-12-31"),
+        validation_start=getattr(args, "validation_start", "2021-01-01"),
+        validation_end=getattr(args, "validation_end", "2023-12-31"),
+        top_k=int(getattr(args, "top_k", 12)),
+        universe_top_n=int(getattr(args, "universe_top_n", 120)),
+        episode_days=int(getattr(args, "episode_days", 252)),
+        rebalance_every_days=int(getattr(args, "rebalance_every_days", 21)),
+        lookback_days=int(getattr(args, "lookback_days", 63)),
+        snapshot_hash=getattr(args, "snapshot", DEFAULT_SNAPSHOT_HASH),
+    )
+    return RLExploreConfig(
+        output_dir=getattr(args, "output_dir", str(DEFAULT_RL_EXPLORE_DIR)),
+        snapshot_hash=getattr(args, "snapshot", DEFAULT_SNAPSHOT_HASH),
+        seed=int(getattr(args, "seed", 17)),
+        success_margin=float(getattr(args, "success_margin", 0.05)),
+        checkpoint_every_episodes=int(getattr(args, "checkpoint_every_episodes", 5)),
+        checkpoint_every_steps=int(getattr(args, "checkpoint_every_steps", 1000)),
+        checkpoint_every_minutes=float(getattr(args, "checkpoint_every_minutes", 5.0)),
+        keep_checkpoints=int(getattr(args, "keep_checkpoints", 5)),
+        validation_every_episodes=int(getattr(args, "validation_every_episodes", 5)),
+        max_steps=getattr(args, "max_steps", None),
+        max_episodes=getattr(args, "max_episodes", None),
+        max_wall_clock=getattr(args, "max_wall_clock", None),
+        force_new=bool(getattr(args, "force_new", False)),
+        env=env_cfg,
+        agent=RLAgentConfig(),
+    )
 
 
 def _features_from_pipeline_context(signal: PipelineSignal, history) -> dict[str, float]:
@@ -936,7 +1053,78 @@ def main() -> None:
             )
             print(json.dumps(payload, indent=2))
             return
-        raise SystemExit("agent-research-loop requires one of: go-live, rescore-h001-walkforward")
+        if loop_command == "run-h002-quality-value":
+            payload = run_h002_quality_value_walk_forward(
+                ledger_path=getattr(args, "ledger", str(DEFAULT_AGENT_RESEARCH_LEDGER)),
+                data_snapshot_hash=getattr(args, "snapshot", SNAPSHOT_D2CC),
+                research_dir=getattr(args, "research_dir", str(DEFAULT_AGENT_RESEARCH_DIR)),
+                store_dir=getattr(args, "store_dir", str(DEFAULT_SHARADAR_DIR)),
+                basket_path=getattr(args, "basket", str(DEFAULT_BASKET_PATH)),
+            )
+            print(json.dumps(payload, indent=2))
+            return
+        if loop_command == "run":
+            payload = run_agent_research_loop(
+                ledger_path=getattr(args, "ledger", str(DEFAULT_AGENT_RESEARCH_LEDGER)),
+                data_snapshot_hash=getattr(args, "snapshot", SNAPSHOT_D2CC),
+                mode="run",
+                max_trials=int(getattr(args, "max_trials")),
+                max_wall_clock=getattr(args, "max_wall_clock", None),
+                stop_after_no_promising=int(getattr(args, "stop_after_no_promising")),
+                research_dir=getattr(args, "research_dir", str(DEFAULT_AGENT_RESEARCH_DIR)),
+                store_dir=getattr(args, "store_dir", str(DEFAULT_SHARADAR_DIR)),
+                basket_path=getattr(args, "basket", str(DEFAULT_BASKET_PATH)),
+            )
+            print(json.dumps(payload, indent=2))
+            return
+        if loop_command == "resume":
+            payload = run_agent_research_loop_resume(
+                ledger_path=getattr(args, "ledger", str(DEFAULT_AGENT_RESEARCH_LEDGER)),
+                data_snapshot_hash=getattr(args, "snapshot", SNAPSHOT_D2CC),
+                max_trials=int(getattr(args, "max_trials")),
+                max_wall_clock=getattr(args, "max_wall_clock", None),
+                stop_after_no_promising=int(getattr(args, "stop_after_no_promising")),
+                research_dir=getattr(args, "research_dir", str(DEFAULT_AGENT_RESEARCH_DIR)),
+                store_dir=getattr(args, "store_dir", str(DEFAULT_SHARADAR_DIR)),
+                basket_path=getattr(args, "basket", str(DEFAULT_BASKET_PATH)),
+            )
+            print(json.dumps(payload, indent=2))
+            return
+        if loop_command == "pause":
+            payload = request_agent_research_loop_pause(
+                research_dir=getattr(args, "research_dir", str(DEFAULT_AGENT_RESEARCH_DIR)),
+                ledger_path=getattr(args, "ledger", str(DEFAULT_AGENT_RESEARCH_LEDGER)),
+            )
+            print(json.dumps(payload, indent=2))
+            return
+        if loop_command == "status":
+            payload = agent_research_loop_status(
+                ledger_path=getattr(args, "ledger", str(DEFAULT_AGENT_RESEARCH_LEDGER)),
+                data_snapshot_hash=getattr(args, "snapshot", SNAPSHOT_D2CC),
+                research_dir=getattr(args, "research_dir", str(DEFAULT_AGENT_RESEARCH_DIR)),
+            )
+            print(json.dumps(payload, indent=2))
+            return
+        raise SystemExit("agent-research-loop requires one of: go-live, rescore-h001-walkforward, run-h002-quality-value, run, resume, pause, status")
+    if getattr(args, "command", None) == "rl-explore":
+        rl_command = getattr(args, "rl_explore_command", None)
+        if rl_command == "run":
+            payload = run_rl_explore(_rl_explore_config_from_args(args), mode="run")
+            print(json.dumps(payload, indent=2))
+            return
+        if rl_command == "resume":
+            payload = run_rl_explore(_rl_explore_config_from_args(args), mode="resume")
+            print(json.dumps(payload, indent=2))
+            return
+        if rl_command == "pause":
+            payload = pause_rl_explore(getattr(args, "output_dir", str(DEFAULT_RL_EXPLORE_DIR)))
+            print(json.dumps(payload, indent=2))
+            return
+        if rl_command == "status":
+            payload = rl_explore_status(getattr(args, "output_dir", str(DEFAULT_RL_EXPLORE_DIR)))
+            print(json.dumps(payload, indent=2))
+            return
+        raise SystemExit("rl-explore requires one of: run, resume, pause, status")
     if getattr(args, "command", None) == "threshold-sweep":
         tickers = [str(ticker).strip().upper() for ticker in getattr(args, "tickers", []) if str(ticker).strip()]
         if not tickers:

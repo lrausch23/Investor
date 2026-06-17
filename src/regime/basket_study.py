@@ -83,6 +83,34 @@ QUALITY_FIELDS = (
     "netinc",
 )
 _CANDIDATE_FEATURE_CACHE: dict[tuple[Any, ...], tuple[SelectionRow, ...]] = {}
+AGENT_RESEARCH_SCORE_WEIGHTS: dict[str, dict[str, float]] = {
+    "H002_quality_value_defensive": {"quality": 1.0, "valuation": -1.0},
+    "H003_deep_value": {"valuation": -1.0},
+    "H004_quality_compounders": {"quality": 1.0},
+    "H005_quality_value_momentum_confirmation": {"quality": 1.0, "valuation": -1.0, "momentum": 0.5},
+    "H006_quality_value_recent_momentum": {"quality": 1.0, "valuation": -1.0, "momentum": 0.5},
+    "H007_quality_value_small_cap": {"quality": 1.0, "valuation": -1.0, "marketcap": -0.5},
+    "H008_quality_value_large_cap": {"quality": 1.0, "valuation": -1.0, "marketcap": 0.5},
+    "H009_quality_value_neglected": {"quality": 1.0, "valuation": -1.0, "dollar_adv": -0.5},
+    "H010_quality_value_liquid": {"quality": 1.0, "valuation": -1.0, "dollar_adv": 0.5},
+    "H011_deep_value_small_cap": {"valuation": -1.0, "marketcap": -0.5},
+    "H012_deep_value_large_cap": {"valuation": -1.0, "marketcap": 0.5},
+    "H013_deep_value_momentum_confirmation": {"valuation": -1.0, "momentum": 0.5},
+    "H014_deep_value_recent_momentum": {"valuation": -1.0, "momentum": 0.5},
+    "H015_high_quality_small_cap": {"quality": 1.0, "marketcap": -0.5},
+    "H016_high_quality_large_cap": {"quality": 1.0, "marketcap": 0.5},
+    "H017_high_quality_liquid": {"quality": 1.0, "dollar_adv": 0.5},
+    "H018_high_quality_neglected": {"quality": 1.0, "dollar_adv": -0.5},
+    "H019_small_cap_profitability_value": {"quality": 0.75, "valuation": -0.75, "marketcap": -1.0},
+    "H020_large_cap_profitability_value": {"quality": 0.75, "valuation": -0.75, "marketcap": 1.0},
+    "H021_neglect_value_profitability": {"quality": 0.75, "valuation": -0.75, "dollar_adv": -1.0},
+    "H022_liquid_value_profitability": {"quality": 0.75, "valuation": -0.75, "dollar_adv": 1.0},
+    "H023_market_leader_quality_momentum": {"quality": 0.75, "momentum": 0.75, "marketcap": 0.75},
+    "H024_neglected_quality_momentum": {"quality": 0.75, "momentum": 0.75, "dollar_adv": -0.75},
+    "H025_small_value_momentum": {"valuation": -0.75, "momentum": 0.75, "marketcap": -0.75},
+    "H026_large_value_momentum": {"valuation": -0.75, "momentum": 0.75, "marketcap": 0.75},
+    "H027_liquid_value_momentum": {"valuation": -0.75, "momentum": 0.75, "dollar_adv": 0.75},
+}
 
 
 @dataclass(frozen=True)
@@ -1110,7 +1138,7 @@ def _candidate_features(store: SharadarStore, as_of: pd.Timestamp, cfg: BasketSt
     universe = _filter_common_stock_universe(store, universe, as_of, cfg)
     if not universe:
         return []
-    start = (as_of - pd.DateOffset(months=14 if cfg.formation == "12_1" else 8)).date().isoformat()
+    start = _candidate_feature_start_date(as_of, cfg)
     end = as_of.date().isoformat()
     price_frames = store.get_prices(universe, start, end)
     daily = _daily_snapshot(store, universe, as_of)
@@ -1151,6 +1179,13 @@ def _candidate_features(store: SharadarStore, as_of: pd.Timestamp, cfg: BasketSt
         )
     _CANDIDATE_FEATURE_CACHE[cache_key] = tuple(rows)
     return rows
+
+
+def _candidate_feature_start_date(as_of: pd.Timestamp, cfg: BasketStudyConfig) -> str:
+    formation_months = 14 if cfg.formation == "12_1" else 8
+    formation_start = as_of - pd.DateOffset(months=formation_months)
+    listing_start = as_of - pd.Timedelta(days=max(cfg.min_listing_days, cfg.dollar_adv_days) + 10)
+    return str(min(formation_start, listing_start).date().isoformat())
 
 
 def _filter_common_stock_universe(store: SharadarStore, permatickers: Sequence[int], as_of: pd.Timestamp, cfg: BasketStudyConfig) -> list[int]:
@@ -1224,6 +1259,16 @@ def _score_selection_rows(rows: list[SelectionRow], arm: str, cfg: BasketStudyCo
         valuation_cutoff = pd.Series(valid_valuations).quantile(cfg.expensive_decile)
     mom_z = _zmap({row.permaticker: row.momentum for row in rows})
     qual_z = _zmap({row.permaticker: row.quality for row in rows})
+    val_z = _zmap({row.permaticker: row.valuation for row in rows})
+    cap_z = _zmap({row.permaticker: row.marketcap for row in rows})
+    adv_z = _zmap({row.permaticker: row.dollar_adv for row in rows})
+    factor_maps = {
+        "momentum": mom_z,
+        "quality": qual_z,
+        "valuation": val_z,
+        "marketcap": cap_z,
+        "dollar_adv": adv_z,
+    }
     scored: list[SelectionRow] = []
     for row in rows:
         if arm in {"A3_momentum_valuation_cap", "A4_quality_momentum_valuation"} and valuation_cutoff is not None and row.valuation is not None and row.valuation >= valuation_cutoff:
@@ -1236,6 +1281,18 @@ def _score_selection_rows(rows: list[SelectionRow], arm: str, cfg: BasketStudyCo
             score = mom_z.get(row.permaticker, -999.0)
         elif arm == "A4_quality_momentum_valuation":
             score = mom_z.get(row.permaticker, -999.0) + qual_z.get(row.permaticker, -999.0)
+        elif arm in AGENT_RESEARCH_SCORE_WEIGHTS:
+            weights = AGENT_RESEARCH_SCORE_WEIGHTS[arm]
+            score = 0.0
+            missing = False
+            for factor, weight in weights.items():
+                value = factor_maps[factor].get(row.permaticker)
+                if value is None:
+                    missing = True
+                    break
+                score += float(weight) * float(value)
+            if missing:
+                continue
         else:
             score = 0.0
         scored.append(SelectionRow(row.permaticker, row.ticker, float(score), row.momentum, row.quality, row.valuation, row.marketcap, row.dollar_adv))

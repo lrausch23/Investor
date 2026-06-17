@@ -4,8 +4,10 @@ import datetime as dt
 import json
 import math
 import os
+import shutil
+import time
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Callable, Sequence
 
 import pandas as pd
 
@@ -23,6 +25,9 @@ from .sharadar import DEFAULT_SHARADAR_DIR, SharadarStore
 
 DEFAULT_AGENT_RESEARCH_DIR = Path("data") / "agent_research"
 DEFAULT_AGENT_RESEARCH_LEDGER = DEFAULT_AGENT_RESEARCH_DIR / "arl_trials.jsonl"
+DEFAULT_AGENT_RESEARCH_PAUSE_SENTINEL = DEFAULT_AGENT_RESEARCH_DIR / "pause.requested"
+DEFAULT_AGENT_RESEARCH_RESUME_CHECKPOINT = DEFAULT_AGENT_RESEARCH_DIR / "resume_checkpoint.json"
+DEFAULT_AGENT_RESEARCH_SCRATCH_DIR = DEFAULT_AGENT_RESEARCH_DIR / "scratch"
 DEFAULT_AGENT_RESEARCH_DEV_START = "1998-01-01"
 DEFAULT_AGENT_RESEARCH_DEV_END = "2023-12-31"
 DEFAULT_AGENT_RESEARCH_DEV_OOS_START = "2021-01-01"
@@ -138,6 +143,193 @@ BASKET_SEED_TRIALS = (
     },
 )
 
+AGENT_RESEARCH_HYPOTHESES: tuple[dict[str, Any], ...] = (
+    {
+        "trial_id": "H002_quality_value_defensive_walk_forward",
+        "arm": "H002_quality_value_defensive",
+        "hypothesis": "A quality-value defensive SEP equity basket has robust pre-tax risk-adjusted DEV alpha versus the synthesized S&P 500.",
+        "economic_rationale": "Cheap profitable companies can earn a persistent value/quality risk premium and may be less exposed to speculative drawdowns.",
+        "score": "z(quality_factor) - z(valuation_factor)",
+    },
+    {
+        "trial_id": "H003_deep_value_walk_forward",
+        "arm": "H003_deep_value",
+        "hypothesis": "A deep-value SEP equity basket has robust pre-tax risk-adjusted DEV alpha versus the synthesized S&P 500.",
+        "economic_rationale": "Low valuation multiples may compensate for behavioral neglect and distress overreaction when measured point-in-time.",
+        "score": "-z(valuation_factor)",
+    },
+    {
+        "trial_id": "H004_quality_compounders_walk_forward",
+        "arm": "H004_quality_compounders",
+        "hypothesis": "A high-quality compounder SEP equity basket has robust pre-tax risk-adjusted DEV alpha versus the synthesized S&P 500.",
+        "economic_rationale": "Profitability, free-cash-flow generation, gross profitability, and balance-sheet strength may persist across cycles.",
+        "score": "z(quality_factor)",
+    },
+    {
+        "trial_id": "H005_quality_value_momentum_confirmation_walk_forward",
+        "arm": "H005_quality_value_momentum_confirmation",
+        "hypothesis": "Quality-value names with 12-1 momentum confirmation have robust pre-tax risk-adjusted DEV alpha versus the synthesized S&P 500.",
+        "economic_rationale": "Cheap quality stocks may avoid value traps when price momentum confirms improving fundamentals.",
+        "score": "z(quality_factor) - z(valuation_factor) + 0.5*z(12_1_momentum)",
+    },
+    {
+        "trial_id": "H006_quality_value_recent_momentum_walk_forward",
+        "arm": "H006_quality_value_recent_momentum",
+        "hypothesis": "Quality-value names with six-month momentum confirmation have robust pre-tax risk-adjusted DEV alpha versus the synthesized S&P 500.",
+        "economic_rationale": "Shorter momentum can detect faster repricing of cheap quality names after earnings or credit-cycle turns.",
+        "score": "z(quality_factor) - z(valuation_factor) + 0.5*z(6_1_momentum)",
+        "config_overrides": {"formation": "6_1"},
+    },
+    {
+        "trial_id": "H007_quality_value_small_cap_walk_forward",
+        "arm": "H007_quality_value_small_cap",
+        "hypothesis": "Small-cap quality-value SEP equities have robust pre-tax risk-adjusted DEV alpha versus the synthesized S&P 500.",
+        "economic_rationale": "The size premium may be strongest when paired with profitability and cheapness under survivorship-free data.",
+        "score": "z(quality_factor) - z(valuation_factor) - 0.5*z(marketcap)",
+    },
+    {
+        "trial_id": "H008_quality_value_large_cap_walk_forward",
+        "arm": "H008_quality_value_large_cap",
+        "hypothesis": "Large-cap quality-value SEP equities have robust pre-tax risk-adjusted DEV alpha versus the synthesized S&P 500.",
+        "economic_rationale": "Scale may make cheap profitable businesses more resilient during credit and liquidity shocks.",
+        "score": "z(quality_factor) - z(valuation_factor) + 0.5*z(marketcap)",
+    },
+    {
+        "trial_id": "H009_quality_value_neglected_walk_forward",
+        "arm": "H009_quality_value_neglected",
+        "hypothesis": "Neglected but tradeable quality-value SEP equities have robust pre-tax risk-adjusted DEV alpha versus the synthesized S&P 500.",
+        "economic_rationale": "Lower-liquidity names above the participation floor may be less efficiently priced when fundamentals are strong.",
+        "score": "z(quality_factor) - z(valuation_factor) - 0.5*z(dollar_adv)",
+    },
+    {
+        "trial_id": "H010_quality_value_liquid_walk_forward",
+        "arm": "H010_quality_value_liquid",
+        "hypothesis": "Liquid quality-value SEP equities have robust pre-tax risk-adjusted DEV alpha versus the synthesized S&P 500.",
+        "economic_rationale": "High liquidity can reduce implementation drag and crash-sale risk while retaining value and quality exposure.",
+        "score": "z(quality_factor) - z(valuation_factor) + 0.5*z(dollar_adv)",
+    },
+    {
+        "trial_id": "H011_deep_value_small_cap_walk_forward",
+        "arm": "H011_deep_value_small_cap",
+        "hypothesis": "Small-cap deep-value SEP equities have robust pre-tax risk-adjusted DEV alpha versus the synthesized S&P 500.",
+        "economic_rationale": "Mispricing from neglect may be larger in smaller tradeable companies when selected without survivorship bias.",
+        "score": "-z(valuation_factor) - 0.5*z(marketcap)",
+    },
+    {
+        "trial_id": "H012_deep_value_large_cap_walk_forward",
+        "arm": "H012_deep_value_large_cap",
+        "hypothesis": "Large-cap deep-value SEP equities have robust pre-tax risk-adjusted DEV alpha versus the synthesized S&P 500.",
+        "economic_rationale": "Large cheap companies may provide value exposure with lower failure and refinancing risk than smaller value names.",
+        "score": "-z(valuation_factor) + 0.5*z(marketcap)",
+    },
+    {
+        "trial_id": "H013_deep_value_momentum_confirmation_walk_forward",
+        "arm": "H013_deep_value_momentum_confirmation",
+        "hypothesis": "Deep-value names with 12-1 momentum confirmation have robust pre-tax risk-adjusted DEV alpha versus the synthesized S&P 500.",
+        "economic_rationale": "Momentum confirmation may separate improving value opportunities from unrepaired value traps.",
+        "score": "-z(valuation_factor) + 0.5*z(12_1_momentum)",
+    },
+    {
+        "trial_id": "H014_deep_value_recent_momentum_walk_forward",
+        "arm": "H014_deep_value_recent_momentum",
+        "hypothesis": "Deep-value names with six-month momentum confirmation have robust pre-tax risk-adjusted DEV alpha versus the synthesized S&P 500.",
+        "economic_rationale": "Shorter trend confirmation may capture faster repricing of distressed valuation dislocations.",
+        "score": "-z(valuation_factor) + 0.5*z(6_1_momentum)",
+        "config_overrides": {"formation": "6_1"},
+    },
+    {
+        "trial_id": "H015_high_quality_small_cap_walk_forward",
+        "arm": "H015_high_quality_small_cap",
+        "hypothesis": "Small-cap high-quality SEP equities have robust pre-tax risk-adjusted DEV alpha versus the synthesized S&P 500.",
+        "economic_rationale": "Profitability may identify smaller companies that can compound without relying on the broad size premium alone.",
+        "score": "z(quality_factor) - 0.5*z(marketcap)",
+    },
+    {
+        "trial_id": "H016_high_quality_large_cap_walk_forward",
+        "arm": "H016_high_quality_large_cap",
+        "hypothesis": "Large-cap high-quality SEP equities have robust pre-tax risk-adjusted DEV alpha versus the synthesized S&P 500.",
+        "economic_rationale": "Large profitable companies may preserve margins and financing access during stress regimes.",
+        "score": "z(quality_factor) + 0.5*z(marketcap)",
+    },
+    {
+        "trial_id": "H017_high_quality_liquid_walk_forward",
+        "arm": "H017_high_quality_liquid",
+        "hypothesis": "Liquid high-quality SEP equities have robust pre-tax risk-adjusted DEV alpha versus the synthesized S&P 500.",
+        "economic_rationale": "Quality exposure in highly liquid names may reduce both business and execution risk.",
+        "score": "z(quality_factor) + 0.5*z(dollar_adv)",
+    },
+    {
+        "trial_id": "H018_high_quality_neglected_walk_forward",
+        "arm": "H018_high_quality_neglected",
+        "hypothesis": "Neglected high-quality SEP equities have robust pre-tax risk-adjusted DEV alpha versus the synthesized S&P 500.",
+        "economic_rationale": "Strong fundamentals in less-traded names may be under-discovered while remaining above the liquidity floor.",
+        "score": "z(quality_factor) - 0.5*z(dollar_adv)",
+    },
+    {
+        "trial_id": "H019_small_cap_profitability_value_walk_forward",
+        "arm": "H019_small_cap_profitability_value",
+        "hypothesis": "Small-cap profitability-value SEP equities have robust pre-tax risk-adjusted DEV alpha versus the synthesized S&P 500.",
+        "economic_rationale": "A stronger size tilt may help if alpha concentrates in smaller profitable value stocks.",
+        "score": "0.75*z(quality_factor) - 0.75*z(valuation_factor) - z(marketcap)",
+    },
+    {
+        "trial_id": "H020_large_cap_profitability_value_walk_forward",
+        "arm": "H020_large_cap_profitability_value",
+        "hypothesis": "Large-cap profitability-value SEP equities have robust pre-tax risk-adjusted DEV alpha versus the synthesized S&P 500.",
+        "economic_rationale": "A stronger scale tilt may help if profitability-value works only where balance sheets and liquidity are deeper.",
+        "score": "0.75*z(quality_factor) - 0.75*z(valuation_factor) + z(marketcap)",
+    },
+    {
+        "trial_id": "H021_neglect_value_profitability_walk_forward",
+        "arm": "H021_neglect_value_profitability",
+        "hypothesis": "Neglected profitability-value SEP equities have robust pre-tax risk-adjusted DEV alpha versus the synthesized S&P 500.",
+        "economic_rationale": "A stronger neglect tilt may expose pricing inefficiency that survives after value and quality controls.",
+        "score": "0.75*z(quality_factor) - 0.75*z(valuation_factor) - z(dollar_adv)",
+    },
+    {
+        "trial_id": "H022_liquid_value_profitability_walk_forward",
+        "arm": "H022_liquid_value_profitability",
+        "hypothesis": "Liquid profitability-value SEP equities have robust pre-tax risk-adjusted DEV alpha versus the synthesized S&P 500.",
+        "economic_rationale": "A stronger liquidity tilt may keep factor exposure implementable through crash windows.",
+        "score": "0.75*z(quality_factor) - 0.75*z(valuation_factor) + z(dollar_adv)",
+    },
+    {
+        "trial_id": "H023_market_leader_quality_momentum_walk_forward",
+        "arm": "H023_market_leader_quality_momentum",
+        "hypothesis": "Large market-leader quality-momentum SEP equities have robust pre-tax risk-adjusted DEV alpha versus the synthesized S&P 500.",
+        "economic_rationale": "Market leaders with quality and trend support may compound through winner-take-most industry structures.",
+        "score": "0.75*z(quality_factor) + 0.75*z(12_1_momentum) + 0.75*z(marketcap)",
+    },
+    {
+        "trial_id": "H024_neglected_quality_momentum_walk_forward",
+        "arm": "H024_neglected_quality_momentum",
+        "hypothesis": "Neglected quality-momentum SEP equities have robust pre-tax risk-adjusted DEV alpha versus the synthesized S&P 500.",
+        "economic_rationale": "Quality names with trend support may be repriced more slowly when they are less liquid but still tradeable.",
+        "score": "0.75*z(quality_factor) + 0.75*z(12_1_momentum) - 0.75*z(dollar_adv)",
+    },
+    {
+        "trial_id": "H025_small_value_momentum_walk_forward",
+        "arm": "H025_small_value_momentum",
+        "hypothesis": "Small value-momentum SEP equities have robust pre-tax risk-adjusted DEV alpha versus the synthesized S&P 500.",
+        "economic_rationale": "Smaller cheap stocks with price confirmation may capture recovery optionality after overreaction.",
+        "score": "-0.75*z(valuation_factor) + 0.75*z(12_1_momentum) - 0.75*z(marketcap)",
+    },
+    {
+        "trial_id": "H026_large_value_momentum_walk_forward",
+        "arm": "H026_large_value_momentum",
+        "hypothesis": "Large value-momentum SEP equities have robust pre-tax risk-adjusted DEV alpha versus the synthesized S&P 500.",
+        "economic_rationale": "Cheap large stocks with trend confirmation may combine turnaround exposure with balance-sheet resilience.",
+        "score": "-0.75*z(valuation_factor) + 0.75*z(12_1_momentum) + 0.75*z(marketcap)",
+    },
+    {
+        "trial_id": "H027_liquid_value_momentum_walk_forward",
+        "arm": "H027_liquid_value_momentum",
+        "hypothesis": "Liquid value-momentum SEP equities have robust pre-tax risk-adjusted DEV alpha versus the synthesized S&P 500.",
+        "economic_rationale": "Cheap trending liquid names may be easier to implement and less vulnerable to crash liquidity gaps.",
+        "score": "-0.75*z(valuation_factor) + 0.75*z(12_1_momentum) + 0.75*z(dollar_adv)",
+    },
+)
+
 
 def run_stage2_go_live(
     *,
@@ -173,7 +365,7 @@ def run_stage2_go_live(
             store_dir=store_dir,
             basket_path=basket_path,
         )
-    ledger_status = verify_trial_ledger(ledger).to_dict()
+    ledger_status_payload = verify_trial_ledger(ledger).to_dict()
     payload = {
         "schema": "regime_agent_research_go_live.v1",
         "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
@@ -183,7 +375,7 @@ def run_stage2_go_live(
         "ledger_path": str(ledger),
         "ledger_seeded": seeded,
         "first_iteration": first_iteration,
-        "ledger_status": ledger_status,
+        "ledger_status": ledger_status_payload,
         "holdout_window": {
             "start": DEFAULT_AGENT_RESEARCH_HOLDOUT_START,
             "end": DEFAULT_AGENT_RESEARCH_HOLDOUT_END,
@@ -326,6 +518,776 @@ def run_h001_walk_forward_rescore(
         }
     )
     _write_json(root / "stage2_walk_forward_summary.json", summary)
+    return result
+
+
+def run_h002_quality_value_walk_forward(
+    ledger_path: str | Path = DEFAULT_AGENT_RESEARCH_LEDGER,
+    *,
+    data_snapshot_hash: str,
+    research_dir: str | Path = DEFAULT_AGENT_RESEARCH_DIR,
+    store_dir: str | Path = DEFAULT_SHARADAR_DIR,
+    basket_path: str | Path = DEFAULT_BASKET_PATH,
+    start: str = DEFAULT_AGENT_RESEARCH_DEV_START,
+    end: str = DEFAULT_AGENT_RESEARCH_DEV_END,
+) -> dict[str, Any]:
+    """Append one DEV-only quality-value falsification trial."""
+
+    ledger = Path(ledger_path)
+    trial_id = "H002_quality_value_defensive_walk_forward"
+    existing = _ledger_trial_ids(ledger)
+    if trial_id in existing:
+        existing_result = _safe_json(Path(research_dir) / "iteration_002_quality_value_result.json")
+        return {
+            "trial_id": trial_id,
+            "status": "already_recorded",
+            "result": existing_result,
+            "ledger_status": verify_trial_ledger(ledger).to_dict(),
+            "production_defaults_changed": False,
+        }
+    readiness = confirm_harness_ready(expected_snapshot_hash=data_snapshot_hash, store_dir=store_dir, ledger_path=ledger)
+    if readiness.get("verdict") != "HARNESS READY":
+        return {
+            "trial_id": trial_id,
+            "stage": "stage_1_readiness",
+            "verdict": "NOT READY",
+            "blocking_items": readiness.get("blocking_items") or [],
+            "readiness": readiness,
+            "production_defaults_changed": False,
+        }
+    store = SharadarStore(store_dir)
+    if str(store.data_snapshot_hash) != str(data_snapshot_hash):
+        raise ValueError("Snapshot changed; Stage 1 readiness must be rerun before Stage 2.")
+    cfg = BasketStudyConfig(oos_start=DEFAULT_WALK_FORWARD_FOLDS[0]["oos_start"])
+    synth_sp500 = store.synth_sp500_total_return(start, end)
+    if synth_sp500.empty:
+        raise ValueError("Synthesized S&P 500 benchmark unavailable for DEV window.")
+    benchmark_curve = _buy_hold_curve(synth_sp500, starting_cash=cfg.starting_cash)
+    stress_windows = historical_stress_windows_for_range(start, end)
+    basket = load_basket(basket_path) if Path(basket_path).exists() else {"tickers": []}
+    strategy = run_basket_arm(
+        store,
+        "H002_quality_value_defensive",
+        cfg,
+        start=start,
+        end=end,
+        basket=basket,
+        benchmark_curve=benchmark_curve,
+        windows=stress_windows,
+    )
+    benchmark = buy_hold_taxable_payload(
+        "SYNTH_SP500",
+        synth_sp500,
+        oos_start=DEFAULT_WALK_FORWARD_FOLDS[0]["oos_start"],
+        benchmark_curve=benchmark_curve,
+        windows=stress_windows,
+    )
+    strategy_pre_tax = _pre_tax_evaluation_payload(strategy)
+    benchmark_pre_tax = _pre_tax_evaluation_payload(benchmark)
+    walk_forward = run_dev_walk_forward_evaluation(
+        strategy_pre_tax,
+        benchmark_pre_tax,
+        base_payload=benchmark_pre_tax,
+        folds=DEFAULT_WALK_FORWARD_FOLDS,
+        dev_start=start,
+        dev_end=end,
+        holdout_start=DEFAULT_AGENT_RESEARCH_HOLDOUT_START,
+        min_major_crashes=DEFAULT_WALK_FORWARD_MIN_MAJOR_CRASHES,
+        min_oos_folds=DEFAULT_WALK_FORWARD_MIN_FOLDS,
+    )
+    root = Path(research_dir)
+    result = {
+        "schema": "regime_agent_research_iteration.v2",
+        "trial_id": trial_id,
+        "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+        "data_snapshot_hash": data_snapshot_hash,
+        "git_sha": _git_sha(),
+        "hypothesis": "A quality-value defensive SEP equity basket has robust pre-tax risk-adjusted DEV alpha versus the synthesized S&P 500.",
+        "economic_rationale": (
+            "Cheap profitable companies can earn a persistent value/quality risk premium and may be less exposed to speculative drawdowns; "
+            "prior killed arms were momentum-led, so this tests a distinct non-momentum selection mechanism."
+        ),
+        "pre_registered_success_criterion": (
+            "Walk-forward DEV OOS, pre-tax with costs/slippage: more than half of included folds beat synthesized S&P 500 on total return, "
+            "Calmar, and Ulcer; median return and Calmar deltas are positive; median Ulcer delta is negative; "
+            "major crash folds show drawdown and Ulcer improvement versus the index; no single-fold concentration."
+        ),
+        "oos_evaluation_mode": "walk_forward_stress_folds",
+        "evaluation_basis": "pre_tax_costs_slippage_applied",
+        "dev_window": {"start": start, "end": end},
+        "locked_holdout": {
+            "start": DEFAULT_AGENT_RESEARCH_HOLDOUT_START,
+            "end": DEFAULT_AGENT_RESEARCH_HOLDOUT_END,
+            "accessed": False,
+        },
+        "strategy_spec": {
+            "selection": "H002_quality_value_defensive",
+            "score": "z(quality_factor) - z(valuation_factor)",
+            "requires_quality_and_valuation": True,
+            "basket_size": cfg.basket_size,
+            "formation": cfg.formation,
+            "weighting": cfg.weighting,
+            "reconstitution": cfg.reconstitution,
+            "universe": "survivorship_free_sep_equities_only",
+            "min_dollar_adv": cfg.min_dollar_adv,
+            "min_marketcap": cfg.min_marketcap,
+            "cost_bps": {"entry": cfg.entry_cost_bps, "exit": cfg.exit_cost_bps},
+        },
+        "strategy_metrics": _pre_tax_summary_metrics(strategy),
+        "benchmark_metrics": _pre_tax_summary_metrics(benchmark),
+        "walk_forward": walk_forward,
+        "verdict": walk_forward.get("verdict"),
+        "verdict_rationale": walk_forward.get("verdict_rationale"),
+        "strategy_payload_path": str(root / "iteration_002_quality_value_dev.json"),
+        "benchmark_payload_path": str(root / "iteration_002_synth_sp500_dev.json"),
+        "holdout_accessed": False,
+        "production_defaults_changed": False,
+    }
+    root.mkdir(parents=True, exist_ok=True)
+    _write_json(root / "iteration_002_quality_value_dev.json", strategy)
+    _write_json(root / "iteration_002_synth_sp500_dev.json", benchmark)
+    _write_json(root / "iteration_002_quality_value_result.json", result)
+    pd.DataFrame(walk_forward.get("folds") or []).to_csv(root / "iteration_002_quality_value_folds.csv", index=False)
+    _write_h002_walk_forward_markdown(root / "iteration_002_quality_value_summary.md", result)
+    record = append_trial(ledger, result, data_snapshot_hash=data_snapshot_hash)
+    result["ledger_record_hash"] = record.get("record_hash")
+    result["ledger_sequence"] = record.get("sequence")
+    result["ledger_status"] = verify_trial_ledger(ledger).to_dict()
+    _write_json(root / "iteration_002_quality_value_result.json", result)
+    _write_h002_walk_forward_markdown(root / "iteration_002_quality_value_summary.md", result)
+    summary = _safe_json(root / "stage2_walk_forward_summary.json")
+    summary.update(
+        {
+            "schema": "regime_agent_research_walk_forward_summary.v1",
+            "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+            "data_snapshot_hash": data_snapshot_hash,
+            "latest_walk_forward_trial": trial_id,
+            "latest_verdict": result["verdict"],
+            "holdout_accessed": False,
+            "ledger_status": result["ledger_status"],
+            "pause_for_human_review": result["verdict"] == "promising",
+            "production_defaults_changed": False,
+        }
+    )
+    _write_json(root / "stage2_walk_forward_summary.json", summary)
+    return result
+
+
+def run_agent_research_loop(
+    ledger_path: str | Path = DEFAULT_AGENT_RESEARCH_LEDGER,
+    *,
+    data_snapshot_hash: str,
+    mode: str = "run",
+    max_trials: int,
+    stop_after_no_promising: int,
+    max_wall_clock: str | float | int | None = None,
+    research_dir: str | Path = DEFAULT_AGENT_RESEARCH_DIR,
+    store_dir: str | Path = DEFAULT_SHARADAR_DIR,
+    basket_path: str | Path = DEFAULT_BASKET_PATH,
+    start: str = DEFAULT_AGENT_RESEARCH_DEV_START,
+    end: str = DEFAULT_AGENT_RESEARCH_DEV_END,
+    hypotheses: Sequence[dict[str, Any]] = AGENT_RESEARCH_HYPOTHESES,
+    readiness_checker: Callable[..., dict[str, Any]] | None = None,
+    trial_runner: Callable[..., dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Run or resume the canonical bounded ARL falsification loop."""
+
+    if mode not in {"run", "resume"}:
+        raise ValueError("mode must be 'run' or 'resume'.")
+    if max_trials <= 0:
+        raise ValueError("--max-trials must be positive.")
+    if stop_after_no_promising <= 0:
+        raise ValueError("--stop-after-no-promising must be positive.")
+    ledger = Path(ledger_path)
+    root = Path(research_dir)
+    root.mkdir(parents=True, exist_ok=True)
+    scratch_root = root / DEFAULT_AGENT_RESEARCH_SCRATCH_DIR.name
+    if scratch_root.exists():
+        shutil.rmtree(scratch_root)
+    scratch_root.mkdir(parents=True, exist_ok=True)
+    pause_sentinel = root / DEFAULT_AGENT_RESEARCH_PAUSE_SENTINEL.name
+    resume_checkpoint = root / DEFAULT_AGENT_RESEARCH_RESUME_CHECKPOINT.name
+    ledger_status = verify_trial_ledger(ledger)
+    if not ledger_status.valid:
+        raise ValueError(f"Cannot {mode} ARL with a broken ledger chain: {', '.join(ledger_status.issues)}")
+    snapshot_hashes = _ledger_snapshot_hashes(ledger)
+    if snapshot_hashes and snapshot_hashes != {str(data_snapshot_hash)}:
+        raise ValueError(f"Cannot {mode} ARL after snapshot change: ledger has {sorted(snapshot_hashes)}, requested {data_snapshot_hash}")
+    check_ready = readiness_checker or confirm_harness_ready
+    readiness = check_ready(expected_snapshot_hash=data_snapshot_hash, store_dir=store_dir, ledger_path=ledger)
+    _write_json(root / "harness_readiness.json", readiness)
+    if readiness.get("verdict") != "HARNESS READY":
+        return {
+            "schema": "regime_agent_research_loop_run.v1",
+            "stage": "stage_1_readiness",
+            "verdict": "NOT READY",
+            "blocking_items": readiness.get("blocking_items") or [],
+            "readiness": readiness,
+            "production_defaults_changed": False,
+        }
+    seeded = seed_basket_study_ledger(ledger, data_snapshot_hash=data_snapshot_hash)
+    ledger_status = verify_trial_ledger(ledger)
+    if not ledger_status.valid:
+        raise ValueError(f"Cannot {mode} ARL after seeding; ledger chain is broken: {', '.join(ledger_status.issues)}")
+    store: SharadarStore | None = None
+    benchmark_curve: pd.DataFrame | None = None
+    stress_windows: Sequence[Any] = ()
+    basket: dict[str, Any] = {}
+    benchmark: dict[str, Any] = {}
+    if trial_runner is None:
+        store = SharadarStore(store_dir)
+        if str(store.data_snapshot_hash) != str(data_snapshot_hash):
+            raise ValueError("Snapshot changed; Stage 1 readiness must be rerun before Stage 2.")
+        benchmark_cfg = BasketStudyConfig(oos_start=DEFAULT_WALK_FORWARD_FOLDS[0]["oos_start"])
+        synth_sp500 = store.synth_sp500_total_return(start, end)
+        if synth_sp500.empty:
+            raise ValueError("Synthesized S&P 500 benchmark unavailable for DEV window.")
+        benchmark_curve = _buy_hold_curve(synth_sp500, starting_cash=benchmark_cfg.starting_cash)
+        stress_windows = historical_stress_windows_for_range(start, end)
+        basket = load_basket(basket_path) if Path(basket_path).exists() else {"tickers": []}
+        benchmark = buy_hold_taxable_payload(
+            "SYNTH_SP500",
+            synth_sp500,
+            oos_start=DEFAULT_WALK_FORWARD_FOLDS[0]["oos_start"],
+            benchmark_curve=benchmark_curve,
+            windows=stress_windows,
+        )
+        _write_json(root / "loop_synth_sp500_dev.json", benchmark)
+    existing = _ledger_trial_ids(ledger)
+    skipped_existing: list[str] = []
+    appended: list[dict[str, Any]] = []
+    candidates: list[dict[str, Any]] = []
+    consecutive_non_promising_start = _consecutive_non_promising_count(ledger)
+    no_promising_count = consecutive_non_promising_start
+    stop_reason = "hypothesis_queue_exhausted"
+    started_at = time.monotonic()
+    wall_clock_seconds = _parse_duration_seconds(max_wall_clock)
+    next_queue_position = None
+    for queue_position, spec in enumerate(hypotheses):
+        if pause_sentinel.exists():
+            stop_reason = "paused"
+            _write_resume_checkpoint(
+                ledger=ledger,
+                data_snapshot_hash=data_snapshot_hash,
+                trials_appended_this_run=len(appended),
+                no_promising_count=no_promising_count,
+                queue_position=queue_position,
+                mode=mode,
+                max_trials=max_trials,
+                stop_after_no_promising=stop_after_no_promising,
+                max_wall_clock_seconds=wall_clock_seconds,
+                stop_reason=stop_reason,
+                checkpoint_path=resume_checkpoint,
+            )
+            pause_sentinel.unlink(missing_ok=True)
+            break
+        trial_id = str(spec["trial_id"])
+        if trial_id in existing:
+            skipped_existing.append(trial_id)
+            continue
+        if len(appended) >= max_trials:
+            stop_reason = "max_trials"
+            next_queue_position = queue_position
+            break
+        if no_promising_count >= stop_after_no_promising:
+            stop_reason = "stop_after_no_promising"
+            next_queue_position = queue_position
+            break
+        if wall_clock_seconds is not None and time.monotonic() - started_at >= wall_clock_seconds:
+            stop_reason = "max_wall_clock"
+            next_queue_position = queue_position
+            break
+        trial_scratch = scratch_root / trial_id
+        trial_scratch.mkdir(parents=True, exist_ok=True)
+        if trial_runner is None:
+            assert store is not None and benchmark_curve is not None
+            result = _run_agent_research_hypothesis(
+                spec,
+                ledger=ledger,
+                data_snapshot_hash=data_snapshot_hash,
+                research_dir=root,
+                scratch_dir=trial_scratch,
+                store=store,
+                basket=basket,
+                benchmark=benchmark,
+                benchmark_curve=benchmark_curve,
+                stress_windows=stress_windows,
+                start=start,
+                end=end,
+            )
+        else:
+            trial = trial_runner(spec=spec, scratch_dir=trial_scratch, research_dir=root)
+            result = _commit_agent_research_trial(
+                ledger,
+                dict(trial),
+                data_snapshot_hash=data_snapshot_hash,
+            )
+        existing.add(trial_id)
+        appended.append(
+            {
+                "trial_id": trial_id,
+                "ledger_sequence": result.get("ledger_sequence"),
+                "verdict": result.get("verdict"),
+                "verdict_rationale": result.get("verdict_rationale"),
+                "summary_path": result.get("summary_path"),
+            }
+        )
+        if result.get("verdict") == "promising":
+            candidates.append(
+                {
+                    "trial_id": trial_id,
+                    "ledger_sequence": result.get("ledger_sequence"),
+                    "result_path": result.get("result_path"),
+                    "summary_path": result.get("summary_path"),
+                }
+            )
+            stop_reason = "promising_candidate"
+            next_queue_position = queue_position + 1
+            break
+        no_promising_count += 1
+        if no_promising_count >= stop_after_no_promising:
+            stop_reason = "stop_after_no_promising"
+            next_queue_position = queue_position + 1
+            break
+        if wall_clock_seconds is not None and time.monotonic() - started_at >= wall_clock_seconds:
+            stop_reason = "max_wall_clock"
+            next_queue_position = queue_position + 1
+            break
+        if pause_sentinel.exists():
+            stop_reason = "paused"
+            _write_resume_checkpoint(
+                ledger=ledger,
+                data_snapshot_hash=data_snapshot_hash,
+                trials_appended_this_run=len(appended),
+                no_promising_count=no_promising_count,
+                queue_position=queue_position + 1,
+                mode=mode,
+                max_trials=max_trials,
+                stop_after_no_promising=stop_after_no_promising,
+                max_wall_clock_seconds=wall_clock_seconds,
+                stop_reason=stop_reason,
+                checkpoint_path=resume_checkpoint,
+            )
+            pause_sentinel.unlink(missing_ok=True)
+            break
+    else:
+        if len(appended) >= max_trials:
+            stop_reason = "max_trials"
+        elif no_promising_count >= stop_after_no_promising:
+            stop_reason = "stop_after_no_promising"
+    if next_queue_position is None:
+        next_queue_position = _next_queue_position(hypotheses, _ledger_trial_ids(ledger))
+    ledger_status_payload = verify_trial_ledger(ledger).to_dict()
+    payload = {
+        "schema": "regime_agent_research_loop_run.v1",
+        "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+        "git_sha": _git_sha(),
+        "snapshot": data_snapshot_hash,
+        "mode": mode,
+        "readiness": readiness,
+        "ledger_path": str(ledger),
+        "ledger_seeded": seeded,
+        "budget": {
+            "max_trials": max_trials,
+            "max_wall_clock_seconds": wall_clock_seconds,
+            "stop_after_no_promising": stop_after_no_promising,
+            "trials_appended_this_run": len(appended),
+            "no_promising_count_start": consecutive_non_promising_start,
+            "no_promising_count": no_promising_count,
+            "remaining_trials": max(0, max_trials - len(appended)),
+        },
+        "queue": {
+            "total": len(hypotheses),
+            "next_position": next_queue_position,
+            "remaining_uncommitted": len([spec for spec in hypotheses if str(spec.get("trial_id")) not in _ledger_trial_ids(ledger)]),
+        },
+        "skipped_existing": skipped_existing,
+        "trials": appended,
+        "candidate_pool": candidates,
+        "stop_reason": stop_reason,
+        "ledger_status": ledger_status_payload,
+        "holdout_window": {
+            "start": DEFAULT_AGENT_RESEARCH_HOLDOUT_START,
+            "end": DEFAULT_AGENT_RESEARCH_HOLDOUT_END,
+            "accessed": False,
+        },
+        "production_defaults_changed": False,
+    }
+    _write_json(root / "stage2_loop_run_summary.json", payload)
+    _write_resume_checkpoint(
+        ledger=ledger,
+        data_snapshot_hash=data_snapshot_hash,
+        trials_appended_this_run=len(appended),
+        no_promising_count=no_promising_count,
+        queue_position=next_queue_position,
+        mode=mode,
+        max_trials=max_trials,
+        stop_after_no_promising=stop_after_no_promising,
+        max_wall_clock_seconds=wall_clock_seconds,
+        stop_reason=stop_reason,
+        checkpoint_path=resume_checkpoint,
+    )
+    summary = _safe_json(root / "stage2_walk_forward_summary.json")
+    summary.update(
+        {
+            "schema": "regime_agent_research_walk_forward_summary.v1",
+            "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+            "data_snapshot_hash": data_snapshot_hash,
+            "latest_walk_forward_trial": appended[-1]["trial_id"] if appended else None,
+            "latest_verdict": appended[-1]["verdict"] if appended else None,
+            "holdout_accessed": False,
+            "ledger_status": ledger_status_payload,
+            "pause_for_human_review": bool(candidates),
+            "production_defaults_changed": False,
+        }
+    )
+    _write_json(root / "stage2_walk_forward_summary.json", summary)
+    return payload
+
+
+def run_agent_research_loop_resume(
+    ledger_path: str | Path = DEFAULT_AGENT_RESEARCH_LEDGER,
+    *,
+    data_snapshot_hash: str,
+    max_trials: int,
+    stop_after_no_promising: int,
+    max_wall_clock: str | float | int | None = None,
+    research_dir: str | Path = DEFAULT_AGENT_RESEARCH_DIR,
+    store_dir: str | Path = DEFAULT_SHARADAR_DIR,
+    basket_path: str | Path = DEFAULT_BASKET_PATH,
+    start: str = DEFAULT_AGENT_RESEARCH_DEV_START,
+    end: str = DEFAULT_AGENT_RESEARCH_DEV_END,
+) -> dict[str, Any]:
+    """Compatibility wrapper for the canonical ARL runner."""
+
+    return run_agent_research_loop(
+        ledger_path,
+        data_snapshot_hash=data_snapshot_hash,
+        mode="resume",
+        max_trials=max_trials,
+        max_wall_clock=max_wall_clock,
+        stop_after_no_promising=stop_after_no_promising,
+        research_dir=research_dir,
+        store_dir=store_dir,
+        basket_path=basket_path,
+        start=start,
+        end=end,
+    )
+
+
+def request_agent_research_loop_pause(
+    *,
+    research_dir: str | Path = DEFAULT_AGENT_RESEARCH_DIR,
+    ledger_path: str | Path = DEFAULT_AGENT_RESEARCH_LEDGER,
+) -> dict[str, Any]:
+    root = Path(research_dir)
+    root.mkdir(parents=True, exist_ok=True)
+    sentinel = root / DEFAULT_AGENT_RESEARCH_PAUSE_SENTINEL.name
+    sentinel.write_text(dt.datetime.now(dt.timezone.utc).isoformat() + "\n", encoding="utf-8")
+    return {
+        "schema": "regime_agent_research_pause_request.v1",
+        "sentinel": str(sentinel),
+        "ledger_status": verify_trial_ledger(ledger_path).to_dict(),
+        "state": "pause_requested",
+        "production_defaults_changed": False,
+    }
+
+
+def agent_research_loop_status(
+    *,
+    research_dir: str | Path = DEFAULT_AGENT_RESEARCH_DIR,
+    ledger_path: str | Path = DEFAULT_AGENT_RESEARCH_LEDGER,
+    data_snapshot_hash: str | None = None,
+) -> dict[str, Any]:
+    root = Path(research_dir)
+    ledger = Path(ledger_path)
+    ledger_status = verify_trial_ledger(ledger).to_dict()
+    records = _ledger_records(ledger)
+    last_trial = records[-1].get("trial") if records else {}
+    summary = _safe_json(root / "stage2_loop_run_summary.json")
+    checkpoint = _safe_json(root / DEFAULT_AGENT_RESEARCH_RESUME_CHECKPOINT.name)
+    pause_sentinel = root / DEFAULT_AGENT_RESEARCH_PAUSE_SENTINEL.name
+    committed_ids = {
+        str((record.get("trial") or {}).get("trial_id"))
+        for record in records
+        if (record.get("trial") or {}).get("trial_id")
+    }
+    promising = [
+        {
+            "sequence": record.get("sequence"),
+            "trial_id": (record.get("trial") or {}).get("trial_id"),
+            "verdict": (record.get("trial") or {}).get("verdict"),
+            "summary_path": (record.get("trial") or {}).get("summary_path"),
+            "result_path": (record.get("trial") or {}).get("result_path"),
+        }
+        for record in records
+        if (record.get("trial") or {}).get("verdict") == "promising"
+    ]
+    max_trials = ((summary.get("budget") or {}).get("max_trials"))
+    trials_this_run = ((summary.get("budget") or {}).get("trials_appended_this_run") or 0)
+    return {
+        "schema": "regime_agent_research_loop_status.v1",
+        "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+        "state": "paused" if pause_sentinel.exists() else "running" if (root / "stage2_loop_run_summary.json").exists() and summary.get("stop_reason") not in {"paused", "promising_candidate", "max_trials", "max_wall_clock", "stop_after_no_promising", "hypothesis_queue_exhausted"} else "idle",
+        "pause_requested": pause_sentinel.exists(),
+        "chain_intact": bool(ledger_status.get("valid")),
+        "ledger_status": ledger_status,
+        "trials_committed": ledger_status.get("trial_count"),
+        "last_verdict": last_trial.get("verdict") if isinstance(last_trial, dict) else None,
+        "last_trial_id": last_trial.get("trial_id") if isinstance(last_trial, dict) else None,
+        "current_snapshot": data_snapshot_hash or checkpoint.get("data_snapshot_hash") or summary.get("snapshot") or (records[-1].get("data_snapshot_hash") if records else None),
+        "budget": {
+            "last_run_max_trials": max_trials,
+            "last_run_trials_consumed": trials_this_run,
+            "last_run_trials_remaining": max(0, int(max_trials) - int(trials_this_run)) if max_trials is not None else None,
+            "last_run_stop_after_no_promising": ((summary.get("budget") or {}).get("stop_after_no_promising")),
+            "last_run_no_promising_count": ((summary.get("budget") or {}).get("no_promising_count")),
+        },
+        "queue": {
+            "total": len(AGENT_RESEARCH_HYPOTHESES),
+            "committed_queue_trials": len([spec for spec in AGENT_RESEARCH_HYPOTHESES if str(spec.get("trial_id")) in committed_ids]),
+            "next_position": _next_queue_position(AGENT_RESEARCH_HYPOTHESES, committed_ids),
+        },
+        "promising_candidates_awaiting_review": promising,
+        "last_run_summary_path": str(root / "stage2_loop_run_summary.json"),
+        "resume_checkpoint_path": str(root / DEFAULT_AGENT_RESEARCH_RESUME_CHECKPOINT.name),
+        "production_defaults_changed": False,
+    }
+
+
+def _commit_agent_research_trial(
+    ledger: Path,
+    trial: dict[str, Any],
+    *,
+    data_snapshot_hash: str,
+) -> dict[str, Any]:
+    record = append_trial(ledger, trial, data_snapshot_hash=data_snapshot_hash)
+    out = dict(trial)
+    out["ledger_record_hash"] = record.get("record_hash")
+    out["ledger_sequence"] = record.get("sequence")
+    out["ledger_status"] = verify_trial_ledger(ledger).to_dict()
+    return out
+
+
+def _parse_duration_seconds(value: str | float | int | None) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        seconds = float(value)
+        if seconds <= 0:
+            raise ValueError("--max-wall-clock must be positive.")
+        return seconds
+    text = str(value).strip().lower()
+    if not text:
+        return None
+    unit = text[-1]
+    if unit in {"s", "m", "h"}:
+        amount = float(text[:-1])
+        multiplier = {"s": 1.0, "m": 60.0, "h": 3600.0}[unit]
+    else:
+        amount = float(text)
+        multiplier = 1.0
+    seconds = amount * multiplier
+    if seconds <= 0:
+        raise ValueError("--max-wall-clock must be positive.")
+    return seconds
+
+
+def _ledger_records(path: str | Path) -> list[dict[str, Any]]:
+    target = Path(path)
+    if not target.exists():
+        return []
+    rows: list[dict[str, Any]] = []
+    for line in target.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(record, dict):
+            rows.append(record)
+    return rows
+
+
+def _ledger_snapshot_hashes(path: str | Path) -> set[str]:
+    return {
+        str(record.get("data_snapshot_hash"))
+        for record in _ledger_records(path)
+        if record.get("data_snapshot_hash") is not None
+    }
+
+
+def _consecutive_non_promising_count(path: str | Path) -> int:
+    count = 0
+    for record in reversed(_ledger_records(path)):
+        trial = record.get("trial") or {}
+        if not isinstance(trial, dict):
+            continue
+        verdict = str(trial.get("verdict") or "")
+        if verdict == "promising":
+            break
+        if verdict in {"killed", "inconclusive"}:
+            count += 1
+    return count
+
+
+def _next_queue_position(hypotheses: Sequence[dict[str, Any]], committed_ids: set[str]) -> int | None:
+    for idx, spec in enumerate(hypotheses):
+        if str(spec.get("trial_id")) not in committed_ids:
+            return idx
+    return None
+
+
+def _write_resume_checkpoint(
+    *,
+    ledger: Path,
+    data_snapshot_hash: str,
+    trials_appended_this_run: int,
+    no_promising_count: int,
+    queue_position: int | None,
+    mode: str,
+    max_trials: int,
+    stop_after_no_promising: int,
+    max_wall_clock_seconds: float | None,
+    stop_reason: str,
+    checkpoint_path: Path = DEFAULT_AGENT_RESEARCH_RESUME_CHECKPOINT,
+) -> None:
+    status = verify_trial_ledger(ledger).to_dict()
+    _write_json(
+        checkpoint_path,
+        {
+            "schema": "regime_agent_research_resume_checkpoint.v1",
+            "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+            "data_snapshot_hash": data_snapshot_hash,
+            "last_committed_sequence": status.get("trial_count"),
+            "last_hash": status.get("last_hash"),
+            "trials_appended_this_run": trials_appended_this_run,
+            "no_promising_count": no_promising_count,
+            "queue_position": queue_position,
+            "mode": mode,
+            "mandate": {
+                "max_trials": max_trials,
+                "stop_after_no_promising": stop_after_no_promising,
+                "max_wall_clock_seconds": max_wall_clock_seconds,
+            },
+            "stop_reason": stop_reason,
+            "production_defaults_changed": False,
+        },
+    )
+
+
+def _run_agent_research_hypothesis(
+    spec: dict[str, Any],
+    *,
+    ledger: Path,
+    data_snapshot_hash: str,
+    research_dir: Path,
+    scratch_dir: Path | None = None,
+    store: SharadarStore,
+    basket: dict[str, Any],
+    benchmark: dict[str, Any],
+    benchmark_curve: pd.DataFrame,
+    stress_windows: Sequence[Any],
+    start: str,
+    end: str,
+) -> dict[str, Any]:
+    cfg = BasketStudyConfig(**{**BasketStudyConfig(oos_start=DEFAULT_WALK_FORWARD_FOLDS[0]["oos_start"]).to_dict(), **dict(spec.get("config_overrides") or {})})
+    strategy = run_basket_arm(
+        store,
+        str(spec["arm"]),
+        cfg,
+        start=start,
+        end=end,
+        basket=basket,
+        benchmark_curve=benchmark_curve,
+        windows=list(stress_windows),
+    )
+    strategy_pre_tax = _pre_tax_evaluation_payload(strategy)
+    benchmark_pre_tax = _pre_tax_evaluation_payload(benchmark)
+    walk_forward = run_dev_walk_forward_evaluation(
+        strategy_pre_tax,
+        benchmark_pre_tax,
+        base_payload=benchmark_pre_tax,
+        folds=DEFAULT_WALK_FORWARD_FOLDS,
+        dev_start=start,
+        dev_end=end,
+        holdout_start=DEFAULT_AGENT_RESEARCH_HOLDOUT_START,
+        min_major_crashes=DEFAULT_WALK_FORWARD_MIN_MAJOR_CRASHES,
+        min_oos_folds=DEFAULT_WALK_FORWARD_MIN_FOLDS,
+    )
+    trial_id = str(spec["trial_id"])
+    stem = _trial_file_stem(trial_id)
+    work_dir = scratch_dir or research_dir
+    work_dir.mkdir(parents=True, exist_ok=True)
+    result_path = research_dir / f"{stem}_result.json"
+    strategy_path = research_dir / f"{stem}_strategy_dev.json"
+    folds_path = research_dir / f"{stem}_folds.csv"
+    summary_path = research_dir / f"{stem}_summary.md"
+    work_result_path = work_dir / f"{stem}_result.json"
+    work_strategy_path = work_dir / f"{stem}_strategy_dev.json"
+    work_folds_path = work_dir / f"{stem}_folds.csv"
+    work_summary_path = work_dir / f"{stem}_summary.md"
+    result = {
+        "schema": "regime_agent_research_iteration.v2",
+        "trial_id": trial_id,
+        "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+        "data_snapshot_hash": data_snapshot_hash,
+        "git_sha": _git_sha(),
+        "hypothesis": spec.get("hypothesis"),
+        "economic_rationale": spec.get("economic_rationale"),
+        "pre_registered_success_criterion": (
+            "Walk-forward DEV OOS, pre-tax with costs/slippage: more than half of included folds beat synthesized S&P 500 on total return, "
+            "Calmar, and Ulcer; median return and Calmar deltas are positive; median Ulcer delta is negative; "
+            "major crash folds show drawdown and Ulcer improvement versus the index; no single-fold concentration."
+        ),
+        "oos_evaluation_mode": "walk_forward_stress_folds",
+        "evaluation_basis": "pre_tax_costs_slippage_applied",
+        "dev_window": {"start": start, "end": end},
+        "locked_holdout": {
+            "start": DEFAULT_AGENT_RESEARCH_HOLDOUT_START,
+            "end": DEFAULT_AGENT_RESEARCH_HOLDOUT_END,
+            "accessed": False,
+        },
+        "strategy_spec": {
+            "selection": spec.get("arm"),
+            "score": spec.get("score"),
+            "config_overrides": dict(spec.get("config_overrides") or {}),
+            "basket_size": cfg.basket_size,
+            "formation": cfg.formation,
+            "weighting": cfg.weighting,
+            "reconstitution": cfg.reconstitution,
+            "universe": "survivorship_free_sep_equities_only",
+            "min_dollar_adv": cfg.min_dollar_adv,
+            "min_marketcap": cfg.min_marketcap,
+            "cost_bps": {"entry": cfg.entry_cost_bps, "exit": cfg.exit_cost_bps},
+        },
+        "strategy_metrics": _pre_tax_summary_metrics(strategy),
+        "benchmark_metrics": _pre_tax_summary_metrics(benchmark),
+        "walk_forward": walk_forward,
+        "verdict": walk_forward.get("verdict"),
+        "verdict_rationale": walk_forward.get("verdict_rationale"),
+        "strategy_payload_path": str(strategy_path),
+        "benchmark_payload_path": str(research_dir / "loop_synth_sp500_dev.json"),
+        "folds_path": str(folds_path),
+        "summary_path": str(summary_path),
+        "result_path": str(result_path),
+        "holdout_accessed": False,
+        "production_defaults_changed": False,
+    }
+    _write_json(work_strategy_path, strategy)
+    _write_json(work_result_path, result)
+    pd.DataFrame(walk_forward.get("folds") or []).to_csv(work_folds_path, index=False)
+    _write_agent_research_trial_markdown(work_summary_path, result)
+    result = _commit_agent_research_trial(ledger, result, data_snapshot_hash=data_snapshot_hash)
+    if scratch_dir is not None:
+        shutil.copy2(work_strategy_path, strategy_path)
+        shutil.copy2(work_folds_path, folds_path)
+        shutil.copy2(work_summary_path, summary_path)
+    _write_json(result_path, result)
+    _write_agent_research_trial_markdown(summary_path, result)
+    if scratch_dir is not None:
+        shutil.rmtree(scratch_dir, ignore_errors=True)
     return result
 
 
@@ -1024,6 +1986,154 @@ def _fold_distribution_prelim_promising(
         return False
     crash_improved = sum(1 for row in major if bool(row.get("crash_risk_improved_vs_bare_a1")))
     return crash_improved / len(major) > 0.5
+
+
+def _pre_tax_evaluation_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    out = dict(payload)
+    out.pop("after_tax_equity_curve", None)
+    if isinstance(out.get("pre_tax_metrics"), dict):
+        out["metrics"] = dict(out["pre_tax_metrics"])
+    out["evaluation_basis"] = "pre_tax_costs_slippage_applied"
+    return out
+
+
+def _pre_tax_summary_metrics(payload: dict[str, Any]) -> dict[str, Any]:
+    metrics = dict(payload.get("pre_tax_metrics") or payload.get("metrics") or {})
+    full_metrics = dict(payload.get("metrics") or {})
+    oos = dict(payload.get("out_of_sample") or {})
+    return {
+        "pre_tax_terminal_wealth": metrics.get("pre_tax_terminal_wealth") or full_metrics.get("pre_tax_terminal_wealth"),
+        "annualized_return": metrics.get("annualized_return"),
+        "max_drawdown": metrics.get("max_drawdown"),
+        "calmar_ratio": metrics.get("calmar_ratio"),
+        "ulcer_index": metrics.get("ulcer_index"),
+        "annualized_turnover": full_metrics.get("annualized_turnover"),
+        "total_costs_paid": full_metrics.get("total_costs_paid"),
+        "trade_count": metrics.get("trade_count"),
+        "oos_total_return": oos.get("total_return"),
+        "oos_calmar_ratio": oos.get("calmar_ratio"),
+        "oos_ulcer_index": oos.get("ulcer_index"),
+    }
+
+
+def _write_h002_walk_forward_markdown(path: Path, result: dict[str, Any]) -> None:
+    walk = result.get("walk_forward") or {}
+    aggregate = walk.get("aggregate") or {}
+    folds = [row for row in walk.get("folds") or [] if isinstance(row, dict)]
+    included = [row for row in folds if str(row.get("status") or "") == "included"]
+    lines = [
+        "# Agent Research Loop - H002 Quality-Value Walk-Forward",
+        "",
+        f"Trial: `{result.get('trial_id')}`",
+        f"Snapshot: `{result.get('data_snapshot_hash')}`",
+        f"Evaluation mode: `{result.get('oos_evaluation_mode')}`",
+        f"Evaluation basis: `{result.get('evaluation_basis')}`",
+        f"Verdict: `{result.get('verdict')}`",
+        f"Rationale: {result.get('verdict_rationale')}",
+        f"Holdout accessed: `{result.get('holdout_accessed')}`",
+        f"Production defaults changed: `{result.get('production_defaults_changed')}`",
+        "",
+        "## Hypothesis",
+        "",
+        str(result.get("hypothesis") or ""),
+        "",
+        "## Criterion",
+        "",
+        str(result.get("pre_registered_success_criterion") or ""),
+        "",
+        "## Aggregate",
+        "",
+        f"- Included folds: {aggregate.get('included_fold_count')} / {aggregate.get('configured_fold_count')}",
+        f"- Major crash folds: {aggregate.get('major_crash_fold_count')} / {aggregate.get('min_major_crashes')}",
+        f"- Full metric pass fraction: {aggregate.get('full_metric_set_pass_fraction')}",
+        f"- Median total-return delta: {aggregate.get('median_total_return_delta')}",
+        f"- Median Calmar delta: {aggregate.get('median_calmar_delta')}",
+        f"- Median Ulcer delta: {aggregate.get('median_ulcer_delta')}",
+        f"- Single-fold concentration flag: {aggregate.get('single_fold_concentration_flag')}",
+        f"- Drop-best-fold flips verdict: {aggregate.get('drop_best_fold_flips_verdict')} ({aggregate.get('best_fold_id')})",
+        "",
+        "## Per-Fold Results",
+        "",
+        "| Fold | Stress | Full pass | Return delta | Calmar delta | Ulcer delta | Crash risk improved |",
+        "|---|---:|---:|---:|---:|---:|---:|",
+    ]
+    for row in included:
+        lines.append(
+            "| {fold} | {stress} | {full} | {ret} | {calmar} | {ulcer} | {risk} |".format(
+                fold=row.get("fold_id"),
+                stress=row.get("stress_label"),
+                full=row.get("clears_full_metric_set"),
+                ret=row.get("total_return_delta"),
+                calmar=row.get("calmar_delta"),
+                ulcer=row.get("ulcer_delta"),
+                risk=row.get("crash_risk_improved_vs_bare_a1"),
+            )
+        )
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _write_agent_research_trial_markdown(path: Path, result: dict[str, Any]) -> None:
+    walk = result.get("walk_forward") or {}
+    aggregate = walk.get("aggregate") or {}
+    folds = [row for row in walk.get("folds") or [] if isinstance(row, dict)]
+    included = [row for row in folds if str(row.get("status") or "") == "included"]
+    lines = [
+        f"# Agent Research Loop - {result.get('trial_id')}",
+        "",
+        f"Trial: `{result.get('trial_id')}`",
+        f"Snapshot: `{result.get('data_snapshot_hash')}`",
+        f"Evaluation mode: `{result.get('oos_evaluation_mode')}`",
+        f"Evaluation basis: `{result.get('evaluation_basis')}`",
+        f"Verdict: `{result.get('verdict')}`",
+        f"Rationale: {result.get('verdict_rationale')}",
+        f"Holdout accessed: `{result.get('holdout_accessed')}`",
+        f"Production defaults changed: `{result.get('production_defaults_changed')}`",
+        "",
+        "## Hypothesis",
+        "",
+        str(result.get("hypothesis") or ""),
+        "",
+        "## Rationale",
+        "",
+        str(result.get("economic_rationale") or ""),
+        "",
+        "## Criterion",
+        "",
+        str(result.get("pre_registered_success_criterion") or ""),
+        "",
+        "## Aggregate",
+        "",
+        f"- Included folds: {aggregate.get('included_fold_count')} / {aggregate.get('configured_fold_count')}",
+        f"- Major crash folds: {aggregate.get('major_crash_fold_count')} / {aggregate.get('min_major_crashes')}",
+        f"- Full metric pass fraction: {aggregate.get('full_metric_set_pass_fraction')}",
+        f"- Median total-return delta: {aggregate.get('median_total_return_delta')}",
+        f"- Median Calmar delta: {aggregate.get('median_calmar_delta')}",
+        f"- Median Ulcer delta: {aggregate.get('median_ulcer_delta')}",
+        f"- Single-fold concentration flag: {aggregate.get('single_fold_concentration_flag')}",
+        f"- Drop-best-fold flips verdict: {aggregate.get('drop_best_fold_flips_verdict')} ({aggregate.get('best_fold_id')})",
+        "",
+        "## Per-Fold Results",
+        "",
+        "| Fold | Stress | Full pass | Return delta | Calmar delta | Ulcer delta | Crash risk improved |",
+        "|---|---:|---:|---:|---:|---:|---:|",
+    ]
+    for row in included:
+        lines.append(
+            "| {fold} | {stress} | {full} | {ret} | {calmar} | {ulcer} | {risk} |".format(
+                fold=row.get("fold_id"),
+                stress=row.get("stress_label"),
+                full=row.get("clears_full_metric_set"),
+                ret=row.get("total_return_delta"),
+                calmar=row.get("calmar_delta"),
+                ulcer=row.get("ulcer_delta"),
+                risk=row.get("crash_risk_improved_vs_bare_a1"),
+            )
+        )
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _trial_file_stem(trial_id: str) -> str:
+    return "".join(ch if ch.isalnum() or ch in {"_", "-"} else "_" for ch in str(trial_id))
 
 
 def _write_walk_forward_markdown(path: Path, result: dict[str, Any]) -> None:
